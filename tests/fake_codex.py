@@ -128,6 +128,9 @@ def handle(message):
 def main():
     if sys.argv[1:3] == ["login", "status"]:
         sys.exit(1 if os.path.exists(os.path.join(HOME, "logged_out")) else 0)
+    if sys.argv[1:3] == ["app-server", "--help"]:
+        print("--listen <URL>")
+        sys.exit(0)
     if sys.argv[1:2] != ["app-server"]:
         sys.exit(0)
     note("started")

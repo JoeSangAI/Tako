@@ -63,6 +63,9 @@ extension Controller: WKScriptMessageHandler, WKNavigationDelegate {
         if let value = body["statistics"] as? Bool { statistics = value }
         if let path = body["revealFile"] as? String { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
         if let link = body["openURL"] as? String, let target = URL(string: link), ["http", "https"].contains(target.scheme ?? "") { NSWorkspace.shared.open(target) }
+        // Only these two pages: nothing the page says can open anything else in System Settings.
+        if let pane = body["settings"] as? String, let name = ["accessibility": "Privacy_Accessibility", "screen": "Privacy_ScreenCapture"][pane],
+           let page = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(name)") { NSWorkspace.shared.open(page) }
         if let value = body["pop"] as? Double { goo.pop = CGFloat(value); goo.kick(CGFloat(value) * 90) }
         if let value = body["wanted"] as? Double {
             wanted = value

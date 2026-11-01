@@ -126,10 +126,9 @@
   #notice .meter i { display: block; height: 100%; background: var(--btn); transition: width .2s; }
   #notice .why { color: var(--accent); margin-top: 5px; }
 
-  #err, .hint { display: none; font-size: 12px; padding: 0 14px 6px; }
+  #err { display: none; font-size: 12px; padding: 0 14px 6px; }
   #err { color: var(--accent); }
-  .hint { color: var(--muted); font-size: 11px; }
-  #err.show, .hint.show { display: block; }
+  #err.show { display: block; }
   /* the box the owner talks in: what they attached, what they say, then + and send */
   form { flex: none; margin: 2px 10px 10px; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 14px; background: var(--paper); box-shadow: 0 1px 5px rgba(0, 0, 0, .07); transition: border-color .15s; }
   form:focus-within { border-color: var(--muted); }
@@ -169,8 +168,6 @@
   <div id="live" aria-live="polite"></div>
   <div id="cards"></div>
   <div id="err" role="alert"></div>
-  <div id="hint" class="hint">开启“辅助功能”权限后，Tako 才能操作这个窗口。</div>
-  <div id="hint2" class="hint">开启“屏幕录制”权限后，Tako 才能看到这个窗口。</div>
   <form id="f">
     <div id="attached"></div>
     <textarea id="say" rows="1" placeholder="跟 Tako 说…" aria-label="跟 Tako 说"></textarea>
@@ -200,8 +197,9 @@ function layout() {
 }
 window.setGeometry = (edge, nextRoom) => { room = nextRoom; layout(); };
 window.setWidth = (next) => { width = next; layout(); };
-window.setCanMove = (can) => { $('hint').classList.toggle('show', !can); };
-window.setCanRead = (can) => { $('hint2').classList.toggle('show', !can); };
+let canMove = true, canRead = true;
+window.setCanMove = (can) => { canMove = can; showNotice(); };
+window.setCanRead = (can) => { canRead = can; showNotice(); };
 
 // The panel takes its material from the window beside it; the ink stays TAKO's.
 const mixRGB = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
@@ -547,23 +545,36 @@ $('log').append(empty);
 
 // ---- setting up, and new versions: the only things Tako ever shows on its own behalf ----
 let setup = null, update = null, noticeKey = '', noticeUp = false;
+const PERMISSION_WORDS = {
+  accessibility: ['还差一步：打开“辅助功能”', '在系统设置里打开 Tako 的开关，它才能操作这个窗口。', '打开系统设置'],
+  screen: ['还差一步：打开录屏权限', '在系统设置里打开 Tako 的开关，它才能看见这个窗口。系统让你重开 Tako，就重开一次。', '打开系统设置'],
+};
 const SETUP_WORDS = {
   install: ['还差一步：装上 Codex', 'Tako 的大脑是 OpenAI 的 Codex，用你自己的 ChatGPT 账号。', '安装 Codex', '正在安装 Codex，大约一分钟…'],
+  update: ['还差一步：更新 Codex', '这台电脑上的 Codex 太旧，Tako 连不上它。更新后不用重新登录。', '更新 Codex', '正在更新 Codex，大约一分钟…'],
   login: ['还差一步：登录 ChatGPT', '浏览器会打开登录页，登录后回到这里就能用了。', '登录', '在浏览器里登录，登录好这里会自动继续…'],
 };
 function noticeLine(cls, text) { const el = document.createElement('div'); el.className = cls; el.textContent = text; return el; }
 function showNotice() {
   const box = $('notice');
   const pending = setup && setup.step !== 'ready';
-  const key = JSON.stringify([pending ? setup : null, update, busy]);
+  const permission = !canMove ? 'accessibility' : !canRead ? 'screen' : null;
+  const key = JSON.stringify([permission, pending ? setup : null, update, busy]);
   if (key === noticeKey) return;
   noticeKey = key;
   box.replaceChildren();
-  const up = !!(pending || update);
+  const up = !!(permission || pending || update);
   box.classList.toggle('show', up);
   if (up !== noticeUp) { noticeUp = up; tellCards(); }
   const actions = document.createElement('div');
   actions.className = 'card-actions';
+  if (permission) {
+    const words = PERMISSION_WORDS[permission];
+    box.append(noticeLine('title', words[0]), noticeLine('body', words[1]));
+    actions.append(button(words[2], () => native?.postMessage({ settings: permission }), true));
+    box.append(actions);
+    return;
+  }
   if (pending) {
     const words = SETUP_WORDS[setup.step];
     box.append(noticeLine('title', words[0]), noticeLine('body', setup.busy ? words[3] : words[1]));

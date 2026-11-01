@@ -34,7 +34,9 @@ final class Backend {
         FileManager.default.createFile(atPath: errorFile.path, contents: nil)
         let task = Process()
         // Opened from the Dock an app gets almost no environment; the model needs the PATH and proxy of the owner's own shell.
-        task.executableURL = URL(fileURLWithPath: String(cString: getpwuid(getuid()).pointee.pw_shell))
+        // The command below is POSIX: fish and the like can't run it.
+        let shell = String(cString: getpwuid(getuid()).pointee.pw_shell)
+        task.executableURL = URL(fileURLWithPath: ["zsh", "bash", "sh"].contains((shell as NSString).lastPathComponent) ? shell : "/bin/zsh")
         task.arguments = ["-lc", "exec \"$0\" \"$@\"", Backend.python, script.path, "--with-app"] + arguments
         var environment = ProcessInfo.processInfo.environment
         environment["PYTHONDONTWRITEBYTECODE"] = "1"  // A .pyc written inside the app would break its signature.

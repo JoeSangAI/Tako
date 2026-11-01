@@ -276,6 +276,18 @@ final class Controller: NSObject, NSApplicationDelegate {
                 makeRoom(animated: true)
             }
         }
+        // One question at a time: the screen is asked for as soon as accessibility is settled, whatever window it sits on.
+        if ticks % 120 == 0 && !canCapture {
+            canCapture = CGPreflightScreenCaptureAccess()
+            if canCapture {
+                log("screen capture trusted=true")
+                web.evaluateJavaScript("setCanRead(true)")
+            } else if trusted && !captureAsked {
+                captureAsked = true
+                log("screen capture trusted=false")
+                _ = CGRequestScreenCaptureAccess()
+            }
+        }
     }
 
     func targetRefreshDue() -> Bool {

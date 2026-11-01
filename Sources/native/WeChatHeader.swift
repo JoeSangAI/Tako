@@ -18,20 +18,7 @@ extension Controller {
         // The title only changes while WeChat is in use; but always read once right after sticking on.
         guard isWeChat, goo.mode == .attached || goo.mode == .open, !headerBusy, let current = target,
               lastBand == 0 || NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
-        if !canCapture {
-            canCapture = CGPreflightScreenCaptureAccess()
-            if !canCapture {
-                if !captureAsked {
-                    captureAsked = true
-                    log("screen capture trusted=false")
-                    _ = CGRequestScreenCaptureAccess()
-                    web.evaluateJavaScript("setCanRead(false)")
-                }
-                return
-            }
-            log("screen capture trusted=true")
-            web.evaluateJavaScript("setCanRead(true)")
-        }
+        guard canCapture else { return }
         headerBusy = true
         let id = current.id, width = current.frame.width
         Task.detached { [weak self] in

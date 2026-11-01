@@ -480,5 +480,63 @@ class Listening(unittest.TestCase):
         self.assertIn('RUNTIME / "listening"', route)
 
 
+class FirstRun(unittest.TestCase):
+    """A friend's Mac: nothing here may assume the author's setup."""
+
+    def setUp(self):
+        import first_run
+        self.first_run = first_run
+        self.home = pathlib.Path(tempfile.mkdtemp(prefix="tako-home-"))
+        self.addCleanup(shutil.rmtree, self.home, True)
+        self.saved = {k: os.environ.get(k) for k in ("HOME", "PATH")}
+        self.addCleanup(lambda: [os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v) for k, v in self.saved.items()])
+        os.environ.update(HOME=str(self.home), PATH="/usr/bin:/bin")
+        first_run._serves.clear()
+
+    def codex(self, where, serves=True):
+        path = self.home / where
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("#!/bin/sh\n" + ('echo "--listen <URL>"\n' if serves else "echo nope\n"))
+        path.chmod(0o755)
+        return str(path)
+
+    def only_ours(self):
+        return [path for path in self.first_run._installed() if path.startswith(str(self.home))]
+
+    def test_it_finds_a_codex_from_a_version_manager(self):
+        self.codex(".nvm/versions/node/v9.11.0/bin/codex")
+        newest = self.codex(".nvm/versions/node/v20.1.0/bin/codex")
+        self.assertEqual(self.only_ours()[0], newest)
+
+    def test_an_old_codex_is_passed_over_for_one_that_works(self):
+        self.codex(".local/bin/codex", serves=False)
+        works = self.codex(".volta/bin/codex")
+        self.assertFalse(self.first_run._can_serve(str(self.home / ".local/bin/codex")))
+        self.assertTrue(self.first_run._can_serve(works))
+
+    def test_only_an_old_one_asks_to_update_and_none_asks_to_install(self):
+        real = self.first_run._installed
+        setup = self.first_run.Setup(None)
+        # This Mac may have its own Codex in the fixed places: only the one made here counts.
+        self.first_run._installed = lambda: [path for path in real() if path.startswith(str(self.home))]
+        self.addCleanup(setattr, self.first_run, "_installed", real)
+        self.assertEqual(setup.state()["step"], "install")
+        self.codex(".local/bin/codex", serves=False)
+        self.assertEqual(setup.state()["step"], "update")
+
+    def test_the_screen_is_asked_for_wherever_it_sits_one_step_at_a_time(self):
+        controller = (NATIVE / "Controller.swift").read_text()
+        self.assertIn("CGRequestScreenCaptureAccess", controller)
+        self.assertNotIn("CGRequestScreenCaptureAccess", (NATIVE / "WeChatHeader.swift").read_text())
+        self.assertIn("trusted && !captureAsked", controller)
+
+    def test_the_panel_shows_one_next_step_and_opens_only_two_settings_pages(self):
+        page = (BRAIN / "side.html").read_text()
+        self.assertIn("!canMove ? 'accessibility' : !canRead ? 'screen' : null", page)
+        self.assertNotIn('class="hint"', page)
+        panel = (NATIVE / "SidePanel.swift").read_text()
+        self.assertIn('["accessibility": "Privacy_Accessibility", "screen": "Privacy_ScreenCapture"]', panel)
+
+
 if __name__ == "__main__":
     unittest.main()
