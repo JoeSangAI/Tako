@@ -1,4 +1,4 @@
-"""Guards that must hold whatever a model or a window says. Run: python3 test_guards.py"""
+"""Guards that must hold whatever a model or a window says. Run: python3 tests/test_guards.py"""
 import ast
 import hashlib
 import importlib.util
@@ -7,7 +7,7 @@ import pathlib
 import re
 import unittest
 
-HERE = pathlib.Path(__file__).resolve().parent
+HERE = pathlib.Path(__file__).resolve().parent.parent / "Sources"
 SERVER = (HERE / "tako_server.py").read_text()
 
 

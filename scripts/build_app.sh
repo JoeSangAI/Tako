@@ -15,13 +15,13 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 swiftc -O -target "arm64-apple-macos$MINIMUM" -framework AppKit -framework WebKit -framework ApplicationServices -framework QuartzCore -framework CoreImage \
   -framework ScreenCaptureKit -framework AVFoundation -framework CoreMedia -framework Vision -framework Carbon -framework UserNotifications \
-  -o "$WORK/Tako" "$ROOT"/*.swift
+  -o "$WORK/Tako" "$ROOT"/Sources/*.swift
 
 APP="$WORK/Tako.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$WORK/Tako" "$APP/Contents/MacOS/Tako"
-cp "$ROOT/icon/TAKO.icns" "$ROOT/tako_server.py" "$ROOT/codex_runtime.py" "$ROOT/wechat_reader.py" "$ROOT/listen_worker.py" "$ROOT/side.html" "$ROOT/CHANGELOG.md" "$APP/Contents/Resources/"
-cp -R "$ROOT/vendor" "$APP/Contents/Resources/vendor"
+cp "$ROOT/icon/TAKO.icns" "$ROOT/Sources/tako_server.py" "$ROOT/Sources/codex_runtime.py" "$ROOT/Sources/wechat_reader.py" "$ROOT/Sources/listen_worker.py" "$ROOT/Sources/side.html" "$ROOT/CHANGELOG.md" "$APP/Contents/Resources/"
+cp -R "$ROOT/Sources/vendor" "$APP/Contents/Resources/vendor"
 cp -R "$ROOT/.build/python" "$APP/Contents/Resources/python"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

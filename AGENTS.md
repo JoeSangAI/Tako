@@ -26,4 +26,6 @@ Updates install only when the new app satisfies the running app's designated req
 
 ## Layout
 
-`TakoPanel.swift` goo, window following, side panel. `Enchant.swift` ink effects. `Hands.swift` filling and looking. `Operate.swift` operating any app. `Listen.swift`, `listen_worker.py` listening. `Update.swift` new versions. `Backend.swift` runs the Python side from the app. `tako_server.py` sessions, Codex turns, tools, cards. `codex_runtime.py` Codex app-server connection. `wechat_reader.py` optional local WeChat reader. `side.html` the panel. `test_guards.py` the lines that must hold: `python3 test_guards.py`. `run.sh` builds and restarts for development. `scripts/` build and release.
+`Sources/`: `TakoPanel.swift` goo, window following, side panel. `Enchant.swift` ink effects. `Hands.swift` filling and looking. `Operate.swift` operating any app. `Listen.swift`, `listen_worker.py` listening. `Update.swift` new versions. `Backend.swift` runs the Python side from the app. `tako_server.py` sessions, Codex turns, tools, cards. `codex_runtime.py` Codex app-server connection. `wechat_reader.py` optional local WeChat reader. `side.html` the panel.
+
+`tests/test_guards.py` the lines that must hold: `python3 tests/test_guards.py`. `run.sh` builds and restarts for development. `scripts/` build and release.

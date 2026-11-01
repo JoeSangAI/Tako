@@ -534,7 +534,7 @@ class Setup:
     def _run(self, step):
         try:
             command = ["/bin/sh", "-c", self.INSTALL] if step == "install" else [find_codex(), "login"]
-            done = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=600)
+            done = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=600, env={**os.environ, "CODEX_NON_INTERACTIVE": "1"})
             if done.returncode:
                 self.failed = ("Codex 没装上，检查网络后再试一次。" if step == "install" else "没有登录成功，再试一次。")
         except (OSError, subprocess.SubprocessError):
