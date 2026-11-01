@@ -127,37 +127,38 @@ class FeedbackLeavesOnlyFixedShapes(unittest.TestCase):
         self.tako = fb.Feedback(self.folder.name, "0.2.5", "15.7", url="http://127.0.0.1:9/none", crash_folder=self.folder.name, now=lambda: self.clock[0])
         self.tako.send = self.sent.append
 
-    def agree(self):
-        self.tako.choose(True)
-
     def test_what_has_a_shape_never_leaves(self):
         text = fb.scrub("Alex 让我把 /Users/" "alex/客户方案.pptx 发到 a.b@example.com，电话 138 0013 8000，见 https://x.cn/a?id=1，~/Desktop/报价 也丢了，wxid_abc123", ("Alex",))
         for private in ("Alex", "/Users", "客户方案", "example.com", "13800", "138 0013", "x.cn", "Desktop", "wxid_"):
             self.assertNotIn(private, text)
         self.assertIn("让我把", text)
 
-    def test_nothing_counts_before_the_owner_has_seen_the_notice(self):
+    def test_on_without_asking_and_off_stays_off(self):
+        self.assertEqual(self.tako.panel(), {"can": True, "on": True})
         self.tako.count("turn", 3.0)
-        self.tako.heard("Safari", "帮我填一下报销单")
-        self.assertEqual(self.tako.panel()["consent"], None)
-        self.assertFalse(self.tako.state["counts"])
-        self.assertFalse(self.tako.words)
-        self.assertFalse(self.tako.stats_due())
+        self.assertTrue(self.tako.stats_due())
+        self.tako.choose(False)
+        again = fb.Feedback(self.folder.name, "0.2.7", "15.7", url="http://127.0.0.1:9/none", crash_folder=self.folder.name, now=lambda: self.clock[0])
+        self.assertEqual(again.panel(), {"can": True, "on": False})
+        self.assertFalse(fb.Feedback(self.folder.name, "dev", "15.7", url="http://127.0.0.1:9/none").panel()["can"])
+
+    def test_sentences_from_before_are_forgotten(self):
+        (pathlib.Path(self.folder.name) / "feedback.json").write_text(json.dumps({"consent": "on", "pending": ["想填报销系统"], "asking": {"id": "a", "lines": ["x"], "since": 1}, "said": ["y"]}))
+        again = fb.Feedback(self.folder.name, "0.2.7", "15.7", url="http://127.0.0.1:9/none", crash_folder=self.folder.name, now=lambda: self.clock[0])
+        for gone in ("pending", "asking", "said"):
+            self.assertNotIn(gone, again.state)
 
     def test_off_stops_everything_and_forgets_what_waited(self):
-        self.agree()
         self.tako.count("turn", 3.0)
         self.tako.heard("Safari", "帮我填一下报销单")
-        self.tako.state["pending"] = ["想填报销系统"]
         self.tako.choose(False)
-        self.assertEqual((self.tako.state["counts"], self.tako.words, self.tako.state["pending"]), ({}, [], []))
+        self.assertEqual((self.tako.state["counts"], self.tako.words), ({}, []))
         self.tako.count("turn", 3.0)
         self.tako.heard("Safari", "不对")
         self.assertFalse(self.tako.extract_due())
         self.assertFalse(self.tako.stats_due())
 
     def test_stats_carry_no_identifier_and_no_words(self):
-        self.agree()
         self.tako.heard("Safari", "帮王总把合同金额改成 38 万")
         self.tako.count("turn", 3.0)
         self.tako.count("tool.fill_input")
@@ -167,7 +168,6 @@ class FeedbackLeavesOnlyFixedShapes(unittest.TestCase):
         self.assertTrue(receiver.valid(packet))
 
     def test_a_day_goes_by_between_sends_and_only_what_went_out_is_forgotten(self):
-        self.agree()
         self.tako.count("turn", 3.0)
         self.assertTrue(self.tako.stats_due())
         packet = self.tako.stats_packet()
@@ -180,7 +180,6 @@ class FeedbackLeavesOnlyFixedShapes(unittest.TestCase):
         self.assertTrue(self.tako.stats_due())
 
     def test_an_error_keeps_its_type_and_place_not_its_message(self):
-        self.agree()
         try:
             raise ValueError("王总的合同 /Users/" "alex/报价.xlsx 打不开")
         except ValueError as exc:
@@ -192,7 +191,6 @@ class FeedbackLeavesOnlyFixedShapes(unittest.TestCase):
         self.assertTrue(receiver.NAME.fullmatch(key), key)
 
     def test_a_crash_report_gives_up_only_exception_and_own_frame(self):
-        self.agree()
         report = {"exception": {"type": "EXC_BAD_ACCESS"}, "faultingThread": 0, "usedImages": [{"name": "Tako"}, {"name": "libsystem"}],
                   "threads": [{"frames": [{"imageIndex": 1, "symbol": "strlen"}, {"imageIndex": 0, "symbol": "Controller.fill"}]}],
                   "procPath": "/Users/" "alex/客户/Tako.app", "crashReporterKey": "ABC"}
@@ -202,21 +200,18 @@ class FeedbackLeavesOnlyFixedShapes(unittest.TestCase):
         self.assertEqual(self.tako.state["errors"], {"crash:EXC_BAD_ACCESS|Controller.fill": 1})
 
     def test_only_the_vocabulary_survives_as_tags(self):
-        tags, _ = fb.parse_extract('{"tags":[{"app":"办公系统","task":"填表单","result":"没做到"},{"app":"圣诞项目","task":"填表单","result":"完成"},{"app":"网页","task":"给王总发","result":"完成"}]}')
-        self.assertEqual(tags, ["办公系统|填表单|没做到"])
-        self.assertEqual(fb.parse_extract("我不是 JSON"), ([], []))
-        self.assertEqual(fb.parse_extract('["数组"]'), ([], []))
+        tags = fb.parse_extract(json.dumps({"tags": [{"app": "办公系统", "task": "填表单", "result": "没做到"}, {"app": "圣诞项目", "task": "填表单", "result": "完成"}],
+                                            "wants": ["跨软件搬内容", "想给王总做报价"], "stuck": ["太慢", "卡在 Acme 的系统"], "needs": ["想把发票填进报销系统"]}, ensure_ascii=False))
+        self.assertEqual(tags, ["办公系统|填表单|没做到", "想要|跨软件搬内容", "卡在|太慢"])
+        self.assertEqual(fb.parse_extract("我不是 JSON"), [])
+        self.assertEqual(fb.parse_extract('["数组"]'), [])
+        self.assertEqual(fb.parse_extract('{"wants": "太慢", "stuck": [1, null]}'), [])
 
-    def test_a_sentence_that_cant_be_proved_abstract_is_dropped(self):
-        said = ["帮我把这张发票填进报销系统，下拉框总是选不上"]
-        self.assertEqual(fb.safe_need("想把票据录入内部系统，卡在选项控件", said), "想把票据录入内部系统，卡在选项控件")
-        for line in ("把发票填进报销系统，下拉框总是选不上", "想给 Acme 公司做报价", "想改第 3 页的金额", "想把三十万元填进去", "想看《年度方案》",
-                     "想发到 a@b.cn", "帮王总填表", "x" * 61):
-            self.assertIsNone(fb.safe_need(line, said, ("王总",)), line)
-        self.assertEqual(fb.safe_need("想把 Excel 汇总成 PPT"), "想把 Excel 汇总成 PPT")
+    def test_every_word_it_can_send_is_fit_for_the_receiver(self):
+        for word in (*fb.WANTS, *fb.STUCK):
+            self.assertTrue(receiver.NAME.fullmatch(f"想要|{word}"), word)
 
-    def test_ordinary_use_waits_and_trouble_does_not(self):
-        self.agree()
+    def test_a_look_at_most_once_a_day(self):
         self.tako.state["last_extract"] = self.clock[0]
         for words in ("帮我填表", "再填一个", "看下这个", "总结一下"):
             self.tako.heard("Safari", words)
@@ -226,60 +221,31 @@ class FeedbackLeavesOnlyFixedShapes(unittest.TestCase):
         self.assertTrue(self.tako.extract_due())
         self.tako.take_words()
         self.assertFalse(self.tako.words)
-        self.assertFalse(self.tako.extract_due())
-        self.clock[0] += 3600
         self.tako.heard("Safari", "这个不好用")
-        self.assertTrue(self.tako.extract_due())
+        self.assertFalse(self.tako.extract_due())
+        self.clock[0] += fb.DAY
+        self.assertTrue(self.tako.extract_due())  # something went wrong: no need for a batch
 
     def test_extraction_reads_only_the_owners_words(self):
-        self.agree()
         self.tako.heard("Mail", "帮我回一下")
-        text, said, trouble = self.tako.take_words()
-        self.assertEqual((text, said, trouble), ("[Mail] 帮我回一下", ["帮我回一下"], False))
+        self.assertEqual(self.tako.take_words(), "[Mail] 帮我回一下")
         body = SERVER[SERVER.index("    async def turn("):SERVER.index("    async def _glance(")]
         self.assertIn('self.feedback.heard((window or {}).get("app"), "", failed=True)', body)
         self.assertEqual(SERVER.count("self.feedback.heard("), 2)
         self.assertIn('self.feedback.heard((self.window or {}).get("app"), text)', SERVER[SERVER.index("    def ask(self, text"):SERVER.index("def serve(companion")])
 
     def test_extraction_runs_where_nothing_can_act(self):
-        body = SERVER[SERVER.index("async def _extract_feedback"):SERVER.index("def _private_names")]
-        self.assertIn('self._reader(fb.EXTRACT_PROMPT, text, effort="low", kind="feedback")', body)
+        body = SERVER[SERVER.index("async def _extract_feedback"):SERVER.index("async def feedback_forever")]
+        self.assertIn('self._reader(fb.EXTRACT_PROMPT, self.feedback.take_words(), effort="low", kind="feedback")', body)
         reader_body = SERVER[SERVER.index("    async def _reader("):SERVER.index("    async def _ask_reader(")]
         self.assertIn("config=READER_CONFIG", reader_body)
 
-    def test_a_question_is_rare_and_a_tap_decides(self):
-        self.agree()
-        said = ["帮我填表"]
-        answer = '{"tags":[],"needs":["想批量录入内部系统"]}'
-        self.tako.take_extract(answer, said, True)
-        asking = self.tako.panel()["asking"]
-        self.assertEqual(asking["lines"], ["想批量录入内部系统"])
-        self.assertEqual(self.tako.answer("wrong", True), [])
-        self.assertEqual(self.tako.answer(asking["id"], True), ["想批量录入内部系统"])
-        self.assertIsNone(self.tako.panel()["asking"])
-        # the same sentence is never asked again, and another waits its turn
-        self.tako.take_extract(answer, said, True)
-        self.assertEqual(self.tako.state["pending"], [])
-        self.tako.take_extract('{"needs":["想核对两份清单"]}', said, True)
-        self.assertIsNone(self.tako.panel()["asking"])
-        self.clock[0] += fb.DAY
-        self.tako.take_extract('{"needs":["想整理会议待办"]}', said, False)
-        self.assertIsNone(self.tako.panel()["asking"])  # no trouble: a week
-        self.clock[0] += 6 * fb.DAY
-        self.tako.take_extract('{"needs":["想合并通讯清单"]}', said, False)
-        self.assertEqual(len(self.tako.panel()["asking"]["lines"]), 3)
-
-    def test_no_tap_means_not_sent(self):
-        self.agree()
-        self.tako.take_extract('{"needs":["想批量录入内部系统"]}', ["帮我填表"], True)
-        asking = self.tako.panel()["asking"]
-        self.assertEqual(self.tako.answer(asking["id"], False), [])
-        self.tako.take_extract('{"needs":["想核对两份清单"]}', ["帮我填表"], True)
-        self.clock[0] += fb.DAY
-        self.tako.take_extract('{"needs":["想核对三份清单"]}', ["帮我填表"], True)
-        self.clock[0] += fb.DAY + 1
-        self.assertIsNone(self.tako.panel()["asking"])
-        self.assertFalse(self.sent)
+    def test_it_never_interrupts_and_words_leave_only_by_asking(self):
+        self.assertEqual(SERVER.count("say_packet("), 1)
+        self.assertNotIn("/feedback/answer", SERVER)
+        page = (HERE / "side.html").read_text()
+        for gone in ("/feedback/answer", "这个可以告诉作者吗", "知道了', () => choose"):
+            self.assertNotIn(gone, page)
 
     def test_nothing_is_sent_before_the_card_says_yes(self):
         body = SERVER[SERVER.index("async def _report_feedback"):SERVER.index("async def _tell_workbench")]

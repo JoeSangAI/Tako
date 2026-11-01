@@ -544,7 +544,7 @@ empty.className = 'empty'; empty.textContent = '告诉 Tako 你想做什么。';
 $('log').append(empty);
 
 // ---- setting up, and new versions: the only things Tako ever shows on its own behalf ----
-let setup = null, update = null, feedback = null, feedbackSettings = false, noticeKey = '', noticeUp = false;
+let setup = null, update = null, noticeKey = '', noticeUp = false;
 const SETUP_WORDS = {
   install: ['还差一步：装上 Codex', 'Tako 的大脑是 OpenAI 的 Codex，用你自己的 ChatGPT 账号。', '安装 Codex', '正在安装 Codex，大约一分钟…'],
   login: ['还差一步：登录 ChatGPT', '浏览器会打开登录页，登录后回到这里就能用了。', '登录', '在浏览器里登录，登录好这里会自动继续…'],
@@ -553,12 +553,11 @@ function noticeLine(cls, text) { const el = document.createElement('div'); el.cl
 function showNotice() {
   const box = $('notice');
   const pending = setup && setup.step !== 'ready';
-  const telling = !pending && !update && feedback && feedback.can && (feedback.consent === null || feedback.asking || feedbackSettings);
-  const key = JSON.stringify([pending ? setup : null, update, busy, telling ? [feedback, feedbackSettings] : null]);
+  const key = JSON.stringify([pending ? setup : null, update, busy]);
   if (key === noticeKey) return;
   noticeKey = key;
   box.replaceChildren();
-  const up = !!(pending || update || telling);
+  const up = !!(pending || update);
   box.classList.toggle('show', up);
   if (up !== noticeUp) { noticeUp = up; tellCards(); }
   const actions = document.createElement('div');
@@ -568,28 +567,6 @@ function showNotice() {
     box.append(noticeLine('title', words[0]), noticeLine('body', setup.busy ? words[3] : words[1]));
     if (setup.error) box.append(noticeLine('why', setup.error));
     if (!setup.busy) { actions.append(button(words[2], () => api('/setup/next', {}).then(setSetup), true)); box.append(actions); }
-    return;
-  }
-  if (telling) {
-    const choose = (on) => { feedbackSettings = false; api('/feedback/choose', { on }).then(setFeedback); };
-    const what = '也会从你说的话里归纳任务类型（比如“办公系统｜填表单｜没做到”）。不含原话、窗口内容和文件。';
-    if (feedbackSettings) {
-      const on = feedback.consent === 'on';
-      box.append(noticeLine('title', `匿名回传错误和使用统计：${on ? '开着' : '关着'}`), noticeLine('body', what));
-      actions.append(button(on ? '关掉' : '打开', () => choose(!on)));
-      actions.append(button('好', () => { feedbackSettings = false; showNotice(); }, true));
-    } else if (feedback.consent === null) {
-      box.append(noticeLine('title', '测试版会回传匿名的错误和使用统计'), noticeLine('body', what));
-      actions.append(button('关掉', () => choose(false)));
-      actions.append(button('知道了', () => choose(true), true));
-    } else {
-      const answer = (send) => api('/feedback/answer', { id: feedback.asking.id, send }).then(setFeedback);
-      box.append(noticeLine('title', '这个可以告诉作者吗？'));
-      feedback.asking.lines.forEach((line) => box.append(noticeLine('body', line)));
-      actions.append(button('不发', () => answer(false)));
-      actions.append(button('发送', () => answer(true), true));
-    }
-    box.append(actions);
     return;
   }
   if (!update) return;
@@ -629,13 +606,13 @@ function showNotice() {
 }
 function setSetup(next) { setup = next; showNotice(); }
 window.setUpdate = (next) => { update = next; showNotice(); };
-function setFeedback(next) { feedback = next; showNotice(); }
-window.feedbackSettings = () => { window.setOpen(true); feedbackSettings = true; api('/feedback').then(setFeedback); };
-async function checkFeedback() {
-  try { setFeedback(await api('/feedback')); } catch {}
-  setTimeout(checkFeedback, 60000);
+window.setStatistics = (on) => api('/feedback/choose', { on });
+async function checkStatistics() {
+  try {
+    const seen = await api('/feedback');
+    if (seen.can) native?.postMessage({ statistics: seen.on });
+  } catch { setTimeout(checkStatistics, 5000); }
 }
-window.startFeedback = () => { window.setOpen(true); $('say').value = '我想反馈：'; grow(); updateSend(); $('say').focus(); };
 async function checkSetup() {
   try { setSetup(await api('/setup')); } catch {}
   setTimeout(checkSetup, setup && setup.step === 'ready' ? 60000 : 2000);
@@ -647,7 +624,7 @@ async function tick() {
 }
 tick();
 checkSetup();
-checkFeedback();
+checkStatistics();
 
 // ---- what the owner says ----
 let attachments = [];

@@ -1397,8 +1397,12 @@ final class Controller: NSObject, NSApplicationDelegate, WKScriptMessageHandler,
     }
 
     @objc func checkForUpdate() { updater.showOrCheck() }
-    @objc func startFeedback() { web.evaluateJavaScript("startFeedback()") }
-    @objc func feedbackSettings() { web.evaluateJavaScript("feedbackSettings()") }
+    var statistics: Bool?   // nil where there is nothing to switch: a development build
+    @objc func toggleStatistics() {
+        let on = !(statistics ?? true)
+        statistics = on
+        web.evaluateJavaScript("setStatistics(\(on))")
+    }
 
     func applicationDidFinishLaunching(_ note: Notification) {
         lastApp = NSWorkspace.shared.frontmostApplication
@@ -1856,6 +1860,7 @@ final class Controller: NSObject, NSApplicationDelegate, WKScriptMessageHandler,
         if let path = body["openFile"] as? String { openFile(path) }
         if body["pickFiles"] != nil { pickFiles() }
         if let action = body["update"] as? String { updater.act(action) }
+        if let value = body["statistics"] as? Bool { statistics = value }
         if let path = body["revealFile"] as? String { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
         if let link = body["openURL"] as? String, let target = URL(string: link), ["http", "https"].contains(target.scheme ?? "") { NSWorkspace.shared.open(target) }
         if let value = body["pop"] as? Double { goo.pop = CGFloat(value); goo.kick(CGFloat(value) * 90) }
@@ -2004,12 +2009,12 @@ final class Controller: NSObject, NSApplicationDelegate, WKScriptMessageHandler,
         shortcut.isEnabled = false
         menu.addItem(shortcut)
         menu.addItem(.separator())
-        let feedback = NSMenuItem(title: "告诉作者哪里不好用…", action: #selector(startFeedback), keyEquivalent: "")
-        feedback.target = self
-        menu.addItem(feedback)
-        let statistics = NSMenuItem(title: "匿名统计…", action: #selector(feedbackSettings), keyEquivalent: "")
-        statistics.target = self
-        menu.addItem(statistics)
+        if let statistics {
+            let item = NSMenuItem(title: "匿名统计", action: #selector(toggleStatistics), keyEquivalent: "")
+            item.target = self
+            item.state = statistics ? .on : .off
+            menu.addItem(item)
+        }
         let version = NSMenuItem(title: "Tako \(Updater.current)", action: nil, keyEquivalent: "")
         version.isEnabled = false
         menu.addItem(version)

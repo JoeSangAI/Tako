@@ -1047,14 +1047,13 @@ class Companion:
                     self._later(self._extract_feedback())
 
     async def _extract_feedback(self):
-        """Only the owner's own panel words, on a throwaway thread with no tools. What comes back is checked against fixed shapes before it is kept."""
-        text, said, trouble = self.feedback.take_words()
+        """Only the owner's own panel words, on a throwaway thread with no tools. Only the fixed words in what comes back are kept."""
         try:
-            answer = await self._reader(fb.EXTRACT_PROMPT, text, effort="low", kind="feedback")
+            answer = await self._reader(fb.EXTRACT_PROMPT, self.feedback.take_words(), effort="low", kind="feedback")
         except Exception as exc:
             self.feedback.error("extract", exc)
             return
-        self.feedback.take_extract(answer, said, trouble, self._private_names())
+        self.feedback.take_extract(answer)
 
     def _private_names(self):
         return (OWNER, *(CONFIG.get("calls") or []), (self.chat or {}).get("name"), (self.window or {}).get("title"))
@@ -1070,11 +1069,6 @@ class Companion:
                     await asyncio.to_thread(self.feedback.send, packet)
                     self.feedback.sent_stats(packet)
             await asyncio.sleep(3600)
-
-    async def _send_lines(self, lines):
-        for line in lines:
-            with contextlib.suppress(OSError, ValueError):
-                await asyncio.to_thread(self.feedback.send, self.feedback.say_packet("need", line))
 
     async def _glance(self, instruction, events):
         """A turn someone else's message started: a throwaway thread with no tools, so nothing in it can act or carry over."""
@@ -1824,11 +1818,6 @@ def serve(companion, token, port):
                 return self.reply({"ok": True})
             if url.path == "/feedback/choose":
                 companion.feedback.choose(bool(body.get("on")))
-                return self.reply(companion.feedback.panel())
-            if url.path == "/feedback/answer":
-                lines = companion.feedback.answer(str(body.get("id") or ""), body.get("send") is True)
-                if lines:
-                    companion.submit(companion._send_lines(lines))
                 return self.reply(companion.feedback.panel())
             if url.path == "/setup/next":
                 companion.setup.next_step()
