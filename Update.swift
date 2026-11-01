@@ -50,7 +50,10 @@ final class Updater: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func check(quietly: Bool) {
-        var request = URLRequest(url: Updater.feed, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
+        // GitHub caches the "latest" redirect for minutes; a fresh query string asks past it.
+        var parts = URLComponents(url: Updater.feed, resolvingAgainstBaseURL: false)
+        parts?.queryItems = [URLQueryItem(name: "t", value: "\(Int(Date().timeIntervalSince1970))")]
+        var request = URLRequest(url: parts?.url ?? Updater.feed, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
         request.setValue("Tako/\(Updater.current)", forHTTPHeaderField: "User-Agent")
         URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
             DispatchQueue.main.async { self?.heard(data, ok: (response as? HTTPURLResponse)?.statusCode == 200, quietly: quietly) }
@@ -144,16 +147,19 @@ final class Updater: NSObject, UNUserNotificationCenterDelegate {
     /// The sections of the bundled CHANGELOG.md newer than the version it came from.
     static func changes(since version: String) -> String {
         guard let url = Bundle.main.url(forResource: "CHANGELOG", withExtension: "md"), let text = try? String(contentsOf: url, encoding: .utf8) else { return "" }
-        var kept: [String] = [], keeping = false
+        var sections: [(name: String, lines: [String])] = [], keeping = false
         for line in text.components(separatedBy: "\n") {
             if line.hasPrefix("## ") {
                 let name = line.dropFirst(3).split(separator: " ").first.map(String.init) ?? ""
                 keeping = isNewer(name, than: version)
-                if keeping { kept.append("### \(name)"); continue }
+                if keeping { sections.append((name, [])) }
+            } else if keeping {
+                sections[sections.count - 1].lines.append(line)
             }
-            if keeping { kept.append(line) }
         }
-        return kept.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        // The card already names the version; only several in a row need their own headings.
+        return sections.map { (sections.count > 1 ? "### \($0.name)\n" : "") + $0.lines.joined(separator: "\n") }
+            .joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // ---- what the panel asked for ----
@@ -246,6 +252,7 @@ final class Updater: NSObject, UNUserNotificationCenterDelegate {
           if ! mv "$new" "$old"; then mv "$keep" "$old"; fi
         fi
         open "$old"
+        rm -rf "$(dirname "$0")"
         """
         let file = folder.appendingPathComponent("swap.sh")
         guard (try? script.write(to: file, atomically: true, encoding: .utf8)) != nil,

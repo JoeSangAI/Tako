@@ -83,7 +83,7 @@ curl -fsSL https://raw.githubusercontent.com/JoeSangAI/Tako/main/install.sh | ba
 
 有新版本时，你会收到一条系统通知，Dock 图标上有角标。打开面板能看到新版本多了什么，按“更新并重启”就换好了，权限和设置都不用重来。也可以右键小章鱼选“检查更新”。
 
-<!-- update-shot -->
+<p align="center"><img src="docs/assets/update.png" width="370" alt="实拍：面板顶部的卡片写着 Tako 0.2.1 可以更新了，下面是更新日志和“稍后”“更新并重启”两个按钮"></p>
 
 Tako 每 6 小时向 GitHub 问一次有没有新版本，只取一个版本文件，不发送你的任何信息。新版本的签名必须和你正在用的版本一致，否则不会安装。
 
