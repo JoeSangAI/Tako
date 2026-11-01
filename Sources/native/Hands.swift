@@ -182,14 +182,6 @@ extension Controller {
     func run(_ command: [String: Any]) async -> [String: Any] {
         let name = command["command"] as? String
         if name == "windows" { return listWindows() }
-        if name == "mood" {  // for scripted checks of its faces
-            switch command["mood"] as? String {
-            case "done": goo.celebrate()
-            case "oops": goo.fumble()
-            default: goo.state = command["mood"] as? String ?? "idle"
-            }
-            return ["ok": true]
-        }
         if name == "endSteps" { endSteps(); return ["ok": true] }
         if name == "listenStop" { stopListening(); return ["ok": true] }
         if name == "closeDocument" { return await closeDocument(command["document"] as? String ?? "") }
@@ -417,7 +409,7 @@ extension Controller {
         // Whichever window has it, whatever window the goo is on.
         guard let win = openWindows().first(where: { $0.title.contains(name) || name.hasPrefix($0.title + ".") }) else {
             // Held open with no window showing it: a tab at the back, or another app. Replacing it now would lose to its next save.
-            if let holder = holderOf(path) { return ["ok": false, "error": "\(holder) 还开着 \(name)，先切到那个标签或关掉它，原文件没动"] }
+            if let holder = await Task.detached(operation: { Controller.holderOf(path) }).value { return ["ok": false, "error": "\(holder) 还开着 \(name)，先切到那个标签或关掉它，原文件没动"] }
             return ["ok": true]
         }
         let app = NSRunningApplication(processIdentifier: win.pid)?.bundleURL?.path
@@ -433,8 +425,8 @@ extension Controller {
         return ["ok": false, "error": "\(name) 没能关上，可能在等你确认保存，原文件没动"]
     }
 
-    /// The app holding a file open, if any.
-    func holderOf(_ path: String) -> String? {
+    /// The app holding a file open, if any. lsof can take seconds, so never on the main thread.
+    nonisolated static func holderOf(_ path: String) -> String? {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
         task.arguments = ["-F", "c", "--", path]

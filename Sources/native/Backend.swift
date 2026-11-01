@@ -1,8 +1,10 @@
 import AppKit
 
 /// Everything Tako writes while running: logs, handed-over files, backups, the note about a moved window.
+/// TAKO_HOME means an isolated run, for tests: the Python side sees it too, and then nothing leaves this Mac. The real app never sets it.
 let takoHome: URL = {
-    let home = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Tako")
+    let home = ProcessInfo.processInfo.environment["TAKO_HOME"].map { URL(fileURLWithPath: $0) }
+        ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Tako")
     try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     return home
 }()
@@ -36,7 +38,6 @@ final class Backend {
         task.arguments = ["-lc", "exec \"$0\" \"$@\"", Backend.python, script.path, "--with-app"] + arguments
         var environment = ProcessInfo.processInfo.environment
         environment["PYTHONDONTWRITEBYTECODE"] = "1"  // A .pyc written inside the app would break its signature.
-        environment["TAKO_HOME"] = takoHome.path
         task.environment = environment
         let output = Pipe(), input = Pipe()
         task.standardOutput = output

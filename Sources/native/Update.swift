@@ -71,7 +71,7 @@ final class Updater: NSObject, UNUserNotificationCenterDelegate {
               let version = found["version"] as? String, let zipText = found["zip"] as? String, let zip = URL(string: zipText),
               Updater.allowed(zip), let sha = found["sha256"] as? String else {
             // A check that fails says nothing unless someone asked; the next one is hours away anyway.
-            if !quietly { show(["state": "available", "version": Updater.current, "notes": "", "error": "现在连不上更新服务器，稍后再试。"]); openPanel() }
+            if !quietly { show(["state": "unreachable", "version": Updater.current]); openPanel() }
             return
         }
         guard Updater.isNewer(version, than: Updater.current) else {

@@ -1,0 +1,198 @@
+"""Tako beside whichever window it is stuck to. It may fill an input or change a document
+when the owner asks; it never sends a message.
+
+History lives in memory only. What arrives by itself (a new WeChat message) runs read-only and
+cannot touch anything; the owner's own words run with a narrow writable folder and approval cards.
+Every window shares one Codex thread: one brain, a limb on each window.
+The app itself is driven through the native side (`/native/next`), the only process with the permissions.
+
+This file holds what they share and starts it all. The work is in chats.py, turns.py, hands.py and lecture.py.
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import contextlib
+import os
+import platform
+import queue
+import secrets
+import shutil
+import sys
+import threading
+import time
+from pathlib import Path
+from urllib.parse import unquote
+
+import feedback as fb
+import greetings as greet
+import wechat_reader as reader
+from chats import Chats
+from codex_runtime import CodexRuntime, RuntimeErrorCode
+from first_run import Setup, codex_on_path, find_codex
+from hands import Hands
+from lecture import Lectures
+from routes import serve
+from settings import HAS_WECHAT, HAS_WORKBENCH, INBOX, RUNTIME, app_version, clock
+from turns import Turns
+
+
+class Companion(Chats, Turns, Hands, Lectures):
+    def __init__(self, chat):
+        self.loop = None
+        self.runtime = CodexRuntime(find_codex() or "codex", on_request=self.on_server_request)
+        self.reviving = asyncio.Lock()
+        self.brain_lost = False  # the thread went away with things said on it: the next turn gets them back as memory
+        self.setup = Setup(self)
+        self.turns = asyncio.Lock()
+        self.feedback = fb.Feedback(RUNTIME, app_version(), platform.mac_ver()[0])
+        self.greetings = greet.Greetings(RUNTIME)
+        self.events = []
+        self.status = "idle"
+        self.error = ""
+        self.chat = chat
+        self.thread = None
+        self.last_id = 0
+        self.unsent = []
+        self.signature = None
+        self.polled_at = 0.0
+        self.generation = 0
+        self.watching = True  # peeled off the window, it stops reading altogether
+        self.missed = False
+        self.saved = {}        # conversations already visited, so returning to one keeps its thread
+        self.offered = set()   # files the owner dragged or picked, which the panel may preview before they send them
+        self.last_header = ""
+        self.wanted_titles = None
+        self.following = False
+        self.index = None
+        self.window = None     # the window it is stuck to: app, bundle, title, id
+        self.origin = "owner"    # who started the running turn; only the owner's words may touch anything
+        self.changing = {}     # file changes under way: item id -> paths, so a card can say what would change
+        self.said = []         # (message identity, the owner's words), newest last; memory only, across all windows
+        self.lecture = None    # the class it is listening to: title, what it heard, notes. Memory only until it ends.
+        self.ending_lecture = None  # just stopped, with its last piece of sound still on the way
+        self.note_loop = None
+        self.ear = None        # the process that turns sound into words, only while listening
+        self.ear_lock = asyncio.Lock()
+        self.transcribing = set()
+        self.call_waiting = None  # when the model last announced a tool call that has not reached us yet
+        self.tools_running = 0
+        self.stopping = False
+        self.running = None    # (thread, turn) of the running turn
+        self.partial = ""
+        self.steps = []
+        self.live_events = None
+        self.pending = {}      # cards waiting for the owner: approvals and proposed changes
+        self.outbox = queue.Queue()  # commands for the native side
+        self.waiting = {}      # native commands waiting for their result
+        self.history = []      # this chat's recent messages, which a reader always sees; unsent empties when the brain has read them
+        self.mark = None       # what the session list last said about this chat
+        self.shard_signature = None
+        self.read_at = 0.0
+        self.desk = None       # today's items in a few words, refreshed in the background
+        self.told = {}         # what the brain thread has already been given, so it isn't sent again
+        self.drafts = {}       # chat -> the draft the owner last saw there and what they then sent; memory only
+        self.nudged = {}       # chat -> newest message when they last opened it, so one state is judged once
+        self.learning = asyncio.Lock()
+        self.compacted = (None, 0)  # thread, and its size when it was last summarized
+        self.first_text = None
+        self.usage = None
+        self.tasks = set()
+
+    def _later(self, work):
+        task = asyncio.create_task(work)
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
+
+    # ---- state shown to the panel ----
+    def add(self, role, text, events=None, **extra):
+        events = self.events if events is None else events
+        events.append({"id": len(events), "role": role, "text": text, "time": clock(time.time()), **extra})
+
+    def snapshot(self, after=0):
+        live = self.live_events is self.events
+        # A turn started by an incoming message may still decide to say nothing, so it stays quiet until it is done.
+        partial = self.partial if live and self.origin == "owner" else ""
+        return {"chat": self.chat and self.chat["name"], "status": self.status, "error": self.error,
+                "polled_at": self.polled_at, "gen": self.generation, "events": self.events[after:],
+                "kind": self.chat.get("kind", "wechat") if self.chat else "", "app": (self.window or {}).get("app", ""),
+                "greeting": (self.chat or {}).get("greeting", ""),
+                "bundle": (self.window or {}).get("bundle", ""),
+                "partial": partial, "steps": self.steps if live else [], "busy": self.status == "thinking" or self.status == "working",
+                "pending": [{k: v for k, v in card.items() if k != "future"} for card in list(self.pending.values())],
+                "listening": int(time.time() - self.lecture["started"]) if self.lecture else None}
+
+    def shared(self, path):
+        """A file the panel may show: it came from the owner, or the conversation itself names it."""
+        if path in self.offered or os.path.realpath(path).startswith(os.path.realpath(INBOX) + "/"):
+            return True
+        groups = [self.events, *(s["events"] for s in self.saved.values())]
+        return any(path in event["text"] or path in unquote(event["text"]) for group in groups for event in group)
+
+    # ---- called from HTTP threads ----
+    def submit(self, coro):
+        return asyncio.run_coroutine_threadsafe(coro, self.loop)
+
+    def ask(self, text, files=()):
+        # On the loop, in the order things arrived: a sentence right after sticking to a window belongs to that window.
+        self.submit(self._ask(text, list(files)))
+
+    async def _ask(self, text, files):
+        reply = None if files else greet.secret(text)
+        if reply:
+            self.add("owner", text)
+            self.add("tako", reply)
+            return
+        names = "".join(f"\n[{Path(f).name}](</{f.lstrip('/')}>)" for f in files)
+        self.add("owner", text + names)
+        self.said = [*self.said, (secrets.token_hex(8), text)][-50:]
+        self.feedback.heard((self.window or {}).get("app"), text)
+        await self.turn(text, attachments=files, where=(self.chat, self.events, self.window))
+
+
+async def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--chat", default="", help="聊天名称的一部分")
+    parser.add_argument("--port", type=int, default=0)
+    parser.add_argument("--replay", type=int, default=0, help="把最后 N 条当作新消息，用于验证")
+    parser.add_argument("--with-app", action="store_true", help="跟着 app 走：标准输入一关就退出")
+    args = parser.parse_args()
+    if args.with_app:
+        def leave_with_app():
+            sys.stdin.buffer.read()
+            os._exit(0)
+        threading.Thread(target=leave_with_app, daemon=True).start()
+    RUNTIME.mkdir(parents=True, exist_ok=True)
+
+    companion = Companion(None)
+    companion.loop = asyncio.get_running_loop()
+    # Pasted images and whatever else was handed over last time do not outlive the app.
+    shutil.rmtree(INBOX, ignore_errors=True)
+    with contextlib.suppress(OSError, RuntimeErrorCode):  # Not fatal: the next question tries again and says what is wrong.
+        if find_codex():
+            codex_on_path(find_codex())
+            await companion.runtime.start()
+    companion._later(companion.warm())
+    companion._later(companion.feedback_forever())
+    if HAS_WORKBENCH:
+        companion._later(companion.desk_forever())
+    token = secrets.token_urlsafe(18)
+    port = serve(companion, token, args.port)
+    print(f"http://127.0.0.1:{port}/?t={token}", flush=True)
+
+    if args.chat and HAS_WECHAT:
+        candidates = []
+        for chat in reader.find_chats(args.chat):
+            rows = await asyncio.to_thread(companion._read, chat, 0, 1)
+            if rows:
+                candidates.append((rows[-1]["time"], chat))
+        if not candidates:
+            companion.error = "没有找到可读的对话"
+        else:
+            # Same-named groups exist; the most recently active one is the live conversation.
+            await companion.attach(max(candidates, key=lambda c: c[0])[1], args.replay)
+    await companion.poll_forever()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

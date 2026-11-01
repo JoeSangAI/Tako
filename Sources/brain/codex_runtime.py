@@ -1,7 +1,7 @@
-"""Local Codex app-server transport. Codex owns reasoning and native tools; the app owns durable chat history.
+"""The connection to the local Codex app-server: JSON lines over stdio.
 
 No credential files are read, no provider fallback is selected, and reconnecting
-never replays turns. Callers route approval requests to the appropriate task.
+never replays turns. What the server asks of us goes to `on_request`.
 """
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import asyncio
 import contextlib
 import json
 from collections import defaultdict, deque
-from typing import Any, Awaitable, Callable
+from typing import Awaitable, Callable
 
 
 class RuntimeErrorCode(Exception):
@@ -19,12 +19,9 @@ class RuntimeErrorCode(Exception):
 
 
 class CodexRuntime:
-    def __init__(self, executable: str = "codex", *,
-                 on_request: Callable[[str, dict], Awaitable[dict]] | None = None,
-                 experimental_api: bool = True):
+    def __init__(self, executable: str = "codex", *, on_request: Callable[[str, dict], Awaitable[dict]] | None = None):
         self.executable = executable
         self.on_request = on_request
-        self.experimental_api = experimental_api
         self.process = None
         self._next_id = 0
         self._pending: dict[int, asyncio.Future] = {}
@@ -50,10 +47,8 @@ class CodexRuntime:
         self._reader = asyncio.create_task(self._read())
         self._stderr = asyncio.create_task(self._drain_stderr())
         try:
-            params = {"clientInfo": {"name": "tako", "title": "TAKO", "version": "0.1.0"}}
-            if self.experimental_api:
-                params["capabilities"] = {"experimentalApi": True}
-            result = await self.request("initialize", params)
+            # Dynamic tools still count as experimental in the server.
+            result = await self.request("initialize", {"clientInfo": {"name": "tako", "title": "Tako", "version": "0.1.0"}, "capabilities": {"experimentalApi": True}})
             await self._send({"method": "initialized", "params": {}})
             return result
         except BaseException:
@@ -180,12 +175,11 @@ class CodexRuntime:
                 return self._events[thread_id].popleft()
         return await asyncio.wait_for(take(), timeout)
 
-    async def start_thread(self, cwd: str, *, ephemeral: bool = True,
-                           sandbox: str = "read-only", approval_policy: str = "on-request",
+    async def start_thread(self, cwd: str, *, sandbox: str = "read-only", approval_policy: str = "on-request",
                            dynamic_tools: list[dict] | None = None,
                            developer_instructions: str | None = None,
                            model: str | None = None, effort: str | None = None, config: dict | None = None):
-        # Explicit per-purpose defaults apply only to new threads; existing turns retain their settings.
+        # Nothing outlives the app: threads are never written to Codex's history.
         params = {"cwd": cwd, "approvalPolicy": approval_policy,
                   "sandbox": sandbox, "ephemeral": True,
                   "config": {"features.multi_agent": False, "features.multi_agent_v2": False, **(config or {})}}
@@ -196,39 +190,33 @@ class CodexRuntime:
         if model is not None:
             params['config']['service_tier'] = 'default'
         if dynamic_tools:
-            if not self.experimental_api:
-                raise RuntimeErrorCode("dynamic_tools_require_experimental_api")
             params["dynamicTools"] = dynamic_tools
         if developer_instructions:
             params["developerInstructions"] = developer_instructions
         result = await self.request("thread/start", params)
         return result
 
-    async def start_turn(self, thread_id: str, text: str, *, output_schema: dict | None = None,
-                         execution_directory: str | None = None, full_access: bool = False,
+    async def start_turn(self, thread_id: str, text: str, *, execution_directory: str | None = None,
                          images: list[str] | None = None, approval_policy: str = "never", network: bool = True):
         if thread_id in self.uncertain_starts:
             raise RuntimeErrorCode("turn_start_requires_reconciliation")
         content = [{"type": "text", "text": text}] + [{"type": "localImage", "path": path} for path in images or []]
-        params = {"threadId": thread_id, "input": content,
-                  "approvalPolicy": approval_policy, "sandboxPolicy": {"type": "readOnly", "networkAccess": network and output_schema is None}}
-        if execution_directory and output_schema is None:
-            # Nobody can approve mid-meeting, so execution never asks. Work the
-            # user handed over runs with full access; work the listener started
-            # from meeting speech may only write its own output directory.
-            sandbox = {"type": "dangerFullAccess"} if full_access else {
-                "type": "workspaceWrite", "writableRoots": [execution_directory], "networkAccess": True}
-            params.update(cwd=execution_directory, approvalPolicy=approval_policy, sandboxPolicy=sandbox)
-        if output_schema:
-            params["outputSchema"] = output_schema
+        params = {"threadId": thread_id, "input": content, "approvalPolicy": approval_policy,
+                  "sandboxPolicy": {"type": "readOnly", "networkAccess": network}}
+        if execution_directory:
+            # With a folder of its own, a turn may write there and nowhere else without asking.
+            params.update(cwd=execution_directory, sandboxPolicy={"type": "workspaceWrite", "writableRoots": [execution_directory], "networkAccess": True})
         return await self.request("turn/start", params)
-
-    async def steer(self, thread_id: str, turn_id: str, text: str):
-        return await self.request("turn/steer", {"threadId": thread_id, "expectedTurnId": turn_id,
-            "input": [{"type": "text", "text": text}]})
 
     async def interrupt(self, thread_id: str, turn_id: str):
         return await self.request("turn/interrupt", {"threadId": thread_id, "turnId": turn_id})
+
+    async def let_go(self, thread_id: str):
+        """A throwaway thread is done: the server may unload it, and its events stop being kept."""
+        with contextlib.suppress(RuntimeErrorCode):
+            await self.request("thread/unsubscribe", {"threadId": thread_id})
+        self._events.pop(thread_id, None)
+        self._event_failures.pop(thread_id, None)
 
     async def close(self):
         if self.process is None:
@@ -250,10 +238,3 @@ class CodexRuntime:
         await asyncio.gather(*(t for t in [self._reader, self._stderr, *self._workers]
                                if t is not None), return_exceptions=True)
         self.closed = True
-
-    async def __aenter__(self):
-        await self.start()
-        return self
-
-    async def __aexit__(self, *_):
-        await self.close()

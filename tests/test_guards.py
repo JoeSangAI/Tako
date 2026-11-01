@@ -1,35 +1,40 @@
 """Guards that must hold whatever a model or a window says. Run: python3 tests/test_guards.py"""
-import ast
-import hashlib
+import atexit
 import importlib.util
 import json
+import os
 import pathlib
-import re
+import shutil
 import sqlite3
 import sys
 import tempfile
 import unittest
 
-HERE = pathlib.Path(__file__).resolve().parent.parent / "Sources"
-SERVER = (HERE / "tako_server.py").read_text()
-sys.path[:0] = [str(HERE), str(HERE.parent / "server")]
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+BRAIN = ROOT / "Sources/brain"
+NATIVE = ROOT / "Sources/native"
+# Everything below reads this owner, in a home of its own: the real one is never touched.
+_home = tempfile.mkdtemp(prefix="tako-test-")
+atexit.register(shutil.rmtree, _home, True)
+pathlib.Path(_home, "config.json").write_text(json.dumps({"name": "Alex"}))
+os.environ["TAKO_HOME"] = _home
+sys.path[:0] = [str(BRAIN), str(ROOT / "server")]
 import feedback as fb  # noqa: E402
-import greetings as greet  # noqa: E402
 import feedback_receiver as receiver  # noqa: E402
+import greetings as greet  # noqa: E402
+import guards  # noqa: E402
 
 
-SCRIPT_TOKENS = eval(next(ast.get_source_segment(SERVER, n.value) for n in ast.parse(SERVER).body
-                         if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "SCRIPT_TOKENS"))
+def source(name):
+    return (BRAIN / f"{name}.py").read_text()
 
 
-def load(name):
-    tree = ast.parse(SERVER)
-    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
-    scope = {"re": re, "hashlib": hashlib, "SCRIPTABLE": {"com.apple.iWork.Keynote": "Keynote"}, "SCRIPT_TOKENS": SCRIPT_TOKENS, "OWNER": "Alex"}
-    if name in ("unsafe_script", "risky_script"):
-        scope["script_code"] = load("script_code")
-    exec(compile(ast.Module([node], []), "tako_server.py", "exec"), scope)
-    return scope[name]
+def native(name):
+    return (NATIVE / f"{name}.swift").read_text()
+
+
+CHATS, TURNS, HANDS, LECTURE, PROMPTS, MAIN, ROUTES, KNOWLEDGE = map(source, ("chats", "turns", "hands", "lecture", "prompts", "tako_server", "routes", "knowledge"))
+EVERYTHING = "".join(source(path.stem) for path in sorted(BRAIN.glob("*.py")))
 
 
 class Greetings(unittest.TestCase):
@@ -37,7 +42,7 @@ class Greetings(unittest.TestCase):
         return greet.Greetings(tempfile.mkdtemp())
 
     def test_only_the_apps_name_goes_out(self):
-        body = SERVER[SERVER.index("async def _more_greetings"):SERVER.index("def _park")]
+        body = CHATS[CHATS.index("async def _more_greetings"):CHATS.index("def _park")]
         self.assertIn('greet.ask_for(app)', body)
         self.assertIn('kind="greeting"', body)
         for private in ("title", "events", "history", "TOOLS", "start_thread"):
@@ -83,7 +88,7 @@ class Greetings(unittest.TestCase):
 
 
 class ScriptGuard(unittest.TestCase):
-    unsafe = staticmethod(load("unsafe_script"))
+    unsafe = staticmethod(guards.unsafe_script)
 
     def test_only_its_own_app(self):
         self.assertIsNone(self.unsafe('tell application "Keynote" to get name of front document', "Keynote"))
@@ -109,7 +114,7 @@ class ScriptGuard(unittest.TestCase):
             self.assertIsNone(self.unsafe(script, "Keynote"), script)
 
     def test_irreversible_scripts_ask_first(self):
-        risky = staticmethod(load("risky_script")).__func__
+        risky = guards.risky_script
         for script in ('tell application "Keynote" to delete slide 1', 'tell application "Keynote" to close front document saving no',
                        'tell application "Keynote" to quit', 'tell application "Safari" to do JavaScript "x"'):
             self.assertIsNotNone(risky(script), script)
@@ -190,6 +195,18 @@ class FeedbackLeavesOnlyFixedShapes(unittest.TestCase):
         self.assertIn("ValueError", key)
         self.assertTrue(receiver.NAME.fullmatch(key), key)
 
+    def test_a_model_failure_counts_by_kind_without_its_words(self):
+        import turns
+        for info in ("usageLimitExceeded", {"httpConnectionFailed": {"httpStatusCode": 502}}, None):
+            try:
+                raise turns.TurnFailed({"message": "王总的额度 /Users/" "alex 用完了", "codexErrorInfo": info})
+            except turns.TurnFailed as exc:
+                self.tako.error("turn", exc)
+        for key in self.tako.state["errors"]:
+            self.assertNotIn("王总", key)
+            self.assertIn("TurnFailed", key)
+            self.assertTrue(receiver.NAME.fullmatch(key), key)
+
     def test_a_crash_report_gives_up_only_exception_and_own_frame(self):
         report = {"exception": {"type": "EXC_BAD_ACCESS"}, "faultingThread": 0, "usedImages": [{"name": "Tako"}, {"name": "libsystem"}],
                   "threads": [{"frames": [{"imageIndex": 1, "symbol": "strlen"}, {"imageIndex": 0, "symbol": "Controller.fill"}]}],
@@ -229,41 +246,47 @@ class FeedbackLeavesOnlyFixedShapes(unittest.TestCase):
     def test_extraction_reads_only_the_owners_words(self):
         self.tako.heard("Mail", "帮我回一下")
         self.assertEqual(self.tako.take_words(), "[Mail] 帮我回一下")
-        body = SERVER[SERVER.index("    async def turn("):SERVER.index("    async def _glance(")]
+        body = TURNS[TURNS.index("    async def turn("):TURNS.index("    async def _glance(")]
         self.assertIn('self.feedback.heard((window or {}).get("app"), "", failed=True)', body)
-        self.assertEqual(SERVER.count("self.feedback.heard("), 2)
-        self.assertIn('self.feedback.heard((self.window or {}).get("app"), text)', SERVER[SERVER.index("    def ask(self, text"):SERVER.index("def serve(companion")])
+        self.assertEqual(EVERYTHING.count("self.feedback.heard("), 2)
+        self.assertIn('self.feedback.heard((self.window or {}).get("app"), text)', MAIN[MAIN.index("    def ask(self, text"):MAIN.index("async def main(")])
 
     def test_extraction_runs_where_nothing_can_act(self):
-        body = SERVER[SERVER.index("async def _extract_feedback"):SERVER.index("async def feedback_forever")]
+        body = TURNS[TURNS.index("async def _extract_feedback"):TURNS.index("async def feedback_forever")]
         self.assertIn('self._reader(fb.EXTRACT_PROMPT, self.feedback.take_words(), effort="low", kind="feedback")', body)
-        reader_body = SERVER[SERVER.index("    async def _reader("):SERVER.index("    async def _ask_reader(")]
+        reader_body = TURNS[TURNS.index("    async def _reader("):TURNS.index("    async def _ask_reader(")]
         self.assertIn("config=READER_CONFIG", reader_body)
 
     def test_it_never_interrupts_and_words_leave_only_by_asking(self):
-        self.assertEqual(SERVER.count("say_packet("), 1)
-        self.assertNotIn("/feedback/answer", SERVER)
-        page = (HERE / "side.html").read_text()
+        self.assertEqual(EVERYTHING.count("self.feedback.say_packet("), 1)
+        self.assertNotIn("/feedback/answer", ROUTES)
+        page = (BRAIN / "side.html").read_text()
         for gone in ("/feedback/answer", "这个可以告诉作者吗", "知道了', () => choose"):
             self.assertNotIn(gone, page)
 
     def test_nothing_is_sent_before_the_card_says_yes(self):
-        body = SERVER[SERVER.index("async def _report_feedback"):SERVER.index("async def _tell_workbench")]
+        body = HANDS[HANDS.index("async def _report_feedback"):HANDS.index("async def _tell_workbench")]
         self.assertLess(body.index("self._card("), body.index("self.feedback.send"))
         self.assertIn("fb.scrub(", body[:body.index("self._card(")])
 
     def test_a_turn_someone_else_started_cant_reach_it(self):
-        call = SERVER[SERVER.index("async def _tool"):SERVER.index('if name == "report_feedback"')]
+        call = HANDS[HANDS.index("async def _tool"):HANDS.index("async def _run_tool")]
         self.assertIn('if self.origin != "owner":\n            return self._reply(', call)
 
     def test_no_key_in_the_code(self):
-        source = (HERE / "feedback.py").read_text() + (HERE.parent / "server" / "feedback_receiver.py").read_text()
-        self.assertNotRegex(source, r"(?i)authorization|bearer|api.?key|secret_|password")
-        self.assertNotRegex((HERE / "feedback.py").read_text(), r"getnode|hostname|gethostname|getuser|uuid|platform\.node")
+        code = source("feedback") + (ROOT / "server" / "feedback_receiver.py").read_text()
+        self.assertNotRegex(code, r"(?i)authorization|bearer|api.?key|secret_|password")
+        self.assertNotRegex(source("feedback"), r"getnode|hostname|gethostname|getuser|uuid|platform\.node")
 
     def test_an_isolated_run_sends_nowhere(self):
-        line = next(l for l in (HERE / "feedback.py").read_text().splitlines() if l.startswith("URL = "))
+        line = next(l for l in source("feedback").splitlines() if l.startswith("URL = "))
         self.assertIn('"" if os.environ.get("TAKO_HOME")', line)
+
+    def test_the_real_app_is_not_an_isolated_run(self):
+        # The app setting this for its own server is what kept every report from ever leaving, through 0.2.7.
+        backend = native("Backend")
+        self.assertNotRegex(backend, r'environment\["TAKO_HOME"\]\s*=')
+        self.assertIn('environment["TAKO_HOME"]', backend)
 
 
 class ReceiverTakesOnlyTwoShapes(unittest.TestCase):
@@ -298,7 +321,7 @@ class ReceiverTakesOnlyTwoShapes(unittest.TestCase):
 
 
 class WorkbenchTakesOnlyOwnersWords(unittest.TestCase):
-    build = staticmethod(load("workbench_packet"))
+    build = staticmethod(guards.workbench_packet)
     said = [("m1", "记一下：周五下午见客户，带报价。"), ("m2", "这个做完了")]
     item = {"item": "i", "action": "a", "revision": 3, "date": "2026-10-31"}
 
@@ -333,53 +356,54 @@ class WorkbenchTakesOnlyOwnersWords(unittest.TestCase):
         self.assertEqual(body["operation"], "complete")
 
     def test_incoming_messages_cannot_reach_it(self):
-        call = SERVER[SERVER.index("async def _tool"):SERVER.index('if name == "tell_workbench"')]
+        call = HANDS[HANDS.index("async def _tool"):HANDS.index("async def _run_tool")]
         self.assertIn('if self.origin != "owner"', call)
 
 
 class SomeoneElsesMessage(unittest.TestCase):
     def test_gets_no_tools_at_all(self):
-        glance = SERVER[SERVER.index("async def _glance"):SERVER.index("async def _compact_if_long")]
+        glance = TURNS[TURNS.index("async def _glance"):TURNS.index("async def _compact_if_long")]
         self.assertIn("config=READER_CONFIG", glance)
         self.assertNotIn("dynamic_tools", glance)
         self.assertIn("network=False", glance)
         self.assertNotIn("execution_directory", glance)
 
     def test_a_lookup_is_a_fixed_read_only_command(self):
-        lookup = SERVER[SERVER.index("def knowledge_lookup"):SERVER.index("def note_metric")]
+        lookup = KNOWLEDGE[KNOWLEDGE.index("def knowledge_lookup"):]
         self.assertIn('"query", "--mode", "knowledge", "--limit", "5", "--", query]', lookup)
         self.assertNotIn("shell=True", lookup)
         self.assertNotIn("--external", lookup)
         self.assertIn("is_relative_to(KNOWLEDGE_DIR", lookup)
 
     def test_a_lookup_request_is_only_a_search_term_and_never_shown(self):
-        query = load("knowledge_query")
+        query = guards.knowledge_query
         self.assertEqual(query("【查】碰一下  全球品牌\n别的"), "碰一下 全球品牌")
         self.assertEqual(query("Alex 想找案例。\n\n【查】乐高 碰一下"), "乐高 碰一下")
         self.assertIsNone(query("Alex 想看案例"))
         self.assertLessEqual(len(query("【查】" + "很长" * 100)), 80)
-        reader = SERVER[SERVER.index("async def _reader"):SERVER.index("async def _ask_reader")]
+        reader = TURNS[TURNS.index("async def _reader"):TURNS.index("async def _ask_reader")]
         self.assertIn("return SILENT if knowledge_query(answer)", reader)
 
     def test_a_group_is_judged_only_when_it_speaks_to_the_owner(self):
-        called = load("addressed")
+        called = guards.addressed
         names = ("Alex", "@所有人")
         self.assertTrue(called([{"is_me": False, "text": "Alex 这个怎么看"}], names))
         self.assertFalse(called([{"is_me": False, "text": "今天天气不错"}], names))
         self.assertFalse(called([{"is_me": True, "text": "Alex 在"}], names))
 
     def test_every_turn_is_told_the_time_in_the_owners_zone(self):
-        self.assertIn('CONFIG.get("timezone")', SERVER)
+        settings = source("settings")
+        self.assertIn('CONFIG.get("timezone")', settings)
         for name in ("local_today", "local_now"):
-            body = SERVER[SERVER.index(f"def {name}"):]
+            body = settings[settings.index(f"def {name}"):]
             self.assertIn("dt.datetime.now(ZONE)", body[:body.index("\n\n")])
-        turn = SERVER[SERVER.index("async def turn"):SERVER.index("async def _glance")]
+        turn = TURNS[TURNS.index("async def turn"):TURNS.index("async def _glance")]
         self.assertIn("local_now()", turn)
-        self.assertIn("local_now()", SERVER[SERVER.index("def _reader_context"):SERVER.index("async def _reader(")])
+        self.assertIn("local_now()", TURNS[TURNS.index("def _reader_context"):TURNS.index("async def _reader(")])
 
 
 class LearningFromEdits(unittest.TestCase):
-    keep = staticmethod(load("learned_notes"))
+    keep = staticmethod(guards.learned_notes)
 
     def test_habits_stay_and_the_chat_does_not(self):
         draft = "Hi Alex, the Lego campaign reached a 23% redemption rate in Hangzhou."
@@ -395,35 +419,35 @@ class LearningFromEdits(unittest.TestCase):
         self.assertIsNone(self.keep("", "a", "b"))
 
     def test_metrics_carry_no_text(self):
-        body = SERVER[SERVER.index("def _settle_drafts"):SERVER.index("async def _learn")]
+        body = CHATS[CHATS.index("def _settle_drafts"):CHATS.index("async def _learn")]
         metric = body[body.index("note_metric("):body.index("if draft[\"text\"].strip()")]
         self.assertNotIn('draft["text"],', metric.replace('len(draft["text"])', ""))
         self.assertNotIn("sent,", metric.replace("len(sent),", "").replace("draft_chars", ""))
-        config = SERVER[SERVER.index("READER_CONFIG = "):SERVER.index("BRAIN_CONFIG = ")]
+        config = PROMPTS[PROMPTS.index("READER_CONFIG = "):PROMPTS.index("BRAIN_CONFIG = ")]
         for switch in ('"features.shell_tool": False', '"features.unified_exec": False', '"features.plugins": False', '"mcp_servers": {}', '"web_search": "disabled"'):
             self.assertIn(switch, config)
 
     def test_joes_turns_lose_what_could_send_past_the_guards(self):
-        config = SERVER[SERVER.index("BRAIN_CONFIG = "):SERVER.index("TOOLS = [")]
+        config = PROMPTS[PROMPTS.index("BRAIN_CONFIG = "):PROMPTS.index("def tool(")]
         for plugin in ("computer-use", "chrome@", "browser@", "outlook-email", "teams@"):
             self.assertIn(plugin, config)
 
 
 class NeverSends(unittest.TestCase):
     def test_keys_are_read_once(self):
-        operate = (HERE / "Operate.swift").read_text()
+        operate = native("Operate")
         self.assertIn("chord(keys)", operate[operate.index("func gateKey"):operate.index("func press(")])
         self.assertIn("let (flags, key) = chord(keys)", operate[operate.index('case "key":'):operate.index('case "scroll":')])
 
     def test_filling_only_ever_pastes(self):
         """Filling posts Command-V and nothing else; Return (36) can't appear in it."""
-        hands = (HERE / "Hands.swift").read_text()
+        hands = native("Hands")
         fill = hands[hands.index("func fill(_ win"):hands.index("func focusedRole")]
         self.assertNotIn("press(", fill)
         self.assertNotIn("return)", fill.lower().replace("return [", ""))
 
     def test_enter_and_send_buttons_are_gated(self):
-        operate = (HERE / "Operate.swift").read_text()
+        operate = native("Operate")
         click = operate[operate.index("func gateClick"):operate.index("func focusedSubrole")]
         self.assertIn("sendWords", click)
         # The send check comes before confirmation can wave anything through.
@@ -434,22 +458,25 @@ class NeverSends(unittest.TestCase):
         self.assertIn("AXSecureTextField", operate)
 
     def test_only_these_apps_are_off_limits_and_dingtalk_is_one(self):
-        self.assertIn('"钉钉"', (HERE / "TakoPanel.swift").read_text().split("blockedOwners")[1].split("\n")[0])
+        self.assertIn('"钉钉"', native("Windows").split("blockedOwners")[1].split("\n")[0])
 
     def test_incoming_messages_cannot_use_tools(self):
-        self.assertIn('if self.origin != "owner":\n            return self._reply(', SERVER)
-        self.assertIn('origin="message"', SERVER)
+        self.assertIn('if self.origin != "owner":\n            return self._reply(', HANDS)
+        self.assertIn('origin="message"', CHATS)
 
 
 class Listening(unittest.TestCase):
     def test_what_a_class_says_cannot_act(self):
-        body = SERVER[SERVER.index("async def _take_notes"):SERVER.index("async def _propose")]
-        self.assertIn("config=READER_CONFIG", body)
-        self.assertNotIn("dynamic_tools", body)
-        self.assertIn("network=False", body)
+        body = LECTURE[LECTURE.index("async def _take_notes"):]
+        self.assertIn("self._reader(NOTE_PROMPT", body)
+        self.assertNotIn("start_thread", body)
+        reader = TURNS[TURNS.index("    async def _reader("):TURNS.index("    async def _compact_if_long(")]
+        self.assertIn("config=READER_CONFIG", reader)
+        self.assertNotIn("dynamic_tools", reader)
+        self.assertIn("network=False", reader)
 
     def test_only_its_own_pieces_get_deleted(self):
-        route = SERVER[SERVER.index('"/listen/piece"'):SERVER.index('"/listen/ended"')]
+        route = ROUTES[ROUTES.index('"/listen/piece"'):ROUTES.index('"/listen/ended"')]
         self.assertIn('RUNTIME / "listening"', route)
 
 

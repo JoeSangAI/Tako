@@ -12,6 +12,7 @@ import urllib.request
 from pathlib import Path
 
 DAY = 86400
+HERE = Path(__file__).resolve().parent
 # Write-only, with no key: nothing here can read anything back. Isolated test runs send nowhere unless told to.
 URL = os.environ.get("TAKO_FEEDBACK_URL", "" if os.environ.get("TAKO_HOME") else "https://8.140.200.18/tako-feedback/v1/report")
 
@@ -67,7 +68,7 @@ def where_it_broke(exc):
     code = getattr(exc, "code", None)
     kind = type(exc).__name__ + (f":{code}" if isinstance(code, str) and re.fullmatch(r"[\w.-]{1,40}", code) else "")
     frames = traceback.extract_tb(exc.__traceback__)
-    ours = [frame for frame in frames if Path(frame.filename).name in ("tako_server.py", "codex_runtime.py", "feedback.py", "wechat_reader.py")]
+    ours = [frame for frame in frames if Path(frame.filename).parent == HERE]
     frame = (ours or frames or [None])[-1]
     return f"{kind}|{Path(frame.filename).name}:{frame.name}:{frame.lineno}" if frame else kind
 
@@ -83,7 +84,8 @@ def crash_lines(folder):
             continue
         exception = report.get("exception") or {}
         images = report.get("usedImages") or []
-        faulting = (report.get("threads") or [{}])[report.get("faultingThread") or 0] if report.get("threads") else {}
+        threads, at = report.get("threads") or [], report.get("faultingThread") or 0
+        faulting = threads[at] if isinstance(at, int) and 0 <= at < len(threads) else {}
         symbols = [frame.get("symbol") for frame in faulting.get("frames", [])
                    if frame.get("symbol") and frame.get("imageIndex", -1) < len(images) and images[frame["imageIndex"]].get("name") == "Tako"]
         kind = re.sub(r"[^\w.-]", "", str(exception.get("type") or "unknown"))[:40]

@@ -18,7 +18,9 @@ case "${1:-}" in
   build)
     [ -n "$(notes)" ] || { echo "CHANGELOG.md has no section for $VERSION" >&2; exit 1; }
     "$ROOT/scripts/fetch_python.sh"
-    "$ROOT/.build/python/bin/python3" -B "$ROOT/tests/test_guards.py" 2>&1 | tail -1 | grep -q '^OK' || { echo "guard tests failed" >&2; exit 1; }
+    for suite in test_guards test_turns; do
+      "$ROOT/.build/python/bin/python3" -B -W ignore "$ROOT/tests/$suite.py" 2>&1 | tail -1 | grep -q '^OK' || { echo "$suite failed: nothing goes out" >&2; exit 1; }
+    done
     "$ROOT/scripts/check_public.sh"
     rm -rf "$DIST"
     mkdir -p "$DIST"

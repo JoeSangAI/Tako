@@ -10,7 +10,7 @@ This repository is public. Personal paths, names, chat content, keys and client 
 - Fill, never send: Tako may put text into an app's input and change documents the owner asked it to change, but must never press Return, click a send button or otherwise send a message. Only the owner's own words can trigger writing; what an incoming message or window shows never can.
 - DingTalk is off limits: never stick to or operate its window.
 - Operating an app (`Operate.swift`): sending stays refused even with approval; Enter is refused in messaging apps; password fields are refused; irreversible words and network/system tools go through an approval card every step; moving the mouse stops it.
-- A turn started by someone else's message runs on a throwaway thread with no tools at all (`READER_CONFIG`); never give it shell, plugins or `TOOLS`. It may ask for a knowledge lookup in words; the system runs one fixed read-only query (no shell, no network).
+- A turn started by someone else's message runs on a throwaway thread with no tools at all (`READER_CONFIG`); never give it shell, plugins or `TOOLS`. Tool calls and approvals count only on the brain's own thread. It may ask for a knowledge lookup in words; the system runs one fixed read-only query (no shell, no network).
 - Learning from the owner's edits keeps habits only (`voice.md`), never sentences, names or figures; `metrics.jsonl` holds numbers only. Tako speaks unasked only when it is worth it: silence is the default.
 - Listening (`Listen.swift`): starts only on the owner's words, only the stuck app's sound, never calls or meetings; audio pieces are deleted once read and nothing leaves the Mac. Notes come from a throwaway thread with no tools.
 - Feedback (`feedback.py`): never interrupts: no cards, no questions, one checkmark in the menu, on unless switched off, and off stops all of it. Automatic reports hold only numbers, fixed vocabulary and error type and place, never words, names or identifiers, not even abstracted ones. Free text leaves only when the owner asks to tell the author and taps send on the card that shows it. Extraction reads only the owner's panel words on a throwaway thread with no tools. Change `docs/PRIVACY.md` in the same commit as anything that changes what leaves. The receiver takes no key and serves nothing back.
@@ -18,7 +18,7 @@ This repository is public. Personal paths, names, chat content, keys and client 
 - Peeled off a window, it stops reading. Chat text stays in memory; never log or commit chat content, keys or tokens.
 - Runtime state lives in `~/Library/Application Support/Tako/`, never inside the app bundle (a write there breaks its signature and the permissions with it).
 - Moving or narrowing another app's window needs Accessibility; always put it back unless the owner moved it. The panel never covers a full window if it can be helped.
-- Tests never change network or proxy tools' state, never send anything, and write to an isolated `TAKO_HOME`.
+- Tests never change network or proxy tools' state, never send anything, and write to an isolated `TAKO_HOME`. `TAKO_HOME` also turns reports off, so the real app must never set it for its own server.
 
 ## Releasing
 
@@ -30,8 +30,8 @@ Updates install only when the new app satisfies the running app's designated req
 
 ## Layout
 
-`Sources/`: `TakoPanel.swift` goo, window following, side panel. `Enchant.swift` ink effects. `Hands.swift` filling and looking. `Operate.swift` operating any app. `Listen.swift`, `listen_worker.py` listening. `Update.swift` new versions. `Backend.swift` runs the Python side from the app. `tako_server.py` sessions, Codex turns, tools, cards. `codex_runtime.py` Codex app-server connection. `wechat_reader.py` optional local WeChat reader. `feedback.py` what goes back to the author. `greetings.py` the first line on a window. `side.html` the panel.
+`docs/ARCHITECTURE.md` is the map: the two processes, the two kinds of thread, what each file is for, how to add a tool. Read it before moving anything.
 
-`server/feedback_receiver.py` where those reports land.
+`Sources/native/` the app (Swift): goo, windows, panel window, hands, updates. `Sources/brain/` the Python side and the panel page. `server/feedback_receiver.py` where reports land.
 
-`tests/test_guards.py` the lines that must hold: `python3 tests/test_guards.py`. `run.sh` builds and restarts for development. `scripts/` build and release.
+`tests/test_guards.py` the lines that must hold. `tests/test_turns.py` the real Python side against `tests/fake_codex.py`, with the test playing the app: write a new behaviour or a bug as a scene there first. `run.sh` builds and restarts for development. `scripts/` build and release.

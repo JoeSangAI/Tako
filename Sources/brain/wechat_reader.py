@@ -27,7 +27,7 @@ def enable(folder):
     root = Path(folder).expanduser() if isinstance(folder, str) and folder else None
     if not root or not (root / "keys.json").is_file():
         return False
-    sys.path.insert(0, str(root))
+    sys.path.append(str(root))  # After ours: its folder must not shadow Tako's own modules.
     try:
         from Crypto.Cipher import AES as cipher
         from wxexport.crypto import PAGE as page, SQLITE_HDR as header, decrypt_db as whole, mac_key as mac

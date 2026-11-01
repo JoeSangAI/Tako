@@ -8,8 +8,11 @@ import os
 import sys
 from pathlib import Path
 
-import numpy as np
-import whisper
+# Whisper and what it loads must not find Tako's modules beside this file.
+sys.path[:] = [entry for entry in sys.path if Path(entry or ".").resolve() != Path(__file__).resolve().parent]
+
+import numpy as np  # noqa: E402
+import whisper  # noqa: E402
 
 MODELS = ("small", "base", "tiny")  # the best one already on this Mac
 

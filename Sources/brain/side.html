@@ -430,7 +430,8 @@ function bubble(event) {
   }
   row.className = 'tako';
   if (event.steps?.length) row.append(stepsBlock(event.steps));
-  row.append(renderMarkdown(event.text));
+  // One answer that can't be drawn must not stop the panel from showing everything after it.
+  try { row.append(renderMarkdown(event.text)); } catch { const plain = document.createElement('div'); plain.className = 'md'; plain.style.whiteSpace = 'pre-wrap'; plain.textContent = event.text; row.append(plain); }
   return row;
 }
 
@@ -456,7 +457,7 @@ function showLive(s) {
   if (!s.busy) return;
   const stuckToEnd = $('log').scrollHeight - $('log').scrollTop - $('log').clientHeight < 40;
   if (step) { const now = document.createElement('div'); now.className = 'now'; now.textContent = step; box.append(now); }
-  if (s.partial) box.append(renderMarkdown(s.partial));
+  if (s.partial) { try { box.append(renderMarkdown(s.partial)); } catch { box.append(s.partial); } }
   box.scrollTop = box.scrollHeight;
   if (stuckToEnd) $('log').scrollTop = $('log').scrollHeight;
 }
@@ -480,7 +481,8 @@ function showCards(cards) {
     body.textContent = card.reason ? `${card.reason}\n${card.text}` : card.text;
     const actions = document.createElement('div');
     actions.className = 'card-actions';
-    const decide = (accepted) => () => { el.remove(); api('/decide', { id: card.id, accepted }); };
+    // Gone at once, so a second press can't land on what comes next. If the answer never got there, the card comes back.
+    const decide = (accepted) => () => { el.remove(); api('/decide', { id: card.id, accepted }).catch(() => { cardKey = ''; }); };
     if (card.kind === 'change') actions.append(button('看副本', () => native?.postMessage({ openFile: card.edited })));
     actions.append(button(card.kind === 'change' ? '放弃' : card.kind === 'feedback' ? '不发' : '拒绝', decide(false)));
     actions.append(button(card.kind === 'change' ? '应用' : card.kind === 'feedback' ? '发送' : '允许', decide(true), true));
@@ -590,8 +592,8 @@ function showNotice() {
     meter.append(fill); box.append(meter);
   } else if (update.state === 'installing') {
     box.append(noticeLine('title', '马上回来，正在换上新版本…'));
-  } else if (update.state === 'current') {
-    box.append(noticeLine('title', `已经是最新版本（${update.version}）`));
+  } else if (update.state === 'current' || update.state === 'unreachable') {
+    box.append(noticeLine('title', update.state === 'current' ? `已经是最新版本（${update.version}）` : '现在连不上更新服务器，稍后再试。'));
     actions.append(button('好', () => say('dismiss'), true));
     box.append(actions);
   } else if (update.state === 'updated') {
@@ -723,7 +725,13 @@ $('f').onsubmit = async (e) => {
   showAttached();
   grow();
   showError('');
-  await api('/ask', { text, files });
+  try {
+    await api('/ask', { text, files });
+  } catch {
+    // Never lose what the owner wrote: it goes back in the box.
+    $('say').value = text; attachments = files; showAttached(); grow();
+    showError('没发出去，Tako 的后台刚才断了一下，再按一次试试。', true);
+  }
 };
 $('add').onclick = () => { native?.postMessage({ pickFiles: true }); };
 $('who').onclick = () => {

@@ -105,7 +105,7 @@ extension Controller {
         if messagingNames.contains(where: { lowered.contains($0) }) || ["腾讯会议", "wemeet", "zoom", "teams", "在场"].contains(where: { lowered.contains($0) }) {
             return ["ok": false, "refused": true, "error": "\(win.app) 是聊天或会议软件，Tako 不听通话和会议"]
         }
-        let folder = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Tako/listening")
+        let folder = takoHome.appendingPathComponent("listening")
         let ear = Listener(folder: folder, onPiece: { [weak self] path in
             self?.post(path: "/listen/piece", body: ["path": path])
         }, onEnd: { [weak self] why in
