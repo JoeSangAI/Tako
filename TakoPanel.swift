@@ -2002,6 +2002,9 @@ final class Controller: NSObject, NSApplicationDelegate, WKScriptMessageHandler,
         shortcut.isEnabled = false
         menu.addItem(shortcut)
         menu.addItem(.separator())
+        let version = NSMenuItem(title: "Tako \(Updater.current)", action: nil, keyEquivalent: "")
+        version.isEnabled = false
+        menu.addItem(version)
         let update = NSMenuItem(title: updater.menuTitle, action: #selector(checkForUpdate), keyEquivalent: "")
         update.target = self
         menu.addItem(update)
