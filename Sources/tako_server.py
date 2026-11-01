@@ -549,7 +549,8 @@ def find_codex():
     """The places Codex's own installers put it, then whatever the login shell knows. Found fresh each time: it may have just been installed."""
     home = Path.home()
     places = [home / ".local/bin/codex", home / ".codex/bin/codex", Path("/opt/homebrew/bin/codex"), Path("/usr/local/bin/codex"), home / ".npm-global/bin/codex",
-              Path("/Applications/Codex.app/Contents/Resources/codex")]
+              # The ChatGPT desktop app carries its own, and shares the login with it.
+              Path("/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"), home / "Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"]
     found = shutil.which("codex")
     if found:
         return found

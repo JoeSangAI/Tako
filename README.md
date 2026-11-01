@@ -74,7 +74,7 @@ curl -fsSL https://raw.githubusercontent.com/JoeSangAI/Tako/main/install.sh | ba
 大约一分钟。第一次打开，Tako 只会带你走这三步：
 
 1. **给权限。** 系统会问“辅助功能”和“屏幕录制”，打开后 Tako 才能看见和操作窗口。
-2. **装上 Codex、登录 ChatGPT。** 面板里按一下按钮就行。Tako 的大脑是 OpenAI 的 [Codex](https://github.com/openai/codex)，用的是你自己的 ChatGPT 账号和额度。
+2. **装上 Codex、登录 ChatGPT。** 面板里按一下按钮就行；已经装了 Codex 或 ChatGPT 桌面版并登录过的，这一步自动跳过。Tako 的大脑是 OpenAI 的 [Codex](https://github.com/openai/codex)，用的是你自己的 ChatGPT 账号和额度。
 3. **按 ⌃⌥T。** 或者把小章鱼拖到任意窗口上松手。
 
 > 为什么用终端安装：Tako 还没有做 Apple 公证，直接下载的 app 会被系统拦下。安装脚本会校验文件哈希和签名，你也可以先[读一遍脚本](install.sh)。
