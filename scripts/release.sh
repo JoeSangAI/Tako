@@ -25,7 +25,10 @@ case "${1:-}" in
     "$ROOT/scripts/build_app.sh" "$DIST/Tako.app" 2>/dev/null
     codesign --verify --strict "$DIST/Tako.app"
     # Installed copies accept only this identity: anything else would strand everyone on the old version.
-    codesign -dv "$DIST/Tako.app" 2>&1 | grep -q '^TeamIdentifier=3BVM9N9HS4$' || { echo "not signed by the release identity: renew the Apple Development certificate first" >&2; exit 1; }
+    case "$(codesign -dv "$DIST/Tako.app" 2>&1)" in
+      *TeamIdentifier=3BVM9N9HS4*) ;;
+      *) echo "not signed by the release identity: renew the Apple Development certificate first" >&2; exit 1 ;;
+    esac
     (cd "$DIST" && ditto -c -k --keepParent Tako.app Tako.zip)
     SHA="$(shasum -a 256 "$DIST/Tako.zip" | cut -d' ' -f1)"
     notes > "$DIST/notes.md"
