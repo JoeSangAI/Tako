@@ -1,0 +1,32 @@
+#!/bin/bash
+# Only main and version tags ever leave this checkout, nothing leaves unchecked, and a new VERSION on main becomes a release.
+set -uo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+ZERO=0000000000000000000000000000000000000000
+COMMIT=""
+while read -r _local sha remote _remote_sha; do
+  case "$remote" in
+    refs/heads/main) [ "$sha" = "$ZERO" ] || COMMIT="$sha" ;;
+    refs/tags/v*) ;;
+    *) echo "refusing to push $remote: this checkout keeps private history on other branches" >&2; exit 1 ;;
+  esac
+done
+
+# The old private history stays on this Mac: nothing built on it may leave.
+if [ -n "$COMMIT" ] && git rev-parse -q --verify refs/heads/archive/pre-public >/dev/null && git merge-base --is-ancestor archive/pre-public "$COMMIT"; then
+  echo "refusing to push: this commit is built on the private history" >&2; exit 1
+fi
+
+"$ROOT/scripts/check_public.sh" || { echo "push stopped: the public check failed" >&2; exit 1; }
+[ -n "$COMMIT" ] || exit 0
+
+VERSION="$(git show "$COMMIT:VERSION" | tr -d '[:space:]')"
+if gh release view "v$VERSION" --repo JoeSangAI/Tako >/dev/null 2>&1; then exit 0; fi
+
+[ "$(git rev-parse HEAD)" = "$COMMIT" ] && [ -z "$(git status --porcelain -- ':!.local')" ] || { echo "push stopped: a new version must be released from a clean checkout at HEAD" >&2; exit 1; }
+echo "new version $VERSION: building the release…"
+"$ROOT/scripts/release.sh" build || { echo "push stopped: the release didn't build" >&2; exit 1; }
+mkdir -p "$ROOT/.local"
+nohup /bin/bash -c "'$ROOT/scripts/release.sh' publish '$COMMIT' && osascript -e 'display notification \"Tako $VERSION 已发布，装过的人会收到提示。\" with title \"Tako 发布\"' || osascript -e 'display notification \"Tako $VERSION 发布失败，看 .local/release.log\" with title \"Tako 发布\"'" >"$ROOT/.local/release.log" 2>&1 &
+echo "Tako $VERSION will be published as soon as this push lands. Log: .local/release.log"

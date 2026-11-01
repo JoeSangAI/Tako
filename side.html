@@ -1,0 +1,739 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tako</title>
+<style>
+  /* Colours come from the window it is stuck to (setSkin); only the ink is always TAKO's. */
+  :root {
+    --goo: #111112;
+    --paper: #fbfbfa;
+    --bar: #fbfbfa;
+    --ink: #161617;
+    --muted: #77777a;
+    --line: #e7e7e5;
+    --card: #f1f1ef;
+    --btn: #111112;
+    --btn-ink: #ffffff;
+    --accent: #b53a2c;
+    --bar-h: 52px;
+    --w: 360px;
+    --corner: 11px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
+    font: 13px/1.55 -apple-system, "PingFang SC", sans-serif; color: var(--ink); user-select: none; }
+  #card { position: fixed; left: 0; top: 0; bottom: 0; width: var(--w); background: var(--paper);
+    border: 1px solid var(--line); border-left: 0; border-radius: 0 var(--corner) var(--corner) 0;
+    display: none; flex-direction: column; overflow: hidden; z-index: 1;
+    box-shadow: 4px 0 18px rgba(0, 0, 0, .14); will-change: transform; transition: background-color .3s, border-color .3s; }
+  body.open #card { display: flex; animation: grow .24s cubic-bezier(.2, .9, .3, 1); }
+  body.closing #card { display: flex; animation: shrink .16s ease-in forwards; }
+  @keyframes grow { from { transform: translateX(-100%); } to { transform: none; } }
+  @keyframes shrink { to { transform: translateX(-100%); } }
+  #grip { position: fixed; top: 0; bottom: 0; left: calc(var(--w) - 5px); width: 10px; cursor: ew-resize; z-index: 2; display: none; touch-action: none; }
+  body.open #grip { display: block; }
+  #grip::after { content: ""; position: absolute; left: 3px; top: 50%; width: 3px; height: 36px; margin-top: -18px; border-radius: 3px; background: var(--line); transition: background .15s; }
+  #grip:hover::after, body.dragging #grip::after { background: var(--muted); }
+  body.dragging, body.dragging * { cursor: ew-resize !important; }
+  header { height: var(--bar-h); flex: none; padding: 0 14px 0 54px; border-bottom: 1px solid var(--line); background: var(--bar); font-weight: 600; font-size: 12px; display: flex; align-items: center; gap: 6px; transition: background-color .3s; }
+  #who { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: none; border: 0; padding: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+  #who:hover { color: var(--muted); }
+  body:not(.wechat) #who { cursor: default; }
+  #tick { font-weight: 400; color: var(--muted); font-size: 11px; white-space: nowrap; }
+  #picker { display: none; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+  #picker.show { display: block; }
+  #picker input { width: 100%; padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; font: inherit; background: var(--paper); color: inherit; user-select: text; }
+  #picker button { display: block; width: 100%; text-align: left; padding: 5px 4px; border: 0; background: none; font: inherit; color: inherit; cursor: pointer; border-radius: 6px; }
+  #picker button:hover { background: var(--card); }
+  #log { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; user-select: text; }
+  .note { font-size: 12px; line-height: 1.5; padding-left: 10px; border-left: 2px solid var(--ink); user-select: text; }
+  #tick.ear { color: var(--ink); cursor: pointer; }
+  .wechat-msg { color: var(--muted); font-size: 12px; border-left: 2px solid var(--line); padding-left: 8px; }
+  .owner { align-self: flex-end; background: var(--btn); color: var(--btn-ink); padding: 5px 10px; border-radius: 12px 12px 3px 12px; max-width: 88%; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .owner a { color: inherit; }
+  .empty { color: var(--muted); margin: auto; text-align: center; font-size: 12px; padding: 0 12px; }
+
+  /* what Tako says */
+  .md { overflow-wrap: anywhere; min-width: 0; }
+  .md > :first-child { margin-top: 0; }
+  .md > :last-child { margin-bottom: 0; }
+  .md p { margin: 0 0 8px; }
+  .md h1, .md h2, .md h3, .md h4 { margin: 12px 0 5px; line-height: 1.35; font-weight: 650; }
+  .md h1 { font-size: 15px; } .md h2 { font-size: 14px; } .md h3, .md h4 { font-size: 13px; }
+  .md ul, .md ol { margin: 0 0 8px; padding-left: 18px; }
+  .md li { margin: 2px 0; }
+  .md li > p { margin: 0; }
+  .md blockquote { margin: 0 0 8px; padding-left: 9px; border-left: 2px solid var(--line); color: var(--muted); }
+  .md hr { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
+  .md strong { font-weight: 650; }
+  .md code { font: 12px/1.45 ui-monospace, Menlo, monospace; background: var(--card); padding: 1px 4px; border-radius: 4px; }
+  .md a { color: inherit; text-decoration: underline; text-decoration-color: var(--muted); text-underline-offset: 2px; }
+  .md a.source { display: inline-flex; align-items: center; max-width: 100%; text-decoration: none; background: var(--card); border-radius: 6px; padding: 0 6px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: baseline; }
+  .md a.source:hover { background: var(--line); }
+  .block { position: relative; background: var(--card); border-radius: 10px; margin: 0 0 8px; }
+  .block pre { margin: 0; padding: 8px 10px 30px; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 ui-monospace, Menlo, monospace; }
+  .draft { padding: 9px 11px 36px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+  .tools { position: absolute; right: 6px; bottom: 5px; display: flex; gap: 4px; }
+  .tools button, .card-actions button, .file button { border: 0; border-radius: 8px; background: var(--paper); color: var(--ink); font: inherit; font-size: 12px; padding: 2px 10px; cursor: pointer; box-shadow: inset 0 0 0 1px var(--line); }
+  .tools button.main, .card-actions button.main { background: var(--btn); color: var(--btn-ink); box-shadow: none; }
+  .tools button:disabled { opacity: .55; cursor: default; }
+  .table-wrap { position: relative; margin: 0 0 8px; }
+  .table-scroll { overflow-x: auto; }
+  .table-wrap table { border-collapse: collapse; font-size: 12px; width: max-content; min-width: 100%; }
+  .table-wrap th, .table-wrap td { border-bottom: 1px solid var(--line); padding: 4px 9px 4px 0; text-align: left; vertical-align: top; max-width: 260px; }
+  .table-wrap th { font-weight: 650; }
+  .table-wrap > button { position: absolute; right: 0; top: -2px; opacity: 0; border: 0; border-radius: 6px; background: var(--paper); box-shadow: inset 0 0 0 1px var(--line); color: inherit; font: inherit; font-size: 11px; padding: 0 7px; cursor: pointer; transition: opacity .12s; }
+  .table-wrap:hover > button { opacity: 1; }
+  .md img { display: block; max-width: 100%; max-height: 260px; border-radius: 8px; margin: 0 0 8px; cursor: zoom-in; }
+  .file { display: flex; align-items: center; gap: 8px; background: var(--card); border-radius: 10px; padding: 7px 8px 7px 10px; margin: 0 0 8px; user-select: none; }
+  .file .kind { flex: none; font: 600 10px/1 ui-monospace, Menlo, monospace; color: var(--btn-ink); background: var(--btn); border-radius: 4px; padding: 3px 4px; text-transform: uppercase; }
+  .file .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
+  .file button { flex: none; padding: 1px 8px; }
+  .steps { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+  .steps summary { cursor: pointer; list-style: none; }
+  .steps summary::-webkit-details-marker { display: none; }
+  .steps summary::before { content: "▸ "; }
+  .steps[open] summary::before { content: "▾ "; }
+  .steps div { padding-left: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #live { display: none; flex: none; padding: 0 14px 10px; max-height: 60%; overflow: hidden auto; user-select: text; }
+  #live.show { display: block; }
+  #live .now { font-size: 11px; color: var(--muted); }
+  #live .now::after { content: ""; display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--ink); margin-left: 4px; vertical-align: 1px; animation: throb 1s ease-in-out infinite; }
+  @keyframes throb { 50% { transform: scale(.45); opacity: .4; } }
+
+  /* cards that wait for the owner */
+  #cards { flex: none; display: none; flex-direction: column; gap: 8px; padding: 0 12px 10px; }
+  #cards.show { display: flex; }
+  .ask { background: var(--card); border-radius: 10px; padding: 9px 11px; font-size: 12px; }
+  .ask .title { font-weight: 650; margin-bottom: 3px; }
+  .ask .body { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 160px; overflow: auto; user-select: text; }
+  .ask .body { max-height: 180px; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .card-actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 7px; }
+  .card-actions button { padding: 3px 12px; }
+
+  /* one thing at a time above the conversation: a step of setting up, or a new version */
+  #notice { flex: none; display: none; margin: 0 12px 10px; padding: 10px 12px; background: var(--card); border-radius: 10px; font-size: 12px; }
+  #notice.show { display: block; }
+  #notice .title { font-weight: 650; margin-bottom: 3px; }
+  #notice .notes { max-height: 200px; overflow: auto; user-select: text; line-height: 1.5; }
+  #notice .notes h3 { font-size: 12px; margin: 8px 0 2px; }
+  #notice .notes ul { margin: 2px 0; padding-left: 16px; }
+  #notice .notes p { margin: 2px 0; }
+  #notice .meter { height: 3px; margin-top: 8px; border-radius: 2px; background: var(--line); overflow: hidden; }
+  #notice .meter i { display: block; height: 100%; background: var(--btn); transition: width .2s; }
+  #notice .why { color: var(--accent); margin-top: 5px; }
+
+  #err, .hint { display: none; font-size: 12px; padding: 0 14px 6px; }
+  #err { color: var(--accent); }
+  .hint { color: var(--muted); font-size: 11px; }
+  #err.show, .hint.show { display: block; }
+  /* the box the owner talks in: what they attached, what they say, then + and send */
+  form { flex: none; margin: 2px 10px 10px; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 14px; background: var(--paper); box-shadow: 0 1px 5px rgba(0, 0, 0, .07); transition: border-color .15s; }
+  form:focus-within { border-color: var(--muted); }
+  #attached { display: none; flex-wrap: wrap; gap: 6px; padding: 8px 8px 0; max-height: 156px; overflow-y: auto; }
+  #attached.show { display: flex; }
+  .tile { position: relative; flex: none; height: 64px; border-radius: 9px; background: var(--card); cursor: pointer; }
+  .tile.pic { width: 64px; }
+  .tile.pic img { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: 9px; box-shadow: inset 0 0 0 1px var(--line); }
+  .tile.doc { display: flex; align-items: center; gap: 8px; max-width: 190px; padding: 0 24px 0 8px; }
+  .tile.doc .kind { flex: none; font: 600 10px/1 ui-monospace, Menlo, monospace; color: var(--btn-ink); background: var(--btn); border-radius: 4px; padding: 3px 4px; text-transform: uppercase; }
+  .tile.doc b { font-weight: 400; font-size: 11px; line-height: 1.3; max-height: 2.6em; overflow: hidden; overflow-wrap: anywhere; }
+  .tile button { position: absolute; top: 3px; right: 3px; width: 18px; height: 18px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: var(--btn); color: var(--btn-ink); cursor: pointer; opacity: 0; transition: opacity .12s; }
+  .tile:hover button, .tile button:focus-visible { opacity: 1; }
+  #say { width: 100%; padding: 10px 12px 3px; border: 0; outline: 0; font: inherit; background: transparent; color: inherit; user-select: text; resize: none; max-height: 132px; line-height: 1.45; display: block; }
+  #say::placeholder { color: var(--muted); }
+  #picker input:focus { outline: 2px solid var(--btn); outline-offset: -1px; }
+  .compose { display: flex; align-items: center; justify-content: space-between; padding: 4px 7px 7px; }
+  .compose button { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 8px; cursor: pointer; }
+  .compose svg { display: block; }
+  #add { background: none; color: var(--muted); }
+  #add:hover { background: var(--card); color: var(--ink); }
+  #send { background: var(--btn); color: var(--btn-ink); transition: opacity .12s; }
+  #send:disabled { opacity: .28; cursor: default; }
+  #send .stop, #send.stopping .go { display: none; }
+  #send.stopping .stop { display: block; }
+  body.dropping #card::after { content: "松手，交给 Tako"; position: absolute; inset: 8px; z-index: 5; display: grid; place-items: center; border: 1.5px dashed var(--btn); border-radius: 12px; background: var(--paper); opacity: .94; font-weight: 600; pointer-events: none; }
+  .owner img { display: block; max-width: 180px; max-height: 180px; margin-top: 4px; border-radius: 8px; cursor: zoom-in; }
+  .owner img:first-child { margin-top: 0; }
+</style>
+</head>
+<body>
+<section id="card" aria-label="Tako">
+  <header><button id="who" title="换一段对话" type="button">我在看：…</button><span id="tick"></span></header>
+  <div id="picker"><input id="q" placeholder="搜索对话名称" aria-label="搜索对话"><div id="hits"></div></div>
+  <div id="notice" role="status"></div>
+  <div id="log"></div>
+  <div id="live" aria-live="polite"></div>
+  <div id="cards"></div>
+  <div id="err" role="alert"></div>
+  <div id="hint" class="hint">开启“辅助功能”权限后，Tako 才能操作这个窗口。</div>
+  <div id="hint2" class="hint">开启“屏幕录制”权限后，Tako 才能看到这个窗口。</div>
+  <form id="f">
+    <div id="attached"></div>
+    <textarea id="say" rows="1" placeholder="跟 Tako 说…" aria-label="跟 Tako 说"></textarea>
+    <div class="compose">
+      <button id="add" type="button" title="添加文件或图片，也可以直接拖进来" aria-label="添加文件或图片"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg></button>
+      <button id="send" disabled aria-label="发送"><svg class="go" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 13V3.5M3.75 7.75 8 3.5l4.25 4.25" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg><svg class="stop" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1.8" fill="currentColor"/></svg></button>
+    </div>
+  </form>
+</section>
+<div id="grip" role="separator" aria-label="拖动调整宽度" aria-orientation="vertical"></div>
+<script src="markdown-it.js?t=TOKEN" id="mdjs"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const token = new URLSearchParams(location.search).get('t') || '';
+const api = (path, body) => fetch(`${path}${path.includes('?') ? '&' : '?'}t=${encodeURIComponent(token)}`,
+  body ? { method: 'POST', body: JSON.stringify(body) } : {}).then((r) => r.json());
+const native = window.webkit?.messageHandlers?.goo;
+
+// ---- geometry: the side window never resizes for us; we tell it which part takes clicks ----
+const MIN = 280, MAX = 712;
+let width = 360, room = 99999, opened = false, seen = 0, gooState = '', gen = null, busy = false, catchingUp = true, cardsUp = false;
+const cardWidth = () => Math.max(MIN, Math.min(width, MAX, Math.max(MIN, room)));
+function layout() {
+  const w = cardWidth();
+  document.documentElement.style.setProperty('--w', `${w}px`);
+  native?.postMessage({ region: [0, 0, w + 5, 100000], cardWidth: w });
+}
+window.setGeometry = (edge, nextRoom) => { room = nextRoom; layout(); };
+window.setWidth = (next) => { width = next; layout(); };
+window.setCanMove = (can) => { $('hint').classList.toggle('show', !can); };
+window.setCanRead = (can) => { $('hint2').classList.toggle('show', !can); };
+
+// The panel takes its material from the window beside it; the ink stays TAKO's.
+const mixRGB = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
+const css = (c) => `rgb(${c[0]},${c[1]},${c[2]})`;
+window.setSkin = (skin) => {
+  const root = document.documentElement.style;
+  const fg = skin.dark ? [238, 238, 240] : [22, 22, 23];
+  root.setProperty('--paper', css(skin.paper));
+  root.setProperty('--bar', css(skin.bar));
+  root.setProperty('--ink', css(fg));
+  root.setProperty('--muted', css(mixRGB(skin.paper, fg, .55)));
+  root.setProperty('--line', css(mixRGB(skin.paper, fg, skin.dark ? .16 : .1)));
+  root.setProperty('--card', css(mixRGB(skin.paper, fg, skin.dark ? .1 : .055)));
+  root.setProperty('--btn', skin.dark ? '#ececee' : '#111112');
+  root.setProperty('--btn-ink', skin.dark ? '#111112' : '#ffffff');
+  root.setProperty('--bar-h', `${skin.barHeight}px`);
+  root.setProperty('--corner', `${skin.corner}px`);
+  document.documentElement.style.colorScheme = skin.dark ? 'dark' : 'light';
+};
+
+let closing;
+window.setOpen = function setOpen(next) {
+  if (next === opened) return;
+  opened = next;
+  clearTimeout(closing);
+  document.body.classList.toggle('open', next);
+  document.body.classList.toggle('closing', !next);
+  layout();
+  native?.postMessage({ open: next, wanted: width });
+  if (next) {
+    $('say').focus({ preventScroll: true });
+    $('log').scrollTop = $('log').scrollHeight;
+  } else {
+    closing = setTimeout(() => document.body.classList.remove('closing'), 170);
+  }
+};
+
+$('grip').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  $('grip').setPointerCapture(e.pointerId);
+  document.body.classList.add('dragging');
+  native?.postMessage({ dragging: true });
+  const startX = e.clientX, startWidth = cardWidth();
+  const move = (m) => {
+    width = Math.max(MIN, Math.min(MAX, startWidth + m.clientX - startX));
+    layout();
+    native?.postMessage({ wanted: width });   // past the screen edge, the window moves over to make room
+  };
+  const up = () => {
+    $('grip').removeEventListener('pointermove', move);
+    document.body.classList.remove('dragging');
+    native?.postMessage({ dragging: false, width });
+  };
+  $('grip').addEventListener('pointermove', move);
+  $('grip').addEventListener('pointerup', up, { once: true });
+  $('grip').addEventListener('pointercancel', up, { once: true });
+});
+
+// ---- rendering what Tako says ----
+const md = window.markdownit({ html: false, linkify: true, breaks: true });
+// CommonMark won't close ** right after Chinese punctuation (**结论：**这样). Chinese text needs it to.
+const cjk = /[⺀-鿿豈-﫿＀-￯　-〿‘-”…]/;
+const scanDelims = md.inline.State.prototype.scanDelims;
+md.inline.State.prototype.scanDelims = function (start, canSplit) {
+  const found = scanDelims.call(this, start, canSplit);
+  const before = this.src[start - 1] || ' ', after = this.src[start + found.length] || ' ';
+  if (found.length) {
+    if ((cjk.test(after) || cjk.test(before)) && !/\s/.test(after)) found.can_open = true;
+    if ((cjk.test(before) || cjk.test(after)) && !/\s/.test(before)) found.can_close = true;
+  }
+  return found;
+};
+// markdown-it refuses paths it can't parse as URLs only for dangerous schemes; local paths stay as they are.
+const isImage = (path) => /\.(png|jpe?g|gif|webp|heic|heif|avif|bmp|tiff?)$/i.test(path);
+const isLocal = (href) => /^(\/|~\/|file:\/\/)/.test(href);
+const localPath = (href) => decodeURI(href.replace(/^file:\/\//, ''));
+const fileUrl = (path) => `/file?path=${encodeURIComponent(path)}&t=${encodeURIComponent(token)}`;
+const toast = (button, text) => { const was = button.textContent; button.textContent = text; setTimeout(() => { button.textContent = was; }, 1400); };
+function copyText(text, button) {
+  if (native) native.postMessage({ copy: text }); else navigator.clipboard.writeText(text);
+  toast(button, '已复制');
+}
+function button(label, onclick, main) {
+  const b = document.createElement('button');
+  b.type = 'button'; b.textContent = label; b.onclick = onclick;
+  if (main) b.className = 'main';
+  return b;
+}
+function fillButton(text, files) {
+  const b = button('填入', async () => {
+    b.disabled = true; b.textContent = '填入中…';
+    native?.postMessage({ pop: .5 });
+    try {
+      const r = await api('/fill', { text, files, gen });
+      b.textContent = r.ok ? '已填入' : '没填入';
+      if (!r.ok) { showError(r.error || '没有填入', true); native?.postMessage({ oops: true }); }
+    } catch { b.textContent = '没填入'; }
+    setTimeout(() => { b.disabled = false; b.textContent = '填入'; }, 1800);
+  }, true);
+  return b;
+}
+const canFill = () => !!native && !!document.body.dataset.app;
+function draftCard(body) {
+  const box = document.createElement('div');
+  box.className = 'block draft';
+  box.textContent = body;
+  const tools = document.createElement('div');
+  tools.className = 'tools';
+  tools.append(button('复制', (e) => copyText(body, e.target)));
+  if (canFill()) tools.append(fillButton(body, []));
+  box.append(tools);
+  return box;
+}
+function codeBlock(body) {
+  const box = document.createElement('div');
+  box.className = 'block';
+  const pre = document.createElement('pre');
+  pre.textContent = body;
+  const tools = document.createElement('div');
+  tools.className = 'tools';
+  tools.append(button('复制', (e) => copyText(body, e.target)));
+  box.append(pre, tools);
+  return box;
+}
+function fileCard(path, label) {
+  const row = document.createElement('div');
+  row.className = 'file';
+  const name = path.split('/').pop();
+  const kind = document.createElement('span');
+  kind.className = 'kind';
+  kind.textContent = (name.includes('.') ? name.split('.').pop() : 'file').slice(0, 4);
+  const title = document.createElement('span');
+  title.className = 'name';
+  title.textContent = label && label !== path ? label : name;
+  title.title = path;
+  row.append(kind, title);
+  row.append(button('打开', () => native?.postMessage({ openFile: path })));
+  row.append(button('定位', () => native?.postMessage({ revealFile: path })));
+  if (canFill()) row.append(fillButton('', [path]));
+  return row;
+}
+function tableBlock(table) {
+  const wrap = document.createElement('div');
+  wrap.className = 'table-wrap';
+  const scroll = document.createElement('div');
+  scroll.className = 'table-scroll';
+  table.replaceWith(wrap);
+  scroll.append(table);
+  const tsv = () => [...table.rows].map((r) => [...r.cells].map((c) => c.textContent.trim()).join('\t')).join('\n');
+  wrap.append(scroll, button('复制', (e) => copyText(tsv(), e.target)));
+}
+function renderMarkdown(text) {
+  const out = document.createElement('div');
+  out.className = 'md';
+  out.innerHTML = md.render(text);
+  out.querySelectorAll('pre > code').forEach((code) => {
+    const language = (code.className.match(/language-(\S+)/) || [])[1];
+    const body = code.textContent.replace(/\n$/, '');
+    code.parentElement.replaceWith(language === 'draft' ? draftCard(body) : codeBlock(body));
+  });
+  out.querySelectorAll('table').forEach(tableBlock);
+  out.querySelectorAll('img').forEach((img) => {
+    const src = img.getAttribute('src') || '';
+    if (isLocal(src)) {
+      const path = localPath(src);
+      img.src = fileUrl(path);
+      img.onclick = () => native?.postMessage({ openFile: path });
+    } else {
+      // Loading it would tell the outside whatever is in its address; it stays a link the owner can choose to open.
+      const link = document.createElement('a');
+      link.href = src;
+      link.textContent = img.getAttribute('alt') || '网页图片';
+      img.replaceWith(link);
+    }
+  });
+  out.querySelectorAll('a').forEach((a) => {
+    const href = a.getAttribute('href') || '';
+    if (isLocal(href)) {
+      // A link alone in its paragraph is a file being handed over; inside a sentence it stays a link.
+      const path = localPath(href);
+      const parent = a.parentElement;
+      const alone = parent.tagName === 'P' && parent.textContent.trim() === a.textContent.trim();
+      if (alone) { parent.replaceWith(fileCard(path, a.textContent)); return; }
+      a.onclick = (e) => { e.preventDefault(); native?.postMessage({ openFile: path }); };
+      return;
+    }
+    let host = '';
+    try { host = new URL(href).hostname.replace(/^www\./, ''); } catch { /* not a web link */ }
+    a.title = href;
+    if (host && (a.textContent === href || a.textContent.startsWith('http'))) { a.textContent = host; a.classList.add('source'); }
+    else if (host) a.classList.add('source');
+    a.onclick = (e) => { e.preventDefault(); if (native) native.postMessage({ openURL: href }); else window.open(href); };
+  });
+  return out;
+}
+function stepsBlock(steps) {
+  const box = document.createElement('details');
+  box.className = 'steps';
+  const head = document.createElement('summary');
+  head.textContent = `做了 ${steps.length} 步`;
+  box.append(head);
+  steps.forEach((step) => { const row = document.createElement('div'); row.textContent = step; row.title = step; box.append(row); });
+  return box;
+}
+$('tick').onclick = () => { if ($('tick').classList.contains('ear')) api('/listen/stop', {}); };
+function bubble(event) {
+  const row = document.createElement('div');
+  if (event.role === 'wechat') { row.className = 'wechat-msg'; row.textContent = event.text; return row; }
+  if (event.role === 'note') { row.className = 'note'; row.textContent = event.text; return row; }
+  if (event.role === 'owner') {
+    row.className = 'owner';
+    const [said, ...files] = event.text.split(/\n(?=\[[^\]]+\]\(<)/);
+    row.textContent = said;
+    files.forEach((f) => {
+      const n = f.match(/^\[([^\]]+)\]\(<(.+)>\)/);
+      if (!n) return;
+      if (!isImage(n[2])) { row.append(`${said ? '\n' : ''}📎 ${n[1]}`); return; }
+      const img = document.createElement('img');
+      img.src = fileUrl(n[2]);
+      img.alt = n[1];
+      img.onclick = () => native?.postMessage({ openFile: n[2] });
+      img.onerror = () => img.replaceWith(`📎 ${n[1]}`);
+      row.append(img);
+    });
+    return row;
+  }
+  row.className = 'tako';
+  if (event.steps?.length) row.append(stepsBlock(event.steps));
+  row.append(renderMarkdown(event.text));
+  return row;
+}
+
+// ---- state from the server ----
+const setText = (el, text) => { if (el.textContent !== text) el.textContent = text; };
+function tellGoo(next) { if (next !== gooState) { gooState = next; native?.postMessage({ goo: next }); } }
+// An error from a click stays a few seconds; one from the server stays as long as the server says.
+let heldError = 0;
+function showError(text, hold) {
+  if (hold) heldError = Date.now() + 5000;
+  else if (Date.now() < heldError) return;
+  setText($('err'), text || ''); $('err').classList.toggle('show', !!text);
+}
+let liveKey = '', lastError = '';
+function showLive(s) {
+  const step = s.steps[s.steps.length - 1];
+  const key = `${s.busy}|${s.partial.length}|${s.steps.length}`;
+  if (key === liveKey) return;
+  liveKey = key;
+  const box = $('live');
+  box.classList.toggle('show', s.busy && (!!s.partial || !!step));
+  box.replaceChildren();
+  if (!s.busy) return;
+  const stuckToEnd = $('log').scrollHeight - $('log').scrollTop - $('log').clientHeight < 40;
+  if (step) { const now = document.createElement('div'); now.className = 'now'; now.textContent = step; box.append(now); }
+  if (s.partial) box.append(renderMarkdown(s.partial));
+  box.scrollTop = box.scrollHeight;
+  if (stuckToEnd) $('log').scrollTop = $('log').scrollHeight;
+}
+let cardKey = '';
+function tellCards() { native?.postMessage({ cards: cardsUp || noticeUp }); }
+function showCards(cards) {
+  const key = cards.map((c) => c.id).join();
+  if (key === cardKey) return;
+  cardKey = key;
+  const box = $('cards');
+  box.classList.toggle('show', cards.length > 0);
+  if (cards.length > 0 !== cardsUp) { cardsUp = cards.length > 0; tellCards(); }
+  box.replaceChildren(...cards.map((card) => {
+    const el = document.createElement('div');
+    el.className = 'ask';
+    const title = document.createElement('div');
+    title.className = 'title';
+    title.textContent = card.kind === 'change' ? `要替换 ${card.original}` : 'Tako 想做这件事';
+    const body = document.createElement('div');
+    body.className = 'body';
+    body.textContent = card.reason ? `${card.reason}\n${card.text}` : card.text;
+    const actions = document.createElement('div');
+    actions.className = 'card-actions';
+    const decide = (accepted) => () => { el.remove(); api('/decide', { id: card.id, accepted }); };
+    if (card.kind === 'change') actions.append(button('看副本', () => native?.postMessage({ openFile: card.edited })));
+    actions.append(button(card.kind === 'change' ? '放弃' : '拒绝', decide(false)));
+    actions.append(button(card.kind === 'change' ? '应用' : '允许', decide(true), true));
+    el.append(title, body, actions);
+    return el;
+  }));
+  if (cards.length) { native?.postMessage({ pop: .6 }); window.setOpen(true); }
+}
+function placeholder(s) {
+  const isDeck = /Powerpoint|Keynote|wpsoffice/i.test(s.bundle);
+  return s.kind === 'window' ? (isDeck ? '让 Tako 看看或改这份文件…' : '问 Tako 这个窗口…') : '跟 Tako 说…';
+}
+function show(s) {
+  let switched = false;
+  if (s.gen !== gen) {
+    // another conversation: start from its own history on the next look
+    const first = gen === null;
+    gen = s.gen;
+    catchingUp = true;
+    if (!first || seen) { $('log').replaceChildren(empty); seen = 0; s = { ...s, events: [] }; switched = true; }
+  }
+  document.body.classList.toggle('wechat', s.kind !== 'window');
+  empty.textContent = s.kind === 'window' ? '不会用这个软件也没关系，告诉 Tako 你想做什么。' : s.chat ? '对方有新消息时，Tako 会在这里开口；也可以直接问它。' : '把 Tako 拖到任意窗口上松手，或者在任意窗口按 ⌃⌥T。';
+  document.body.dataset.app = s.app || '';
+  setText($('who'), s.chat ? `我在看：${s.chat}` : '还没盯着哪段对话，点这里选');
+  const ear = s.listening !== null && s.listening !== undefined;
+  $('tick').classList.toggle('ear', ear);
+  $('tick').title = ear ? '点一下不听了' : '';
+  setText($('tick'), s.status === 'working' ? 'Tako 在动手…' : s.status === 'thinking' ? 'Tako 在想…' : ear ? `在听 ${Math.floor(s.listening / 60)}:${String(s.listening % 60).padStart(2, '0')}` : s.polled_at
+    ? `${new Date(s.polled_at * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })} 看过` : '');
+  showError(s.error);
+  if ($('say').placeholder !== placeholder(s)) $('say').placeholder = placeholder(s);
+  busy = s.busy;
+  updateSend();
+  showNotice();
+  let next = s.status === 'working' ? 'working' : s.status === 'thinking' ? 'thinking' : s.status === 'reading' || ear ? 'reading' : 'idle';
+  showLive(s);
+  showCards(s.pending || []);
+  if (s.events.length) {
+    $('log').querySelector('.empty')?.remove();
+    s.events.forEach((event) => { $('log').append(bubble(event)); });
+    seen += s.events.length;
+    // Old answers coming back with a conversation are not news: a panel the owner closed stays closed.
+    if (catchingUp) { if (s.events.some((event) => event.role === 'wechat')) next = 'reading'; }
+    else if (s.events.some((event) => event.role === 'tako')) { native?.postMessage({ pop: 1, done: true }); window.setOpen(true); }
+    else if (s.events.some((event) => event.role === 'wechat')) next = 'reading';
+    $('log').scrollTop = $('log').scrollHeight;
+  }
+  if (!switched) catchingUp = false;
+  if (s.error && s.error !== lastError) native?.postMessage({ oops: true });
+  lastError = s.error;
+  tellGoo(next);
+}
+const empty = document.createElement('div');
+empty.className = 'empty'; empty.textContent = '告诉 Tako 你想做什么。';
+$('log').append(empty);
+
+// ---- setting up, and new versions: the only things Tako ever shows on its own behalf ----
+let setup = null, update = null, noticeKey = '', noticeUp = false;
+const SETUP_WORDS = {
+  install: ['还差一步：装上 Codex', 'Tako 的大脑是 OpenAI 的 Codex，用你自己的 ChatGPT 账号。', '安装 Codex', '正在安装 Codex，大约一分钟…'],
+  login: ['还差一步：登录 ChatGPT', '浏览器会打开登录页，登录后回到这里就能用了。', '登录', '在浏览器里登录，登录好这里会自动继续…'],
+};
+function noticeLine(cls, text) { const el = document.createElement('div'); el.className = cls; el.textContent = text; return el; }
+function showNotice() {
+  const box = $('notice');
+  const pending = setup && setup.step !== 'ready';
+  const key = JSON.stringify([pending ? setup : null, update, busy]);
+  if (key === noticeKey) return;
+  noticeKey = key;
+  box.replaceChildren();
+  const up = !!(pending || update);
+  box.classList.toggle('show', up);
+  if (up !== noticeUp) { noticeUp = up; tellCards(); }
+  const actions = document.createElement('div');
+  actions.className = 'card-actions';
+  if (pending) {
+    const words = SETUP_WORDS[setup.step];
+    box.append(noticeLine('title', words[0]), noticeLine('body', setup.busy ? words[3] : words[1]));
+    if (setup.error) box.append(noticeLine('why', setup.error));
+    if (!setup.busy) { actions.append(button(words[2], () => api('/setup/next', {}).then(setSetup), true)); box.append(actions); }
+    return;
+  }
+  if (!update) return;
+  const say = (what) => native?.postMessage({ update: what });
+  if (update.state === 'available') {
+    box.append(noticeLine('title', `Tako ${update.version} 可以更新了`));
+    const notes = document.createElement('div');
+    notes.className = 'notes';
+    notes.append(renderMarkdown(update.notes || ''));
+    box.append(notes);
+    if (update.error) box.append(noticeLine('why', update.error));
+    actions.append(button('稍后', () => say('later')));
+    const go = button(busy ? '干完活再更新' : '更新并重启', () => say('install'), true);
+    go.disabled = busy;
+    actions.append(go);
+    box.append(actions);
+  } else if (update.state === 'downloading') {
+    box.append(noticeLine('title', `正在下载 Tako ${update.version}…`));
+    const meter = document.createElement('div'); meter.className = 'meter';
+    const fill = document.createElement('i'); fill.style.width = `${Math.round((update.progress || 0) * 100)}%`;
+    meter.append(fill); box.append(meter);
+  } else if (update.state === 'installing') {
+    box.append(noticeLine('title', '马上回来，正在换上新版本…'));
+  } else if (update.state === 'current') {
+    box.append(noticeLine('title', `已经是最新版本（${update.version}）`));
+    actions.append(button('好', () => say('dismiss'), true));
+    box.append(actions);
+  } else if (update.state === 'updated') {
+    box.append(noticeLine('title', `已更新到 Tako ${update.version}`));
+    const notes = document.createElement('div');
+    notes.className = 'notes';
+    notes.append(renderMarkdown(update.notes || ''));
+    box.append(notes);
+    actions.append(button('知道了', () => say('dismiss'), true));
+    box.append(actions);
+  }
+}
+function setSetup(next) { setup = next; showNotice(); }
+window.setUpdate = (next) => { update = next; showNotice(); };
+async function checkSetup() {
+  try { setSetup(await api('/setup')); } catch {}
+  setTimeout(checkSetup, setup && setup.step === 'ready' ? 60000 : 2000);
+}
+
+async function tick() {
+  try { show(await api(`/state?after=${seen}`)); } catch { setText($('tick'), '连接中断'); }
+  setTimeout(tick, busy ? 250 : 1200);
+}
+tick();
+checkSetup();
+
+// ---- what the owner says ----
+let attachments = [];
+function updateSend() {
+  const empty = !$('say').value.trim() && !attachments.length;
+  const stopping = busy && empty;
+  $('send').classList.toggle('stopping', stopping);
+  $('send').disabled = empty && !stopping;
+  $('send').setAttribute('aria-label', stopping ? '停止' : '发送');
+  $('send').title = stopping ? '停止' : '发送';
+}
+function fileTile(tile, name) {
+  tile.className = 'tile doc';
+  const kind = document.createElement('span');
+  kind.className = 'kind';
+  kind.textContent = (name.includes('.') ? name.split('.').pop() : 'file').slice(0, 4);
+  const label = document.createElement('b');
+  label.textContent = name;
+  tile.prepend(kind, label);
+}
+function attachmentTile(path) {
+  const name = path.split('/').pop();
+  const tile = document.createElement('div');
+  tile.title = path;
+  tile.onclick = () => native?.postMessage({ openFile: path });
+  const remove = button('', (e) => {
+    e.stopPropagation();
+    attachments = attachments.filter((p) => p !== path);
+    showAttached();
+    $('say').focus({ preventScroll: true });
+  });
+  remove.innerHTML = '<svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true"><path d="M1 1l6 6M7 1 1 7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+  remove.setAttribute('aria-label', `移除 ${name}`);
+  remove.title = '移除';
+  tile.append(remove);
+  if (isImage(path)) {
+    tile.className = 'tile pic';
+    const img = document.createElement('img');
+    img.src = fileUrl(path);
+    img.alt = name;
+    img.onerror = () => { img.remove(); fileTile(tile, name); };
+    tile.prepend(img);
+  } else {
+    fileTile(tile, name);
+  }
+  return tile;
+}
+function showAttached() {
+  const box = $('attached');
+  box.classList.toggle('show', attachments.length > 0);
+  box.replaceChildren(...attachments.map(attachmentTile));
+  updateSend();
+}
+window.addFiles = async (paths) => {
+  await api('/offer', { paths });
+  attachments = [...new Set([...attachments, ...paths])];
+  showAttached();
+  window.setOpen(true);
+  native?.postMessage({ pop: .7 });
+};
+window.setDropping = (on) => document.body.classList.toggle('dropping', on);
+function grow() {
+  const say = $('say');
+  say.style.height = 'auto';
+  say.style.height = `${Math.min(132, say.scrollHeight + 2)}px`;
+}
+$('say').addEventListener('input', () => { grow(); updateSend(); });
+$('say').addEventListener('keydown', (e) => {
+  // Enter that finishes a Chinese word in the input method must not send.
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
+    e.preventDefault();
+    $('f').requestSubmit();
+  }
+});
+$('say').addEventListener('paste', (e) => {
+  const images = [...e.clipboardData.files].filter((file) => file.type.startsWith('image/'));
+  if (!images.length) return;
+  e.preventDefault();
+  images.forEach((file) => {
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const r = await api('/upload', { name: file.name || 'paste.png', data: reader.result.split(',')[1] });
+      window.addFiles([r.path]);
+    };
+    reader.readAsDataURL(file);
+  });
+});
+$('f').onsubmit = async (e) => {
+  e.preventDefault();
+  if (busy && !$('say').value.trim()) { await api('/stop', {}); return; }
+  const text = $('say').value.trim();
+  if (!text && !attachments.length) return;
+  const files = attachments;
+  $('say').value = '';
+  attachments = [];
+  showAttached();
+  grow();
+  showError('');
+  await api('/ask', { text, files });
+};
+$('add').onclick = () => { native?.postMessage({ pickFiles: true }); };
+$('who').onclick = () => {
+  if (!document.body.classList.contains('wechat')) return;
+  $('picker').classList.toggle('show');
+  if ($('picker').classList.contains('show')) $('q').focus();
+};
+let searching;
+$('q').oninput = () => {
+  clearTimeout(searching);
+  searching = setTimeout(async () => {
+    const q = $('q').value.trim();
+    $('hits').replaceChildren();
+    if (!q) return;
+    (await api(`/chats?q=${encodeURIComponent(q)}`)).forEach((chat) => {
+      const b = document.createElement('button');
+      b.textContent = chat.name;
+      b.onclick = async () => { await api('/attach', chat); $('picker').classList.remove('show'); $('q').value = ''; $('hits').replaceChildren(); };
+      $('hits').append(b);
+    });
+  }, 220);
+};
+addEventListener('keydown', (e) => { if (e.key === 'Escape' && opened) window.setOpen(false); });
+layout();
+</script>
+</body>
+</html>
