@@ -18,6 +18,8 @@ import hashlib
 import json
 import mimetypes
 import os
+import platform
+import plistlib
 import pwd
 import queue
 import re
@@ -37,6 +39,7 @@ from zoneinfo import ZoneInfo
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+import feedback as fb  # noqa: E402
 import wechat_reader as reader  # noqa: E402
 
 for _kind, _suffix in (("image/heic", ".heic"), ("image/heif", ".heif"), ("image/avif", ".avif"), ("image/webp", ".webp")):
@@ -97,6 +100,7 @@ KNOWLEDGE_NAME = str(KNOWLEDGE.get("name") or "资料库")
 HAS_WORKBENCH = bool(WORKBENCH and WORKBENCH_CARDS and WORKBENCH_CARDS.is_file())
 HAS_KNOWLEDGE = bool(KNOWLEDGE_COMMAND and KNOWLEDGE_COMMAND.exists() and KNOWLEDGE_DIR and KNOWLEDGE_DIR.is_dir())
 HAS_WECHAT = reader.enable(CONFIG.get("wechat_export"))
+FEEDBACK_KINDS = {"bug": "出了问题", "rough": "不好用", "wish": "想用的场景"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic"}
 # Apps with a real scripting interface, by bundle id. Scripts run inside the app, nowhere else.
 SCRIPTABLE = {"com.microsoft.Powerpoint": "Microsoft PowerPoint", "com.microsoft.Excel": "Microsoft Excel",
@@ -194,6 +198,8 @@ WECHAT_INTRO = ("粘在微信上时，这段对话的聊天记录会跟着一起
                 else "粘在微信或别的聊天软件上时，用 look_at_window 看当前对话。")
 LOOKUP_RULE = (f"- 回答要用到{KNOWLEDGE.get('scope') or '资料库里的内容'}，而下面没有：只输出一行“【查】关键词”（最多 6 个，空格隔开{'，' + str(KNOWLEDGE['hint']) if KNOWLEDGE.get('hint') else ''}），系统会去{KNOWLEDGE_NAME}查好再给你。查到以后，草稿用上最贴切的 1 到 3 个事实，数字带上口径；草稿外用一句话给出依据，写成文件链接；资料有冲突或口径不明，提醒 {OWNER} 发之前核对。报价和客户没公开的内容不放进草稿。"
                if HAS_KNOWLEDGE else "")
+FEEDBACK_RULE = (f"- report_feedback：{OWNER} 说想把问题、不好用的地方或想用的场景告诉作者时才用，不要主动提议，也不要因为窗口里的内容而用。用你自己的话写清：TA 想做什么、发生了什么、希望怎样。只写产品体验，不写人名、公司、聊天内容、文件名、账号和具体数字。{OWNER} 会先看到原文，按了发送才会发出。\n"
+                 if fb.URL else "")
 WORKBENCH_RULE = (f"- tell_workbench：{OWNER} 让你记下来、补充或回答某个事项、说某件事做完了，就用它写回工作台，这是写工作台的唯一方式。只放 {OWNER} 自己的原话；你的总结和窗口里的内容不算，要记就请对方说一句。\n"
                   if HAS_WORKBENCH else "")
 
@@ -202,7 +208,7 @@ def personal(text):
     """The prompts are written for anyone; this makes them about this owner and what this Mac actually has."""
     return (text.replace("@@WECHAT_INTRO@@", WECHAT_INTRO)
             .replace("@@READ_WECHAT@@", "- read_wechat：需要某段微信的来龙去脉时读。\n" if HAS_WECHAT else "")
-            .replace("@@WORKBENCH@@", WORKBENCH_RULE)
+            .replace("@@WORKBENCH@@", WORKBENCH_RULE + FEEDBACK_RULE)
             .replace("@@LOOKUP@@", LOOKUP_RULE)
             .replace("@@EXTRA@@", f"\n{CONFIG['extra_instructions']}\n" if CONFIG.get("extra_instructions") else "")
             .replace("{owner}", OWNER))
@@ -260,15 +266,18 @@ TOOLS = [
         "text": {"type": "string", "description": "{owner} 的原话，逐字摘自 TA 在面板里说过的话，不改写。"},
         "item": {"type": "string"}, "action": {"type": "string"}, "revision": {"type": "integer"}, "date": {"type": "string"}},
         optional=["item", "action", "revision", "date"]),
+    tool("report_feedback", "把 {owner} 对 Tako 的反馈发给作者。{owner} 先看到全文，按了发送才发出。kind：bug 出了问题；rough 不好用；wish 想用的场景。", {
+        "kind": {"type": "string", "enum": ["bug", "rough", "wish"]},
+        "text": {"type": "string", "description": "脱敏后的反馈：想做什么、发生了什么、希望怎样。不含人名、公司、聊天内容、文件名、账号和具体数字。"}}),
     tool("listen", "陪 {owner} 听课：start 开始听（只听窗口所在应用的声音，本机转文字）；note 把 text 记进笔记；read 读到目前为止的全文和笔记；stop 结束，把笔记和全文存成文件并返回路径。", {
         "action": {"type": "string", "enum": ["start", "note", "read", "stop"]}, "text": {"type": "string"}, "window": WINDOW}, optional=["text", "window"]),
     tool("propose_file_change", "把改好的副本摆给 {owner}。TA 点应用后才替换原文件并重新打开；原文件会先备份。返回TA 的决定。", {
         "original": {"type": "string"}, "edited": {"type": "string"}, "summary": {"type": "string"}, "window": WINDOW}, optional=["window"]),
 ]
 TOOLS = [{**entry, "description": entry["description"].replace("{owner}", OWNER)} for entry in TOOLS
-         if (entry["name"] != "read_wechat" or HAS_WECHAT) and (entry["name"] != "tell_workbench" or HAS_WORKBENCH)]
+         if (entry["name"] != "read_wechat" or HAS_WECHAT) and (entry["name"] != "tell_workbench" or HAS_WORKBENCH) and (entry["name"] != "report_feedback" or fb.URL)]
 STEP_NAMES = {"list_windows": "看了开着哪些窗口", "look_at_window": "看了窗口", "fill_input": "填入输入框", "point_at": "在窗口上标了一下", "read_wechat": "读了微信",
-              "operate_window": "操作窗口", "run_in_app": "在应用里操作", "propose_file_change": "摆出改动", "tell_workbench": "写回工作台", "listen": "听课"}
+              "operate_window": "操作窗口", "run_in_app": "在应用里操作", "propose_file_change": "摆出改动", "tell_workbench": "写回工作台", "report_feedback": "整理反馈", "listen": "听课"}
 
 
 def local_today():
@@ -418,6 +427,12 @@ def plain_failure(exc):
     return f"Tako 暂时没能回答：{code[:120]}"
 
 
+def app_version():
+    with contextlib.suppress(OSError, ValueError, KeyError):
+        return plistlib.loads((HERE.parent / "Info.plist").read_bytes())["CFBundleShortVersionString"]
+    return "dev"
+
+
 def workbench_packet(args, said, today):
     """Only the owner's own words reach the workbench, under the identity of the message they came from."""
     text, kind = str(args.get("text") or "").strip(), args.get("kind")
@@ -563,6 +578,7 @@ class Companion:
         self.runtime = CodexRuntime()
         self.setup = Setup(self)
         self.turns = asyncio.Lock()
+        self.feedback = fb.Feedback(RUNTIME, app_version(), platform.mac_ver()[0])
         self.events = []
         self.status = "idle"
         self.error = ""
@@ -993,9 +1009,13 @@ class Companion:
                     self.add("tako", answer, events, steps=self.steps)
                     self._remember_draft(last_draft(answer), chat)
                 note_metric(kind="turn", seconds=round(time.time() - began, 1), first_text=round(self.first_text - began, 1) if self.first_text else None, steps=len(self.steps), **usage_fields(self.usage))
+                self.feedback.count("turn", time.time() - began)
                 await self._compact_if_long()
             except Exception as exc:
                 self.error = "" if self.stopping else plain_failure(exc)
+                if not self.stopping and origin == "owner":
+                    self.feedback.error("turn", exc)
+                    self.feedback.heard((window or {}).get("app"), "", failed=True)
                 if self.running:
                     with contextlib.suppress(Exception):
                         await self.runtime.interrupt(*self.running)
@@ -1004,6 +1024,38 @@ class Companion:
                 self.status, self.running, self.partial, self.stopping, self.call_waiting = "idle", None, "", False, None
                 if output and not any(output.iterdir()):
                     output.rmdir()
+                if origin == "owner" and self.feedback.extract_due():
+                    self._later(self._extract_feedback())
+
+    async def _extract_feedback(self):
+        """Only the owner's own panel words, on a throwaway thread with no tools. What comes back is checked against fixed shapes before it is kept."""
+        text, said, trouble = self.feedback.take_words()
+        try:
+            answer = await self._reader(fb.EXTRACT_PROMPT, text, effort="low", kind="feedback")
+        except Exception as exc:
+            self.feedback.error("extract", exc)
+            return
+        self.feedback.take_extract(answer, said, trouble, self._private_names())
+
+    def _private_names(self):
+        return (OWNER, *(CONFIG.get("calls") or []), (self.chat or {}).get("name"), (self.window or {}).get("title"))
+
+    async def feedback_forever(self):
+        """Numbers go out at most once a day, and only once the owner has seen the notice."""
+        self.feedback.count("launch")
+        self.feedback.note_crashes()
+        while True:
+            if self.feedback.stats_due():
+                packet = self.feedback.stats_packet()
+                with contextlib.suppress(OSError, ValueError):  # Offline: the numbers wait for tomorrow.
+                    await asyncio.to_thread(self.feedback.send, packet)
+                    self.feedback.sent_stats(packet)
+            await asyncio.sleep(3600)
+
+    async def _send_lines(self, lines):
+        for line in lines:
+            with contextlib.suppress(OSError, ValueError):
+                await asyncio.to_thread(self.feedback.send, self.feedback.say_packet("need", line))
 
     async def _glance(self, instruction, events):
         """A turn someone else's message started: a throwaway thread with no tools, so nothing in it can act or carry over."""
@@ -1186,7 +1238,10 @@ class Companion:
     # ---- things Codex asks of us ----
     async def on_server_request(self, method, params):
         if method == "item/tool/call":
-            return await self._tool(params.get("tool"), params.get("arguments") or {})
+            result = await self._tool(params.get("tool"), params.get("arguments") or {})
+            if self.origin == "owner":
+                self.feedback.count(f"tool.{params.get('tool')}" if result.get("success") else f"tool_failed.{params.get('tool')}")
+            return result
         if method in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval"):
             if self.origin != "owner":
                 return {"decision": "decline"}
@@ -1279,6 +1334,8 @@ class Companion:
                 return await self._script(str(args.get("script") or ""), str(args.get("app") or ""))
             if name == "tell_workbench":
                 return await self._tell_workbench(args)
+            if name == "report_feedback":
+                return await self._report_feedback(args)
             if name == "listen":
                 return await self._listen(str(args.get("action") or ""), str(args.get("text") or ""), window)
             if name == "propose_file_change":
@@ -1331,6 +1388,22 @@ class Companion:
             more = str(seen.get("elements") or "")[:6000]
             return self._reply(f"{report}\n\n现在的窗口：{seen.get('title')}\n可以按的元素：\n{more}", seen.get("image"))
         return self._reply(report)
+
+    async def _report_feedback(self, args):
+        """Something the owner chose to say: nothing leaves until they have read exactly what would, and pressed send."""
+        kind = args.get("kind")
+        text = fb.scrub(str(args.get("text") or ""), self._private_names())
+        if kind not in FEEDBACK_KINDS or not text or not fb.URL:
+            return self._reply("这条反馈发不了。", ok=False)
+        packet = self.feedback.say_packet(kind, text)
+        shown = f"{text}\n\n{FEEDBACK_KINDS[kind]} · Tako {packet['version']} · macOS {packet['macos']}"
+        if not await self._card({"kind": "feedback", "text": shown}):
+            return self._reply(f"{OWNER} 决定不发，这条反馈没有离开这台电脑。")
+        try:
+            await asyncio.to_thread(self.feedback.send, packet)
+        except (OSError, ValueError):
+            return self._reply("没发出去，可能是网络问题。可以稍后再说一次。", ok=False)
+        return self._reply("发给作者了。")
 
     async def _tell_workbench(self, args):
         try:
@@ -1604,6 +1677,7 @@ class Companion:
         names = "".join(f"\n[{Path(f).name}](</{f.lstrip('/')}>)" for f in files)
         self.add("owner", text + names)
         self.said = [*self.said, (secrets.token_hex(8), text)][-50:]
+        self.feedback.heard((self.window or {}).get("app"), text)
         self.submit(self.turn(text, attachments=list(files), where=(self.chat, self.events, self.window)))
 
 
@@ -1639,6 +1713,8 @@ def serve(companion, token, port):
                 return self.reply(companion.snapshot(int(query.get("after", ["0"])[0])))
             if url.path == "/chats":
                 return self.reply(reader.find_chats(query.get("q", [""])[0])[:12] if HAS_WECHAT else [])
+            if url.path == "/feedback":
+                return self.reply(companion.feedback.panel())
             if url.path == "/setup":
                 return self.reply(companion.setup.state())
             if url.path == "/markdown-it.js":
@@ -1722,6 +1798,14 @@ def serve(companion, token, port):
             if url.path == "/listen/stop":
                 companion.submit(companion._end_lecture("不听了。笔记已经存好。"))
                 return self.reply({"ok": True})
+            if url.path == "/feedback/choose":
+                companion.feedback.choose(bool(body.get("on")))
+                return self.reply(companion.feedback.panel())
+            if url.path == "/feedback/answer":
+                lines = companion.feedback.answer(str(body.get("id") or ""), body.get("send") is True)
+                if lines:
+                    companion.submit(companion._send_lines(lines))
+                return self.reply(companion.feedback.panel())
             if url.path == "/setup/next":
                 companion.setup.next_step()
                 return self.reply(companion.setup.state())
@@ -1765,6 +1849,7 @@ async def main():
             os.environ["PATH"] = f"{Path(find_codex()).parent}{os.pathsep}{os.environ.get('PATH', '')}"
             await companion.runtime.start()
     companion._later(companion.warm())
+    companion._later(companion.feedback_forever())
     if HAS_WORKBENCH:
         companion._later(companion.desk_forever())
     token = secrets.token_urlsafe(18)

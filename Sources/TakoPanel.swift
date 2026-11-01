@@ -1397,6 +1397,8 @@ final class Controller: NSObject, NSApplicationDelegate, WKScriptMessageHandler,
     }
 
     @objc func checkForUpdate() { updater.showOrCheck() }
+    @objc func startFeedback() { web.evaluateJavaScript("startFeedback()") }
+    @objc func feedbackSettings() { web.evaluateJavaScript("feedbackSettings()") }
 
     func applicationDidFinishLaunching(_ note: Notification) {
         lastApp = NSWorkspace.shared.frontmostApplication
@@ -2002,6 +2004,12 @@ final class Controller: NSObject, NSApplicationDelegate, WKScriptMessageHandler,
         shortcut.isEnabled = false
         menu.addItem(shortcut)
         menu.addItem(.separator())
+        let feedback = NSMenuItem(title: "告诉作者哪里不好用…", action: #selector(startFeedback), keyEquivalent: "")
+        feedback.target = self
+        menu.addItem(feedback)
+        let statistics = NSMenuItem(title: "匿名统计…", action: #selector(feedbackSettings), keyEquivalent: "")
+        statistics.target = self
+        menu.addItem(statistics)
         let version = NSMenuItem(title: "Tako \(Updater.current)", action: nil, keyEquivalent: "")
         version.isEnabled = false
         menu.addItem(version)

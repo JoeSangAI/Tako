@@ -13,6 +13,7 @@ This repository is public. Personal paths, names, chat content, keys and client 
 - A turn started by someone else's message runs on a throwaway thread with no tools at all (`READER_CONFIG`); never give it shell, plugins or `TOOLS`. It may ask for a knowledge lookup in words; the system runs one fixed read-only query (no shell, no network).
 - Learning from the owner's edits keeps habits only (`voice.md`), never sentences, names or figures; `metrics.jsonl` holds numbers only. Tako speaks unasked only when it is worth it: silence is the default.
 - Listening (`Listen.swift`): starts only on the owner's words, only the stuck app's sound, never calls or meetings; audio pieces are deleted once read and nothing leaves the Mac. Notes come from a throwaway thread with no tools.
+- Feedback (`feedback.py`): nothing is counted, read or sent until the owner has answered the notice, and off stops all of it. Automatic reports hold only numbers, fixed vocabulary and error type and place, never words, names or identifiers. A sentence leaves only on the owner's tap; extraction reads only the owner's panel words on a throwaway thread with no tools. Change `docs/PRIVACY.md` in the same commit as anything that changes what leaves. The receiver takes no key and serves nothing back.
 - Peeled off a window, it stops reading. Chat text stays in memory; never log or commit chat content, keys or tokens.
 - Runtime state lives in `~/Library/Application Support/Tako/`, never inside the app bundle (a write there breaks its signature and the permissions with it).
 - Moving or narrowing another app's window needs Accessibility; always put it back unless the owner moved it. The panel never covers a full window if it can be helped.
@@ -26,6 +27,8 @@ Updates install only when the new app satisfies the running app's designated req
 
 ## Layout
 
-`Sources/`: `TakoPanel.swift` goo, window following, side panel. `Enchant.swift` ink effects. `Hands.swift` filling and looking. `Operate.swift` operating any app. `Listen.swift`, `listen_worker.py` listening. `Update.swift` new versions. `Backend.swift` runs the Python side from the app. `tako_server.py` sessions, Codex turns, tools, cards. `codex_runtime.py` Codex app-server connection. `wechat_reader.py` optional local WeChat reader. `side.html` the panel.
+`Sources/`: `TakoPanel.swift` goo, window following, side panel. `Enchant.swift` ink effects. `Hands.swift` filling and looking. `Operate.swift` operating any app. `Listen.swift`, `listen_worker.py` listening. `Update.swift` new versions. `Backend.swift` runs the Python side from the app. `tako_server.py` sessions, Codex turns, tools, cards. `codex_runtime.py` Codex app-server connection. `wechat_reader.py` optional local WeChat reader. `feedback.py` what goes back to the author. `side.html` the panel.
+
+`server/feedback_receiver.py` where those reports land.
 
 `tests/test_guards.py` the lines that must hold: `python3 tests/test_guards.py`. `run.sh` builds and restarts for development. `scripts/` build and release.
