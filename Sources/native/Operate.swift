@@ -1,7 +1,8 @@
 // Using any app for the owner: seeing what can be pressed, pressing it, typing, scrolling, in whichever
-// window the request is about, not only the one the goo sits on. The real keyboard and pointer are
-// used, so it stops as soon as the owner moves the pointer. Sending a message stays the owner's; anything else
-// that can't be taken back waits for their approval on a card.
+// window the request is about, not only the one the goo sits on. The owner may be anywhere else meanwhile, so it works
+// behind their back: through Accessibility and events sent to that app alone, never their focus, pointer or clipboard.
+// The few things only the real pointer can do wait until the owner is back on that window and idle. Sending a message
+// stays the owner's; anything else that can't be taken back waits for their approval on a card.
 import ApplicationServices
 import AppKit
 import Carbon.HIToolbox
@@ -21,6 +22,7 @@ struct Element {
     let role: String
     let label: String
     let frame: CGRect  // in window coordinates
+    var value = ""     // what a text field holds now: truer than the picture of a window nobody is looking at
 }
 
 // Enter sends in these, so it is never pressed there.
@@ -58,8 +60,8 @@ func hits(_ text: String, _ words: [String]) -> String? {
 extension Controller {
     // MARK: windows
 
-    func openWindows() -> [Win] {
-        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return [] }
+    func openWindows(anywhere: Bool = false) -> [Win] {
+        guard let list = CGWindowListCopyWindowInfo(anywhere ? [.excludeDesktopElements] : [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return [] }
         return list.compactMap { info -> Win? in
             guard (info[kCGWindowLayer as String] as? Int) == 0, let id = info[kCGWindowNumber as String] as? Int,
                   let owner = info[kCGWindowOwnerName as String] as? String, !blockedOwners.contains(owner),
@@ -77,23 +79,14 @@ extension Controller {
             guard let current = target else { return nil }
             return Win(id: current.id, frame: current.frame, pid: pid, bundle: bundle, app: appName, title: currentTitle(id: current.id))
         }
-        func find() -> Win? {
-            let all = openWindows()
-            if let id = Int(wanted), let hit = all.first(where: { $0.id == id }) { return hit }
-            let key = wanted.lowercased()
+        // A task is tied to its window by id, and the owner may have moved on to another desktop or hidden the app.
+        if let id = Int(wanted) { return openWindows(anywhere: true).first { $0.id == id } }
+        let key = wanted.lowercased()
+        func find(_ all: [Win]) -> Win? {
             let hits = all.filter { $0.app.lowercased().contains(key) || $0.bundle.lowercased().contains(key) || $0.title.lowercased().contains(key) }
             return hits.max { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }
         }
-        if let hit = find() { return hit }
-        // Running but with no window in view (hidden, or behind another Space): bring it forward once.
-        let key = wanted.lowercased()
-        guard let app = NSWorkspace.shared.runningApplications.first(where: {
-            $0.activationPolicy == .regular && (($0.localizedName ?? "").lowercased().contains(key) || ($0.bundleIdentifier ?? "").lowercased().contains(key))
-        }), !blockedOwners.contains(app.localizedName ?? "") else { return nil }
-        app.unhide()
-        app.activate()
-        try? await Task.sleep(nanoseconds: 700_000_000)
-        return find()
+        return find(openWindows()) ?? find(openWindows(anywhere: true).filter { !$0.title.isEmpty })
     }
 
     func currentTitle(id: Int) -> String {
@@ -106,9 +99,16 @@ extension Controller {
 
     // MARK: what can be pressed
 
-    /// Electron and Chromium hide their contents from Accessibility until somebody asks for it.
-    func askForAccessibleContent(pid: pid_t) {
-        AXUIElementSetAttributeValue(AXUIElementCreateApplication(pid), "AXManualAccessibility" as CFString, kCFBooleanTrue)
+    /// Electron and Chromium hide their contents from Accessibility until somebody asks. Electron takes the first request; Chrome refuses it
+    /// and answers only to the second (which also returns an error, seen 2026-11-01), and other apps animate oddly under it, so it comes only after a refusal.
+    @MainActor
+    func askForAccessibleContent(pid: pid_t) async {
+        let app = AXUIElementCreateApplication(pid)
+        if AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue) != .success {
+            AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+            // Chrome takes a moment to build what it has just been asked for.
+            if askedForContent.insert(pid).inserted { try? await Task.sleep(nanoseconds: 1_500_000_000) }
+        }
     }
 
     /// Everything readable and everything pressable in the window. Runs off the main thread: some apps answer slowly.
@@ -137,7 +137,8 @@ extension Controller {
                     AXValueGetValue(extent as! AXValue, .cgSize, &dimension)
                     let local = CGRect(x: at.x - origin.x, y: at.y - origin.y, width: dimension.width, height: dimension.height)
                     if dimension.width > 2, dimension.height > 2, local.intersects(CGRect(origin: .zero, size: size)) {
-                        elements.append(Element(ax: element, role: role, label: String(label.prefix(60)), frame: local))
+                        let held = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"].contains(role) ? string(element, kAXValueAttribute) ?? "" : ""
+                        elements.append(Element(ax: element, role: role, label: String(label.prefix(60)), frame: local, value: String(held.prefix(200))))
                     }
                 }
             }
@@ -154,8 +155,9 @@ extension Controller {
     @MainActor
     func look(_ win: Win) async -> [String: Any] {
         guard CGPreflightScreenCaptureAccess() else { return ["ok": false, "error": "没有屏幕录制权限，看不到窗口"] }
-        if win.id == target?.id { goo.state = "reading"; enchant.setMood("reading") } else { flash(win) }
-        askForAccessibleContent(pid: win.pid)
+        if win.id == target?.id { goo.state = "reading"; enchant.setMood("reading") } else if isFront(win) { flash(win) }
+        await askForAccessibleContent(pid: win.pid)
+        await surface(win)
         let size = win.frame.size
         guard let image = await Hands.captureLive(win, scale: 2) else {
             return ["ok": false, "error": "这个窗口现在截不到（可能不在当前桌面）"]
@@ -163,16 +165,15 @@ extension Controller {
         let wide = max(size.width, 1), shrink = wide > 1600 ? 1600 / wide : 1
         let read = await Task.detached { (Hands.recognize(image, size: size), Hands.jpeg(image, scale: shrink / 2, quality: 0.72)) }.value
         var surveyed: (text: String, elements: [Element]) = ("", [])
-        if trusted, let window = axWindow(pid: win.pid, frame: win.frame) {
+        if trusted, let window = axWindow(pid: win.pid, frame: win.frame, id: win.id) {
             let origin = win.frame.origin
             surveyed = await Task.detached { Controller.survey(window: window, origin: origin, size: size) }.value
         }
-        elements = surveyed.elements
-        elementsWindow = win.id
+        elements[win.id] = surveyed.elements
         var result: [String: Any] = ["ok": true, "id": win.id, "app": win.app, "title": win.title, "imageScale": shrink]
         result["text"] = surveyed.text.count > 300 ? surveyed.text : read.0.map(\.text).joined(separator: "\n")
         result["lines"] = read.0.prefix(220).map { "(\(Int($0.box.minX)),\(Int($0.box.minY)),\(Int($0.box.width)),\(Int($0.box.height))) \($0.text)" }.joined(separator: "\n")
-        result["elements"] = surveyed.elements.enumerated().map { "[\($0.offset)] \($0.element.role.dropFirst(2)) \"\($0.element.label)\" (\(Int($0.element.frame.minX)),\(Int($0.element.frame.minY)),\(Int($0.element.frame.width)),\(Int($0.element.frame.height)))" }.joined(separator: "\n")
+        result["elements"] = surveyed.elements.enumerated().map { "[\($0.offset)] \($0.element.role.dropFirst(2)) \"\($0.element.label)\"\($0.element.value.isEmpty || $0.element.value == $0.element.label ? "" : " = \"\($0.element.value)\"") (\(Int($0.element.frame.minX)),\(Int($0.element.frame.minY)),\(Int($0.element.frame.width)),\(Int($0.element.frame.height)))" }.joined(separator: "\n")
         if let document = await documentPath(win) { result["document"] = document }
         if let picture = read.1 { result["image"] = picture }
         return result
@@ -182,32 +183,231 @@ extension Controller {
 
     func cursor() -> CGPoint { CGEvent(source: nil)?.location ?? .zero }
 
-    /// Starts a run of steps on a window: brings it forward and remembers where the pointer was.
-    @MainActor
-    func beginSteps(_ win: Win) async {
-        operating = true
-        lastStep = CACurrentMediaTime()
-        await frontTarget(win)
-        pointerHome = cursor()
-        pointerLeft = pointerHome
-        if win.id != target?.id { flash(win) }
-    }
-
     func endSteps() {
-        // The owner has taken the pointer: it stays where they have it.
-        if let home = pointerHome, let left = pointerLeft, hypot(cursor().x - left.x, cursor().y - left.y) <= 6 { CGWarpMouseCursorPosition(home) }
-        pointerHome = nil
-        operating = false
         goo.reachGoal = nil
     }
+
+    /// Chrome stops drawing a window that lies under its own windows, and takes away what is inside it. Under another app's it carries on (both seen 2026-11-01).
+    /// Raised while the app is in the background, it only moves up among the app's own: what the owner has in front stays in front.
+    @MainActor
+    func surface(_ win: Win) async {
+        var value: CFTypeRef?
+        guard !isFront(win), let mine = axWindow(pid: win.pid, frame: win.frame, id: win.id),
+              AXUIElementCopyAttributeValue(AXUIElementCreateApplication(win.pid), kAXWindowsAttribute as CFString, &value) == .success,
+              let top = (value as? [AXUIElement])?.first, !CFEqual(top, mine) else { return }
+        AXUIElementPerformAction(mine, kAXRaiseAction as CFString)
+        try? await Task.sleep(nanoseconds: 800_000_000)
+    }
+
+    func isFront(_ win: Win) -> Bool { NSWorkspace.shared.frontmostApplication?.processIdentifier == win.pid }
+
+    /// The real pointer and keyboard belong to the owner: only with this window in front and them idle may anything else touch them.
+    func ownerIsAway(from win: Win) -> Bool {
+        isFront(win) && [CGEventType.mouseMoved, .leftMouseDown, .leftMouseDragged, .scrollWheel, .keyDown].allSatisfy {
+            CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: $0) > 1
+        }
+    }
+
+    func waitForFront(_ win: Win) -> [String: Any] {
+        ["ok": false, "needsFront": true, "error": "这一步要 \(win.app) 在前台才能做"]
+    }
+
+    /// What sits at a point of this window, asked of its own app, which knows whatever else covers that spot on the screen.
+    func element(at screen: CGPoint, in win: Win) -> AXUIElement? {
+        var found: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(AXUIElementCreateApplication(win.pid), Float(screen.x), Float(screen.y), &found) == .success, let found else { return nil }
+        // Two windows of one app can overlap: the answer has to be from this one.
+        var owner: CFTypeRef?
+        if AXUIElementCopyAttributeValue(found, kAXWindowAttribute as CFString, &owner) == .success, let owner, let mine = axWindow(pid: win.pid, frame: win.frame, id: win.id), !CFEqual(owner, mine) { return nil }
+        return found
+    }
+
+    func frame(of element: AXUIElement) -> CGRect? {
+        var position: CFTypeRef?, extent: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &position) == .success,
+              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &extent) == .success else { return nil }
+        var at = CGPoint.zero, dimension = CGSize.zero
+        AXValueGetValue(position as! AXValue, .cgPoint, &at)
+        AXValueGetValue(extent as! AXValue, .cgSize, &dimension)
+        return CGRect(origin: at, size: dimension)
+    }
+
+    /// The smallest pressable thing at a point, as of the last look at this window: it holds even with something lying over that spot on the screen.
+    func knownElement(at screen: CGPoint, in win: Win) -> AXUIElement? {
+        (elements[win.id] ?? []).compactMap { known -> (AXUIElement, CGFloat)? in
+            guard let box = frame(of: known.ax), box.contains(screen) else { return nil }
+            return (known.ax, box.width * box.height)
+        }.min { $0.1 < $1.1 }?.0
+    }
+
+    /// Presses what is at a point without touching the pointer. A press lands on the middle of an element, so a big one (a canvas, a whole page) can't take it.
+    func pressBehindTheOwner(_ given: AXUIElement?, at screen: CGPoint, in win: Win) -> Bool {
+        guard var current = given ?? knownElement(at: screen, in: win) ?? element(at: screen, in: win) else { return false }
+        let tooBig = win.frame.width * win.frame.height / 4
+        typingInto[win.id] = nil
+        for _ in 0..<4 {
+            guard let box = frame(of: current), box.width * box.height <= tooBig else { return false }
+            var role: CFTypeRef?
+            AXUIElementCopyAttributeValue(current, kAXRoleAttribute as CFString, &role)
+            if ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"].contains(role as? String ?? "") {
+                AXUIElementSetAttributeValue(current, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+                typingInto[win.id] = current
+            }
+            if AXUIElementPerformAction(current, kAXPressAction as CFString) == .success { return true }
+            var parent: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(current, kAXParentAttribute as CFString, &parent) == .success, let parent else { return false }
+            current = parent as! AXUIElement
+        }
+        return false
+    }
+
+    /// Keys sent to an app land in whichever of its windows holds the keyboard. Behind the owner's back this window can be made that one; with them in another window of the same app it can't.
+    func keysLandIn(_ win: Win) -> Bool {
+        guard let mine = axWindow(pid: win.pid, frame: win.frame, id: win.id) else { return false }
+        let app = AXUIElementCreateApplication(win.pid)
+        func holding() -> Bool {
+            var focused: CFTypeRef?
+            return AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &focused) == .success && focused.map { CFEqual($0, mine) } == true
+        }
+        if holding() { return true }
+        if isFront(win) { return false }
+        AXUIElementSetAttributeValue(mine, kAXMainAttribute as CFString, kCFBooleanTrue)
+        return holding()
+    }
+
+    /// With the owner typing in this very window, words must not get mixed into theirs.
+    func letTheOwnerFinishTyping(in win: Win) async {
+        guard isFront(win) else { return }
+        for _ in 0..<30 where CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown) < 1 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+    }
+
+    /// Where words for this window go: the field last pressed there, or what holds the keyboard if that is in this window.
+    func textField(of win: Win) -> AXUIElement? {
+        if let known = typingInto[win.id], frame(of: known) != nil { return known }
+        guard keysLandIn(win) else { return nil }
+        var found: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(win.pid), kAXFocusedUIElementAttribute as CFString, &found) == .success, let found else { return nil }
+        return (found as! AXUIElement)
+    }
+
+    func isPasswordField(of win: Win) -> Bool {
+        guard let field = textField(of: win) else { return focusedSubrole(win.pid).subrole == "AXSecureTextField" }
+        var subrole: CFTypeRef?
+        AXUIElementCopyAttributeValue(field, kAXSubroleAttribute as CFString, &subrole)
+        return subrole as? String == "AXSecureTextField"
+    }
+
+    func textValue(of field: AXUIElement) -> String? {
+        var current: CFTypeRef?
+        return AXUIElementCopyAttributeValue(field, kAXValueAttribute as CFString, &current) == .success ? current as? String : nil
+    }
+
+    /// Words of any length directly into the field, without the clipboard or Return, and read back. False: it doesn't let anyone.
+    @MainActor
+    func insertBehindTheOwner(_ text: String, in win: Win) async -> Bool {
+        // An empty field in Chrome has no value to read at all.
+        guard let field = textField(of: win) else { return false }
+        let before = textValue(of: field) ?? ""
+        // Chrome answers after the fact, so a read straight away says nothing has changed.
+        func settles(on wanted: (String?) -> Bool) async -> Bool {
+            for _ in 0..<8 {
+                if wanted(textValue(of: field)) { return true }
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            return false
+        }
+        if AXUIElementSetAttributeValue(field, kAXSelectedTextAttribute as CFString, text as CFString) == .success, await settles(on: { ($0 ?? "") != before }) { return true }
+        // Chrome says yes to that and does nothing; it does take a new value, with the selection worked out here.
+        var range = CFRange(location: (before as NSString).length, length: 0), selected: CFTypeRef?
+        if AXUIElementCopyAttributeValue(field, kAXSelectedTextRangeAttribute as CFString, &selected) == .success, let selected {
+            AXValueGetValue(selected as! AXValue, .cfRange, &range)
+        }
+        let after = (before as NSString).replacingCharacters(in: NSRange(location: range.location, length: range.length), with: text)
+        var settable: DarwinBoolean = false
+        guard AXUIElementIsAttributeSettable(field, kAXValueAttribute as CFString, &settable) == .success, settable.boolValue,
+              AXUIElementSetAttributeValue(field, kAXValueAttribute as CFString, after as CFString) == .success else { return false }
+        // Taken, even if it can't be read back yet: typing it again would write it twice (seen 2026-11-01).
+        _ = await settles(on: { $0 == after })
+        return true
+    }
+
+    /// By key events to that app alone, read back where the app can say: some apps quietly ignore keys while in the background.
+    func typeBehindTheOwner(_ text: String, in win: Win) async -> Bool {
+        guard !win.isWeChat, keysLandIn(win) else { return false }
+        let field = textField(of: win), before = field.flatMap { textValue(of: $0) }
+        typeShort(text, to: win.pid)
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        return before == nil || field.flatMap { textValue(of: $0) } != before
+    }
+
+    /// Scrolls what is at a point: by its scroll bar, or inside a web page by bringing the next thing out of view into view, which also works in a
+    /// scrolling box within the page, and with the arrow keys as a last try. True only if something really moved.
+    @MainActor
+    func scrollBehindTheOwner(at screen: CGPoint, lines: Int, in win: Win) async -> Bool {
+        guard var current = knownElement(at: screen, in: win) ?? element(at: screen, in: win) ?? axWindow(pid: win.pid, frame: win.frame, id: win.id) else { return false }
+        func children(_ element: AXUIElement) -> [AXUIElement] {
+            var found: CFTypeRef?
+            return AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &found) == .success ? found as? [AXUIElement] ?? [] : []
+        }
+        func webArea(under element: AXUIElement, _ depth: Int = 0) -> AXUIElement? {
+            var role: CFTypeRef?
+            AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role)
+            if role as? String == "AXWebArea" { return element }
+            guard depth < 12 else { return nil }
+            return children(element).lazy.compactMap { webArea(under: $0, depth + 1) }.first
+        }
+        var web: AXUIElement?
+        for _ in 0..<24 {
+            var role: CFTypeRef?, bar: CFTypeRef?, parent: CFTypeRef?
+            AXUIElementCopyAttributeValue(current, kAXRoleAttribute as CFString, &role)
+            if role as? String == "AXWebArea" { web = current; break }
+            if AXUIElementCopyAttributeValue(current, kAXVerticalScrollBarAttribute as CFString, &bar) == .success, let bar {
+                var value: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(bar as! AXUIElement, kAXValueAttribute as CFString, &value) == .success, let now = value as? Double else { return false }
+                return AXUIElementSetAttributeValue(bar as! AXUIElement, kAXValueAttribute as CFString, max(0, min(1, now - Double(lines) * 0.01)) as CFNumber) == .success
+            }
+            guard AXUIElementCopyAttributeValue(current, kAXParentAttribute as CFString, &parent) == .success, let parent else { break }
+            current = parent as! AXUIElement
+        }
+        guard let page = web ?? axWindow(pid: win.pid, frame: win.frame, id: win.id).flatMap({ webArea(under: $0) }), let seen = frame(of: page) else { return false }
+        // The nearest thing out of view in that direction, and something to tell by whether anything moved.
+        var next: (element: AXUIElement, distance: CGFloat)?, marker: (element: AXUIElement, y: CGFloat)?, visited = 0
+        func walk(_ element: AXUIElement, _ depth: Int) {
+            guard depth < 40, visited < 4000 else { return }
+            visited += 1
+            if let box = frame(of: element), box.height > 0, box.width > 0, box.height < seen.height {
+                if marker == nil { marker = (element, box.minY) }
+                let distance = lines < 0 ? box.minY - seen.maxY : seen.minY - box.maxY
+                if distance >= 0, distance < (next?.distance ?? .greatestFiniteMagnitude) { next = (element, distance) }
+            }
+            children(element).forEach { walk($0, depth + 1) }
+        }
+        walk(page, 0)
+        func moved() async -> Bool {
+            guard let marker else { return false }
+            for _ in 0..<8 {
+                if let box = frame(of: marker.element), abs(box.minY - marker.y) > 1 { return true }
+                try? await Task.sleep(nanoseconds: 60_000_000)
+            }
+            return false
+        }
+        if let next, AXUIElementPerformAction(next.element, "AXScrollToVisible" as CFString) == .success, await moved() { return true }
+        guard keysLandIn(win) else { return false }
+        AXUIElementSetAttributeValue(page, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        press(lines < 0 ? 121 : 116, flags: [], to: win.pid)
+        return await moved()
+    }
+
+    // MARK: looking at what is under a click
 
     /// The label on whatever sits at a point in the window: from Accessibility, or else read off the picture.
     @MainActor
     func labelAt(_ point: CGPoint, in win: Win) async -> String {
-        var found: AXUIElement?
         let screenPoint = CGPoint(x: win.frame.minX + point.x, y: win.frame.minY + point.y)
         var parts: [String] = []
-        if AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(screenPoint.x), Float(screenPoint.y), &found) == .success, var element = found {
+        if var element = element(at: screenPoint, in: win) {
             for _ in 0..<3 {
                 for name in [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute] {
                     var value: CFTypeRef?
@@ -298,14 +498,20 @@ extension Controller {
         return nil
     }
 
-    func press(_ key: CGKeyCode, flags: CGEventFlags) {
-        let source = CGEventSource(stateID: .combinedSessionState)
+    /// To one app, past whatever is in front, or else (`to` left out) to the real keyboard. What the owner is holding down doesn't mix into the former.
+    func press(_ key: CGKeyCode, flags: CGEventFlags, to pid: pid_t? = nil) {
+        let source = pid == nil ? CGEventSource(stateID: .combinedSessionState) : CGEventSource(stateID: .privateState)
         let down = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: true)
         let up = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: false)
         down?.flags = flags
         up?.flags = []   // so no modifier stays held for whatever comes next
-        down?.post(tap: .cghidEventTap)
-        up?.post(tap: .cghidEventTap)
+        if let pid {
+            down?.postToPid(pid)
+            up?.postToPid(pid)
+        } else {
+            down?.post(tap: .cghidEventTap)
+            up?.post(tap: .cghidEventTap)
+        }
     }
 
     /// Pasting is the only safe way to enter several lines, and the fastest way to enter long ones.
@@ -327,20 +533,28 @@ extension Controller {
         if !saved.isEmpty { board.writeObjects(saved) }
     }
 
-    func typeShort(_ text: String) {
-        let source = CGEventSource(stateID: .combinedSessionState)
+    func typeShort(_ text: String, to pid: pid_t? = nil) {
+        let source = pid == nil ? CGEventSource(stateID: .combinedSessionState) : CGEventSource(stateID: .privateState)
         func post(_ units: [UInt16]) {
             let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)
+            let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
             down?.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
-            down?.post(tap: .cghidEventTap)
-            CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)?.post(tap: .cghidEventTap)
+            up?.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
+            if let pid {
+                down?.postToPid(pid)
+                up?.postToPid(pid)
+            } else {
+                down?.post(tap: .cghidEventTap)
+                up?.post(tap: .cghidEventTap)
+            }
             usleep(12000)
         }
-        // By whole characters: an emoji cut in half types as garbage.
+        // By whole characters: an emoji cut in half types as garbage. To an app in the background, one each: Chrome drops anything more (seen 2026-11-01).
+        let most = pid == nil ? 16 : 1
         var units: [UInt16] = []
         for character in text {
             let next = Array(String(character).utf16)
-            if units.count + next.count > 16 { post(units); units = [] }
+            if !units.isEmpty, units.count + next.count > most { post(units); units = [] }
             units += next
         }
         if !units.isEmpty { post(units) }
@@ -366,29 +580,18 @@ extension Controller {
     func step(_ step: [String: Any], in win: Win, confirmed: Bool) async -> [String: Any] {
         lastStep = CACurrentMediaTime()
         let action = step["action"] as? String ?? ""
-        if confirmed {
-            // The owner just used the pointer and the panel to say yes: that is not taking over. Back to the window, and the pointer goes home to where they left it.
-            await frontTarget(win)
-            pointerHome = cursor()
-            pointerLeft = pointerHome
-        } else if let left = pointerLeft, hypot(cursor().x - left.x, cursor().y - left.y) > 6 {
-            // The owner has taken the pointer back: hands off at once.
-            return refusal("用户 动了鼠标，已停下")
-        }
-        // The checks below were made for this window; a key or click posted now goes to whatever is in front.
-        if ["click", "double_click", "right_click", "type", "key", "drag"].contains(action),
-           NSWorkspace.shared.frontmostApplication?.processIdentifier != win.pid {
-            return refusal("\(win.app) 不在最前面了，可能是用户切走了，已停下")
-        }
+        // The model saw nothing happen behind the owner's back and asks for the real thing.
+        let realOnly = step["front"] as? Bool ?? false
+        await surface(win)
         if win.id == target?.id { goo.state = "working"; enchant.setMood("working") }
         switch action {
         case "click", "double_click", "right_click":
             var point: CGPoint?, label = "", element: Element?
             if let ref = step["ref"] as? Int {
-                guard elementsWindow == win.id, elements.indices.contains(ref) else { return ["ok": false, "error": "编号 \(ref) 已过期，重新看一下窗口"] }
-                element = elements[ref]
-                label = elements[ref].label
-                point = CGPoint(x: elements[ref].frame.midX, y: elements[ref].frame.midY)
+                guard let known = elements[win.id], known.indices.contains(ref) else { return ["ok": false, "error": "编号 \(ref) 已过期，重新看一下窗口"] }
+                element = known[ref]
+                label = known[ref].label
+                point = CGPoint(x: known[ref].frame.midX, y: known[ref].frame.midY)
             } else if let text = step["text"] as? String, !text.isEmpty {
                 guard let hit = await findText(text, in: win) else { return ["ok": false, "error": "窗口上没找到“\(text)”"] }
                 point = CGPoint(x: hit.box.midX, y: hit.box.midY)
@@ -402,40 +605,55 @@ extension Controller {
             label = [label, await labelAt(at, in: win)].filter { !$0.isEmpty }.joined(separator: " ")
             if let stop = gateClick(label: label, at: at, in: win, confirmed: confirmed) { return stop }
             let screen = CGPoint(x: win.frame.minX + at.x, y: win.frame.minY + at.y)
-            reach(screen, in: win)
-            if win.id == target?.id {
-                // It may have to hop over first: the press lands when the limb does.
-                for _ in 0..<55 where !goo.armArrived { try? await Task.sleep(nanoseconds: 20_000_000) }
+            // Only what the owner can see gets the show.
+            if isFront(win) {
+                reach(screen, in: win)
+                if win.id == target?.id {
+                    // It may have to hop over first: the press lands when the limb does.
+                    for _ in 0..<55 where !goo.armArrived { try? await Task.sleep(nanoseconds: 20_000_000) }
+                }
+                tapMark(screen, in: win)
             }
-            tapMark(screen, in: win)
-            if action == "click", let element, AXUIElementPerformAction(element.ax, kAXPressAction as CFString) == .success {
+            if !realOnly, action == "click", pressBehindTheOwner(element?.ax, at: screen, in: win) {
                 // pressed without moving the pointer at all
-            } else if action == "right_click" {
-                pointerLeft = screen
-                mouse(.rightMouseDown, at: screen, button: .right)
-                mouse(.rightMouseUp, at: screen, button: .right)
+            } else if !realOnly, action == "right_click", let found = element?.ax ?? self.element(at: screen, in: win),
+                      AXUIElementPerformAction(found, kAXShowMenuAction as CFString) == .success {
+                // the same menu, also without the pointer
             } else {
-                // Only where it put the pointer itself counts as its own; any other position is the owner.
-                pointerLeft = screen
-                mouse(.mouseMoved, at: screen)
-                usleep(50000)
-                let times = action == "double_click" ? 2 : 1
-                for k in 1...times {
-                    mouse(.leftMouseDown, at: screen, clicks: k)
-                    usleep(40000)
-                    mouse(.leftMouseUp, at: screen, clicks: k)
-                    if times > 1 { usleep(70000) }
+                guard ownerIsAway(from: win) else { return waitForFront(win) }
+                await withRealPointer {
+                    if action == "right_click" {
+                        mouse(.rightMouseDown, at: screen, button: .right)
+                        mouse(.rightMouseUp, at: screen, button: .right)
+                    } else {
+                        mouse(.mouseMoved, at: screen)
+                        usleep(50000)
+                        let times = action == "double_click" ? 2 : 1
+                        for k in 1...times {
+                            mouse(.leftMouseDown, at: screen, clicks: k)
+                            usleep(40000)
+                            mouse(.leftMouseUp, at: screen, clicks: k)
+                            if times > 1 { usleep(70000) }
+                        }
+                    }
                 }
             }
             try? await Task.sleep(nanoseconds: 260_000_000)
             return ["ok": true, "did": "点了 \(label.isEmpty ? "(\(Int(at.x)),\(Int(at.y)))" : label)"]
         case "type":
             let text = step["text"] as? String ?? ""
-            if focusedSubrole(win.pid).subrole == "AXSecureTextField" { return refusal("这是密码框，密码由用户自己输入") }
+            if isPasswordField(of: win) { return refusal("这是密码框，密码由用户自己输入") }
             if !confirmed && askFirstBundles.contains(win.bundle) { return ["needs": "在 \(win.app) 里输入：\(text.prefix(80))"] }
             // A control character typed key by key can act as Return; pasted it is only text.
             let plain = !text.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) || $0 == "\u{2028}" || $0 == "\u{2029}" }
-            if plain && text.count <= 40 { typeShort(text) } else { await paste(text, files: []) }
+            await letTheOwnerFinishTyping(in: win)
+            if realOnly {
+                guard ownerIsAway(from: win) else { return waitForFront(win) }
+                await withRealPointer { await paste(text, files: []) }
+            } else if await !insertBehindTheOwner(text, in: win) {
+                if !plain { return await realPaste(text, in: win) }
+                if await !typeBehindTheOwner(text, in: win) { return await realPaste(text, in: win) }
+            }
             try? await Task.sleep(nanoseconds: 120_000_000)
             return ["ok": true, "did": "输入了 \(text.prefix(30))"]
         case "key":
@@ -443,17 +661,29 @@ extension Controller {
             if let stop = gateKey(keys, in: win, confirmed: confirmed) { return stop }
             let (flags, key) = chord(keys)
             guard let code = keyCodes[key] else { return ["ok": false, "error": "不认识这个键：\(keys)"] }
-            press(code, flags: flags)
+            await letTheOwnerFinishTyping(in: win)
+            if !realOnly, keysLandIn(win) {
+                press(code, flags: flags, to: win.pid)
+            } else {
+                guard ownerIsAway(from: win) else { return waitForFront(win) }
+                await withRealPointer { press(code, flags: flags) }
+            }
             try? await Task.sleep(nanoseconds: 220_000_000)
             return ["ok": true, "did": "按了 \(keys)"]
         case "scroll":
             let x = step["x"] as? Double ?? win.frame.width / 2, y = step["y"] as? Double ?? win.frame.height / 2
             guard CGRect(origin: .zero, size: win.frame.size).contains(CGPoint(x: x, y: y)) else { return ["ok": false, "error": "这个位置在窗口外面"] }
             let screen = CGPoint(x: win.frame.minX + x, y: win.frame.minY + y)
-            pointerLeft = screen
-            mouse(.mouseMoved, at: screen)
             let amount = Int32(max(-100, min(100, step["amount"] as? Double ?? -5)))
-            CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: amount, wheel2: 0, wheel3: 0)?.post(tap: .cghidEventTap)
+            if realOnly {
+                guard ownerIsAway(from: win) else { return waitForFront(win) }
+                await withRealPointer {
+                    mouse(.mouseMoved, at: screen)
+                    CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: amount, wheel2: 0, wheel3: 0)?.post(tap: .cghidEventTap)
+                }
+            } else if await !scrollBehindTheOwner(at: screen, lines: Int(amount), in: win) {
+                return ["ok": false, "error": "这里在后台滚不动，可以给这一步加 front:true，等窗口回到前台再滚"]
+            }
             try? await Task.sleep(nanoseconds: 260_000_000)
             return ["ok": true, "did": "滚动了"]
         case "drag":
@@ -464,15 +694,17 @@ extension Controller {
             for point in [CGPoint(x: x1, y: y1), CGPoint(x: x2, y: y2)] {
                 if let stop = gateClick(label: await labelAt(point, in: win), at: point, in: win, confirmed: confirmed) { return stop }
             }
+            guard ownerIsAway(from: win) else { return waitForFront(win) }
             let from = CGPoint(x: win.frame.minX + x1, y: win.frame.minY + y1), to = CGPoint(x: win.frame.minX + x2, y: win.frame.minY + y2)
-            mouse(.leftMouseDown, at: from)
-            for k in 1...12 {
-                let t = CGFloat(k) / 12
-                mouse(.leftMouseDragged, at: CGPoint(x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t))
-                usleep(14000)
+            await withRealPointer {
+                mouse(.leftMouseDown, at: from)
+                for k in 1...12 {
+                    let t = CGFloat(k) / 12
+                    mouse(.leftMouseDragged, at: CGPoint(x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t))
+                    usleep(14000)
+                }
+                mouse(.leftMouseUp, at: to)
             }
-            mouse(.leftMouseUp, at: to)
-            pointerLeft = to
             return ["ok": true, "did": "拖动了"]
         case "wait":
             try? await Task.sleep(nanoseconds: UInt64(max(0, min(step["seconds"] as? Double ?? 1, 8)) * 1e9))
@@ -483,9 +715,27 @@ extension Controller {
     }
 
     @MainActor
+    func realPaste(_ text: String, in win: Win) async -> [String: Any] {
+        guard ownerIsAway(from: win) else { return waitForFront(win) }
+        await withRealPointer { await paste(text, files: []) }
+        return ["ok": true, "did": "输入了 \(text.prefix(30))"]
+    }
+
+    /// While the real pointer is in use: the panel lets it through, the keyboard isn't left in the panel, and the pointer goes home after.
+    @MainActor
+    func withRealPointer(_ work: () async -> Void) async {
+        operating = true
+        if side.isKeyWindow { side.resignKey() }
+        let home = cursor()
+        await work()
+        CGWarpMouseCursorPosition(home)
+        operating = false
+    }
+
+    @MainActor
     func findText(_ text: String, in win: Win) async -> (text: String, box: CGRect)? {
         let want = Hands.normalize(text)
-        if elementsWindow == win.id, let hit = elements.first(where: { Hands.normalize($0.label) == want }) { return (hit.label, hit.frame) }
+        if let hit = elements[win.id]?.first(where: { Hands.normalize($0.label) == want }) { return (hit.label, hit.frame) }
         guard let image = await Hands.captureLive(win, scale: 2) else { return nil }
         let size = win.frame.size
         let lines = await Task.detached { Hands.recognize(image, size: size) }.value
@@ -497,9 +747,9 @@ extension Controller {
     @MainActor
     func openChat(_ name: String, in win: Win) async -> [String: Any] {
         guard trusted else { return ["ok": false, "error": "没有辅助功能权限"] }
-        await frontTarget(win)
-        // A window just brought forward can swallow the first click.
-        try? await Task.sleep(nanoseconds: 450_000_000)
+        // WeChat shows little to Accessibility, so this takes the real pointer, and waits for it.
+        guard ownerIsAway(from: win) else { return waitForFront(win) }
+        if side.isKeyWindow { side.resignKey() }
         let home = cursor()
         var left = home
         defer { if hypot(cursor().x - left.x, cursor().y - left.y) <= 6 { CGWarpMouseCursorPosition(home) } }

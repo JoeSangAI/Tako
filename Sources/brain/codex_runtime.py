@@ -218,6 +218,15 @@ class CodexRuntime:
         self._events.pop(thread_id, None)
         self._event_failures.pop(thread_id, None)
 
+    def give_up(self, thread_id: str):
+        """Whoever is waiting on this thread stops waiting; the process and its other threads go on."""
+        self._event_failures[thread_id] = "given_up"
+        self._events[thread_id].clear()
+        async def wake():
+            async with self._changed:
+                self._changed.notify_all()
+        asyncio.get_running_loop().create_task(wake())
+
     async def close(self):
         if self.process is None:
             return

@@ -74,6 +74,7 @@ FULL_READ_SECONDS = 60   # In case the session list misses a message.
 SENT_SETTLE_SECONDS = 45 # The owner often sends one reply in several messages.
 OPENED_DWELL_SECONDS = 4 # Clicking through chats is not opening one.
 COMPACT_AT = 120_000     # Input tokens per request at which the shared thread gets summarized.
+COMPACT_PICTURES_AT = 3_000_000  # Bytes of screenshots on the thread. They cost few tokens, but a reconnect uploads every one of them again.
 CONTEXT_MESSAGES = 30
 MAX_MESSAGE_CHARS = 2000
 GROUP_CALLS = (OWNER, *[str(name) for name in CONFIG.get("calls") or []], "@所有人")

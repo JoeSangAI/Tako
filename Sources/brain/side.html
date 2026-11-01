@@ -98,6 +98,8 @@
   .steps summary::before { content: "▸ "; }
   .steps[open] summary::before { content: "▾ "; }
   .steps div { padding-left: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #others { flex: none; padding: 0 14px; font-size: 11px; color: var(--muted); }
+  #others div { padding-bottom: 6px; }
   #live { display: none; flex: none; padding: 0 14px 10px; max-height: 60%; overflow: hidden auto; user-select: text; }
   #live.show { display: block; }
   #live .now { font-size: 11px; color: var(--muted); }
@@ -165,6 +167,7 @@
   <div id="picker"><input id="q" placeholder="搜索对话名称" aria-label="搜索对话"><div id="hits"></div></div>
   <div id="notice" role="status"></div>
   <div id="log"></div>
+  <div id="others" aria-live="polite"></div>
   <div id="live" aria-live="polite"></div>
   <div id="cards"></div>
   <div id="err" role="alert"></div>
@@ -443,19 +446,35 @@ function showError(text, hold) {
   else if (Date.now() < heldError) return;
   setText($('err'), text || ''); $('err').classList.toggle('show', !!text);
 }
+let othersKey = '', othersDone = 0;
+function showOthers(rows) {
+  const key = JSON.stringify(rows);
+  if (key === othersKey) return;
+  othersKey = key;
+  const done = rows.filter((row) => row.state === 'done').length;
+  if (done > othersDone) native?.postMessage({ pop: 1, done: true });
+  othersDone = done;
+  $('others').replaceChildren(...rows.map((row) => {
+    const line = document.createElement('div');
+    line.textContent = `「${row.name}」那边${row.state === 'done' ? '做完了，回到那个窗口就能看到结果' : row.state === 'held' ? `：${row.trouble}` : '还在做，不用管它'}`;
+    return line;
+  }));
+}
 let liveKey = '', lastError = '';
 function showLive(s) {
-  const step = s.steps[s.steps.length - 1];
-  const key = `${s.busy}|${s.partial.length}|${s.steps.length}`;
+  // A step that is over is not what it is doing now when the model can't be reached.
+  const step = s.trouble || (s.busy ? s.steps[s.steps.length - 1] : '');
+  const key = `${s.busy}|${s.partial.length}|${s.steps.length}|${s.trouble}|${s.queued}`;
   if (key === liveKey) return;
   liveKey = key;
   const box = $('live');
-  box.classList.toggle('show', s.busy && (!!s.partial || !!step));
+  box.classList.toggle('show', s.queued || !!s.trouble || (s.busy && (!!s.partial || !!step)));
   box.replaceChildren();
-  if (!s.busy) return;
+  if (!s.busy && !s.queued && !s.trouble) return;
   const stuckToEnd = $('log').scrollHeight - $('log').scrollTop - $('log').clientHeight < 40;
   if (step) { const now = document.createElement('div'); now.className = 'now'; now.textContent = step; box.append(now); }
   if (s.partial) { try { box.append(renderMarkdown(s.partial)); } catch { box.append(s.partial); } }
+  if (s.queued) { const wait = document.createElement('div'); wait.className = 'now'; wait.textContent = '你刚说的排在后面，这一轮完了就看。'; box.append(wait); }
   box.scrollTop = box.scrollHeight;
   if (stuckToEnd) $('log').scrollTop = $('log').scrollHeight;
 }
@@ -514,7 +533,7 @@ function show(s) {
   const doing = s.status === 'working' || s.status === 'thinking';
   if (!doing) doingSince = 0; else if (!doingSince) doingSince = Date.now();
   const doingFor = doing ? Date.now() - doingSince : 0;
-  setText($('tick'), s.status === 'working' ? (doingFor > 120e3 ? '这活儿不小，八只手都上了…' : doingFor > 45e3 ? 'Tako 又多伸了一只手…' : 'Tako 在动手…') : s.status === 'thinking' ? (doingFor > 45e3 ? 'Tako 想得有点入神…' : 'Tako 在想…') : ear ? `在听 ${Math.floor(s.listening / 60)}:${String(s.listening % 60).padStart(2, '0')}` : s.polled_at
+  setText($('tick'), s.trouble && s.busy ? '连模型不太顺…' : s.status === 'working' ? (doingFor > 120e3 ? '这活儿不小，八只手都上了…' : doingFor > 45e3 ? 'Tako 又多伸了一只手…' : 'Tako 在动手…') : s.status === 'thinking' ? (doingFor > 45e3 ? 'Tako 想得有点入神…' : 'Tako 在想…') : ear ? `在听 ${Math.floor(s.listening / 60)}:${String(s.listening % 60).padStart(2, '0')}` : s.polled_at
     ? `${new Date(s.polled_at * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })} 看过` : '');
   showError(s.error);
   if ($('say').placeholder !== placeholder(s)) $('say').placeholder = placeholder(s);
@@ -523,6 +542,7 @@ function show(s) {
   showNotice();
   let next = s.status === 'working' ? 'working' : s.status === 'thinking' ? 'thinking' : s.status === 'reading' || ear ? 'reading' : 'idle';
   showLive(s);
+  showOthers(s.others || []);
   showCards(s.pending || []);
   if (s.events.length) {
     $('log').querySelector('.empty')?.remove();

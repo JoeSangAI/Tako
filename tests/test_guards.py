@@ -271,7 +271,7 @@ class FeedbackLeavesOnlyFixedShapes(unittest.TestCase):
 
     def test_a_turn_someone_else_started_cant_reach_it(self):
         call = HANDS[HANDS.index("async def _tool"):HANDS.index("async def _run_tool")]
-        self.assertIn('if self.origin != "owner":\n            return self._reply(', call)
+        self.assertIn('if job.origin != "owner":\n            return self._reply(', call)
 
     def test_no_key_in_the_code(self):
         code = source("feedback") + (ROOT / "server" / "feedback_receiver.py").read_text()
@@ -355,9 +355,31 @@ class WorkbenchTakesOnlyOwnersWords(unittest.TestCase):
         path, body = cards.response_request(self.build({"kind": "complete", "text": "这个做完了", **self.item}, self.said, "2026-10-31"))
         self.assertEqual(body["operation"], "complete")
 
+    def test_working_never_takes_the_owners_focus_or_pointer(self):
+        operate = (ROOT / "Sources/native/Operate.swift").read_text()
+        hands = (ROOT / "Sources/native/Hands.swift").read_text()
+        self.assertNotIn(".activate()", operate)
+        self.assertNotIn("frontTarget", operate + hands)
+        self.assertEqual(hands.count("?.activate()"), 2, "bringing a window forward is for a button the owner pressed, and the file picker they opened")
+        # Every use of the real pointer and keyboard in a step goes through the one door, behind the one check that the owner is away.
+        step = operate[operate.index("func step(_ step"):operate.index("/// While the real pointer is in use")]
+        self.assertEqual(step.count("withRealPointer"), step.count("guard ownerIsAway(from: win) else { return waitForFront(win) }"))
+        before = step.split("await withRealPointer")
+        self.assertTrue(all("mouse(." not in piece and ".post(tap:" not in piece for piece in before[:1]))
+
+    def test_what_is_under_a_click_is_read_from_that_windows_own_app(self):
+        operate = (ROOT / "Sources/native/Operate.swift").read_text()
+        # The system-wide question answers for whatever covers that spot on the screen, and a send button behind it would pass the check.
+        self.assertNotIn("AXUIElementCreateSystemWide", operate)
+
+    def test_a_job_uses_tools_only_on_a_thread_the_owner_started(self):
+        self.assertIn('job = self.on_thread.get(params.get("threadId"))', HANDS)
+        self.assertNotIn("self.on_thread[", TURNS[TURNS.index("    async def _reader("):TURNS.index("    async def _compact_if_long(")])
+        self.assertNotIn("self.on_thread[", TURNS[TURNS.index("    async def _glance("):TURNS.index("    async def _reader(")])
+
     def test_incoming_messages_cannot_reach_it(self):
         call = HANDS[HANDS.index("async def _tool"):HANDS.index("async def _run_tool")]
-        self.assertIn('if self.origin != "owner"', call)
+        self.assertIn('if job.origin != "owner"', call)
 
 
 class SomeoneElsesMessage(unittest.TestCase):
@@ -461,7 +483,7 @@ class NeverSends(unittest.TestCase):
         self.assertIn('"钉钉"', native("Windows").split("blockedOwners")[1].split("\n")[0])
 
     def test_incoming_messages_cannot_use_tools(self):
-        self.assertIn('if self.origin != "owner":\n            return self._reply(', HANDS)
+        self.assertIn('if job.origin != "owner":\n            return self._reply(', HANDS)
         self.assertIn('origin="message"', CHATS)
 
 

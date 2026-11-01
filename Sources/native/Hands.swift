@@ -54,8 +54,21 @@ enum Hands {
     /// The window as it looks with its own menus and pop-ups, which are separate windows; other apps don't get in the picture.
     static func captureLive(_ win: Win, scale: CGFloat, source: CGRect? = nil) async -> CGImage? {
         do {
-            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-            let windows = content.windows.filter { $0.owningApplication?.processID == win.pid }
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+            if let only = content.windows.first(where: { Int($0.windowID) == win.id }), !only.isOnScreen {
+                // On another desktop or hidden: this window alone can still be drawn.
+                let area = source ?? CGRect(origin: .zero, size: win.frame.size)
+                let config = SCStreamConfiguration()
+                config.sourceRect = area
+                config.width = Int(area.width * scale)
+                config.height = Int(area.height * scale)
+                config.showsCursor = false
+                return try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: only), configuration: config)
+            }
+            // Its own menus and sheets, not the app's other windows, which may lie in front of this one.
+            let windows = content.windows.filter {
+                $0.owningApplication?.processID == win.pid && $0.isOnScreen && (Int($0.windowID) == win.id || $0.windowLayer != 0 || win.frame.contains($0.frame) && $0.frame.size != win.frame.size)
+            }
             guard !windows.isEmpty, let display = content.displays.first(where: { $0.frame.contains(CGPoint(x: win.frame.midX, y: win.frame.midY)) }) ?? content.displays.first else { return nil }
             let area = source ?? CGRect(origin: .zero, size: win.frame.size)
             let config = SCStreamConfiguration()
@@ -198,7 +211,14 @@ extension Controller {
         case "point": return await point(win, at: command["text"] as? String ?? "")
         case "script": return await script(command["script"] as? String ?? "")
         case "openChat": return await openChat(command["name"] as? String ?? "", in: win)
-        case "beginSteps": await beginSteps(win); return ["ok": true]
+        case "isBack": return ["ok": ownerIsAway(from: win)]
+        case "bringForward":
+            // Only ever for a button the owner pressed: everything else works without being in front.
+            if side.isKeyWindow { side.resignKey() }
+            NSRunningApplication(processIdentifier: win.pid)?.activate()
+            if let window = axWindow(pid: win.pid, frame: win.frame, id: win.id) { AXUIElementPerformAction(window, kAXRaiseAction as CFString) }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            return ["ok": true]
         case "step": return await step(command["step"] as? [String: Any] ?? [:], in: win, confirmed: command["confirmed"] as? Bool ?? false)
         default: return ["ok": false, "error": "unknown command"]
         }
@@ -216,7 +236,7 @@ extension Controller {
             let path = (result["output"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             return path.hasPrefix("/") ? path : nil
         }
-        if trusted, let window = axWindow(pid: win.pid, frame: win.frame) {
+        if trusted, let window = axWindow(pid: win.pid, frame: win.frame, id: win.id) {
             var value: CFTypeRef?
             if AXUIElementCopyAttributeValue(window, kAXDocumentAttribute as CFString, &value) == .success,
                let text = value as? String, let found = URL(string: text)?.path ?? Optional(text), found.hasPrefix("/") {
@@ -259,19 +279,9 @@ extension Controller {
 
     // MARK: filling
 
-    func frontTarget(_ win: Win) async {
-        // The side window can hold the keyboard without being the active app: it has to let go first,
-        // or what is typed for the other app lands in the panel.
-        if side.isKeyWindow { side.resignKey() }
-        NSRunningApplication(processIdentifier: win.pid)?.activate()
-        if let window = axWindow(pid: win.pid, frame: win.frame) { AXUIElementPerformAction(window, kAXRaiseAction as CFString) }
-        try? await Task.sleep(nanoseconds: 220_000_000)
-    }
-
-    /// Brings WeChat forward and reads what conversation it shows right now.
+    /// Reads what conversation WeChat shows right now, off a picture of its window.
     @MainActor
     func titles(_ win: Win) async -> [String: Any] {
-        await frontTarget(win)
         let found = await Controller.headerTitles(windowID: win.id, width: win.frame.width, previous: 0)
         return ["ok": found != nil, "lines": found?.lines ?? []]
     }
@@ -283,7 +293,8 @@ extension Controller {
         CGWarpMouseCursorPosition(back)
     }
 
-    /// Pastes into the window's input and leaves the cursor there. Nothing is sent.
+    /// Into the window's input, the cursor left there; nothing is sent. Words go in behind the owner's back where the app allows it.
+    /// WeChat's input and handing over files take the real pointer and clipboard, so they wait for the owner to be back.
     @MainActor
     func fill(_ win: Win, text: String, files: [String]) async -> [String: Any] {
         guard trusted else { return ["ok": false, "error": "没有辅助功能权限，填不进去"] }
@@ -305,25 +316,32 @@ extension Controller {
             goo.reachGoal = win.isWeChat ? V(spot.x, spot.y) : V(frame.maxX - 60, frame.maxY - 70)
             goo.armArrived = false
         }
-        await frontTarget(win)
-        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == win.pid else {
-            goo.reachGoal = nil
-            return ["ok": false, "error": "\(win.app) 没能到最前面，没有填"]
-        }
-        if focusedSubrole(win.pid).subrole == "AXSecureTextField" {
+        if isPasswordField(of: win) {
             goo.reachGoal = nil
             return ["ok": false, "refused": true, "error": "这是密码框，密码由用户自己输入"]
         }
-        if win.isWeChat {
-            clickInput(of: frame)
-            try? await Task.sleep(nanoseconds: 180_000_000)
-        } else if let role = focusedRole(win.pid), !["AXTextArea", "AXTextField", "AXComboBox", "AXWebArea", "AXGroup", "AXScrollArea", "AXSearchField"].contains(role) {
+        if !win.isWeChat, typingInto[win.id] == nil, let role = focusedRole(win.pid), !["AXTextArea", "AXTextField", "AXComboBox", "AXWebArea", "AXGroup", "AXScrollArea", "AXSearchField"].contains(role) {
             goo.reachGoal = nil
             if here { goo.fumble() }
             return ["ok": false, "error": "这个窗口的光标不在输入框里，先点一下输入框"]
         }
-        try? await Task.sleep(nanoseconds: 260_000_000)
-        await paste(text, files: files)
+        await letTheOwnerFinishTyping(in: win)
+        var inserted = false
+        if !win.isWeChat, files.isEmpty { inserted = await insertBehindTheOwner(text, in: win) }
+        if !inserted {
+            guard ownerIsAway(from: win) else {
+                goo.reachGoal = nil
+                return waitForFront(win)
+            }
+            await withRealPointer {
+                if win.isWeChat {
+                    clickInput(of: frame)
+                    try? await Task.sleep(nanoseconds: 180_000_000)
+                }
+                try? await Task.sleep(nanoseconds: 260_000_000)
+                await paste(text, files: files)
+            }
+        }
         if here {
             goo.spray(at: goo.reachGoal ?? goo.c, 4, speed: 90, along: V(0, 1))
             goo.reachGoal = nil
@@ -414,9 +432,9 @@ extension Controller {
         }
         let app = NSRunningApplication(processIdentifier: win.pid)?.bundleURL?.path
         if win.title.contains("*") || win.title.contains("未保存") || isEdited(win) { return ["ok": false, "error": "\(name) 有没保存的改动，先保存，原文件没动"] }
-        await frontTarget(win)
+        guard keysLandIn(win) else { return waitForFront(win) }
         guard currentTitle(id: win.id).contains(name) || name.hasPrefix(currentTitle(id: win.id) + ".") else { return ["ok": false, "error": "窗口换了内容，没有替换"] }
-        press(13, flags: .maskCommand)  // W
+        press(13, flags: .maskCommand, to: win.pid)  // W
         for _ in 0..<20 {
             try? await Task.sleep(nanoseconds: 150_000_000)
             let now = currentTitle(id: win.id)
@@ -440,7 +458,7 @@ extension Controller {
     }
 
     func isEdited(_ win: Win) -> Bool {
-        guard trusted, let window = axWindow(pid: win.pid, frame: win.frame) else { return false }
+        guard trusted, let window = axWindow(pid: win.pid, frame: win.frame, id: win.id) else { return false }
         var value: CFTypeRef?
         return AXUIElementCopyAttributeValue(window, "AXEdited" as CFString, &value) == .success && (value as? Bool) == true
     }

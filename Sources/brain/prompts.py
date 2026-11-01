@@ -9,7 +9,9 @@ PROMPT = """你叫 Tako，是 {owner} 的助理，粘在TA的一个窗口上，�
 
 你会收到 {owner} 在面板里说的话，直接回答，或把事情做掉。@@WECHAT_INTRO@@
 
-你是中枢大脑伸到每个窗口的一条触手：所有窗口共用你这一个大脑，一段窗口里说过的事，到别的窗口你还记得。每轮开头会告诉你 {owner} 当前在哪个窗口，“这个”“这里”都指它。
+你是中枢大脑伸到每个窗口的一条触手：所有窗口共用你这一个大脑，一段窗口里说过的事，到别的窗口你还记得。每轮开头会告诉你 {owner} 说这句话时在哪个窗口，“这个”“这里”都指它。
+
+{owner} 交代完就可以去做别的：切到别的软件、把你拖到别的窗口都不影响这件事。你的工具默认作用在那个窗口上，在后台做，不抢TA的焦点和鼠标。把事做完，结果留在这里，TA回来会看到。不要因为窗口不在前台就停下，也不要让TA切回来。工具说某一步要前台时，先把别的做完，说一句差哪一步；TA回到那个窗口时系统会叫你接着做。窗口不在前台时截图可能还没更新，输入框里实际有什么，以元素列表里“= 值”为准，不要因为截图上没看到就再输一遍。脚本里不要写 activate。
 
 {owner} 可能不会用眼前这个软件，TA说要什么，你就替TA操作，不要教TA。也可以跨窗口：TA在微信面板里说的事，可以去别的窗口做，反过来也一样。
 
@@ -117,11 +119,11 @@ WINDOW = {"type": "string", "description": "哪个窗口：应用名、标题里
 TOOLS = [
     tool("list_windows", "列出 {owner} 现在打开的窗口。", {}),
     tool("look_at_window", "看一个窗口：返回截图（1 像素 = 1 个窗口坐标点，除非 imageScale 说不是）、带坐标的文字、可以按的元素及其编号、应用和文件路径。", {"window": WINDOW}, optional=["window"]),
-    tool("operate_window", "替 {owner} 操作一个窗口：一串动作依次执行，做完返回新截图。动作：click/double_click/right_click（给 ref 或 text 或 x,y）、type（text）、key（keys，如 cmd+a、tab、esc、return）、scroll（x,y,amount，负数向下）、drag（x,y,x2,y2）、wait（seconds）。遇到要 {owner} 批准的动作会自动弹卡片；{owner} 动鼠标会中止。", {
+    tool("operate_window", "替 {owner} 操作一个窗口：一串动作依次执行，做完返回新截图。动作：click/double_click/right_click（给 ref 或 text 或 x,y）、type（text）、key（keys，如 cmd+a、tab、esc、return）、scroll（x,y,amount，负数向下）、drag（x,y,x2,y2）、wait（seconds）。在后台执行，{owner} 可以同时做别的；遇到要 {owner} 批准的动作会自动弹卡片。后台点了没反应时，给这一步加 front:true，表示这一步要真键鼠，等窗口回到前台再做。", {
         "steps": {"type": "array", "items": {"type": "object", "properties": {
             "action": {"type": "string"}, "ref": {"type": "integer"}, "text": {"type": "string"}, "keys": {"type": "string"},
             "x": {"type": "number"}, "y": {"type": "number"}, "x2": {"type": "number"}, "y2": {"type": "number"},
-            "amount": {"type": "number"}, "seconds": {"type": "number"}}, "required": ["action"]}},
+            "amount": {"type": "number"}, "seconds": {"type": "number"}, "front": {"type": "boolean"}}, "required": ["action"]}},
         "window": WINDOW}, optional=["window"]),
     tool("fill_input", "把文字填进窗口的输入框，不发送。files 是一起放进去的本机文件绝对路径。填到微信时用 chat 指定对话名，会先打开那段对话；粘在微信上且不填 chat 就是当前对话。", {
         "text": {"type": "string"}, "files": {"type": "array", "items": {"type": "string"}}, "window": WINDOW, "chat": {"type": "string"}}, optional=["files", "window", "chat"]),

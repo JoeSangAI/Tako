@@ -3,15 +3,20 @@
 import ApplicationServices
 import AppKit
 
+@_silgen_name("_AXUIElementGetWindow")
+func _AXUIElementGetWindow(_ element: AXUIElement, _ id: UnsafeMutablePointer<CGWindowID>) -> AXError
+
 extension Controller {
     // MARK: making room
 
-    func axWindow(pid wanted: pid_t? = nil, frame given: CGRect? = nil) -> AXUIElement? {
+    func axWindow(pid wanted: pid_t? = nil, frame given: CGRect? = nil, id: Int? = nil) -> AXUIElement? {
         guard let frame = given ?? target?.frame else { return nil }
         let app = AXUIElementCreateApplication(wanted ?? pid)
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value) == .success,
               let windows = value as? [AXUIElement] else { return nil }
+        // Two windows of one app can lie exactly on top of each other: the id decides where it can be had.
+        if let id, let exact = windows.first(where: { var number: CGWindowID = 0; return _AXUIElementGetWindow($0, &number) == .success && Int(number) == id }) { return exact }
         for window in windows {
             var position: CFTypeRef?, extent: CFTypeRef?
             guard AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &position) == .success,

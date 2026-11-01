@@ -5,6 +5,9 @@ What a turn does is written in its own text as @@[...steps...]@@; with no steps 
   {"call": tool, "args": {...}} a tool call, the way the real server asks for one; waits for the answer
   {"fail": {message, codexErrorInfo}}   the turn fails
   {"hang": true}                goes quiet until interrupted
+  {"hear": true}                waits for the owner's next words through turn/steer, then answers with them
+  {"retry": n}                  n failed uploads, each announced as an error it will retry
+  {"pause": seconds}            waits, with nothing to report
   {"die": true}                 the process goes away
   {"usage": n}                  reports n input tokens
 Everything received is written to $FAKE_CODEX_LOG, one JSON object per line.
@@ -21,6 +24,7 @@ HOME = os.environ.get("FAKE_CODEX_HOME", "")
 LOG = os.environ.get("FAKE_CODEX_LOG", "")
 writing, noting = threading.Lock(), threading.Lock()
 answers, interrupts, loaded = {}, {}, set()
+active, steered = set(), {}
 
 
 def note(kind, **fields):
@@ -47,6 +51,7 @@ def ask(request_id, method, **params):
 
 
 def finish(thread, turn, status="completed", error=None):
+    active.discard(turn)
     event("turn/completed", threadId=thread, turn={"id": turn, "status": status, "error": error, "items": []})
 
 
@@ -54,6 +59,7 @@ def run_turn(thread, turn, text):
     found = re.findall(r"@@(\[.*?\])@@", text.split("\n\n")[-1], re.S)  # Only the sentence itself: a recap may quote earlier ones.
     steps = json.loads(found[-1]) if found else [{"say": "好的"}]
     stop = interrupts[turn] = threading.Event()
+    active.add(turn)
     event("turn/started", threadId=thread, turn={"id": turn, "status": "inProgress", "items": []})
     for step in steps:
         if stop.is_set():
@@ -79,6 +85,17 @@ def run_turn(thread, turn, text):
             return finish(thread, turn, "failed", step["fail"])
         elif "hang" in step:
             stop.wait()
+        elif "hear" in step:
+            while turn not in steered and not stop.is_set():
+                time.sleep(0.01)
+            if turn in steered:
+                item = str(uuid.uuid4())
+                event("item/completed", threadId=thread, turnId=turn, item={"type": "agentMessage", "id": item, "text": "听到了：" + steered[turn]})
+        elif "retry" in step:
+            for attempt in range(step["retry"]):
+                event("error", threadId=thread, turnId=turn, willRetry=True, error={"message": f"Reconnecting... {attempt + 1}/5", "codexErrorInfo": None})
+        elif "pause" in step:
+            stop.wait(step["pause"])
         elif "die" in step:
             os._exit(1)
         elif "usage" in step:
@@ -116,11 +133,23 @@ def handle(message):
         if stop:
             stop.set()
         send({"id": request_id, "result": {}})
+    elif method == "turn/steer":
+        if params.get("expectedTurnId") not in active:
+            return send({"id": request_id, "error": {"code": -32600, "message": "no active turn to steer"}})
+        steered[params["expectedTurnId"]] = "".join(part.get("text", "") for part in params.get("input") or [])
+        send({"id": request_id, "result": {"turnId": params["expectedTurnId"]}})
     elif method == "thread/compact/start":
         marker = os.path.join(HOME, "compact_fails")
         send({"id": request_id, "error": {"code": -32000, "message": "cannot compact"}} if os.path.exists(marker) else {"id": request_id, "result": {}})
-        if not os.path.exists(marker):
-            finish(params["threadId"], str(uuid.uuid4()))
+        if os.path.exists(marker):
+            return
+        turn = str(uuid.uuid4())
+        if os.path.exists(os.path.join(HOME, "compact_cant_upload")):  # A summary has to send the whole thread too.
+            stop = interrupts[turn] = threading.Event()
+            event("turn/started", threadId=params["threadId"], turn={"id": turn, "status": "inProgress", "items": []})
+            event("error", threadId=params["threadId"], turnId=turn, willRetry=True, error={"message": "Reconnecting... 1/5", "codexErrorInfo": None})
+            stop.wait()
+        finish(params["threadId"], turn)
     elif request_id is not None:
         send({"id": request_id, "result": {}})
 

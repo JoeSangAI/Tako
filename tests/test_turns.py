@@ -118,6 +118,10 @@ class Tako:
     def requests(self, method):
         return [row["params"] for row in self.codex("request") if row["method"] == method]
 
+    def owner_turns(self):
+        """The owner's own turns: a greeting's throwaway thread has no folder of its own."""
+        return [params for params in self.requests("turn/start") if params.get("cwd")]
+
 
 class Base(unittest.TestCase):
     config = None
@@ -336,6 +340,230 @@ class Summarizing(Base):
         (self.tako.home / "compact_fails").write_text("")
         self.assertEqual(self.long_turn()["error"], "")
 
+    def looked_at_big_windows(self, megabytes):
+        self.tako.native["look"] = lambda c: {"ok": True, "title": "稿子", "elements": "", "image": "x" * int(megabytes * 1_000_000)}
+        self.tako.ask(steps({"call": "look_at_window", "args": {}}, {"say": "看到了"}))
+        return self.tako.until(lambda s: not s["busy"] and "看到了" in self.tako.said(s), "the answer")
+
+    def test_a_thread_full_of_screenshots_gets_summarized_though_it_has_few_words(self):
+        self.looked_at_big_windows(3.2)
+        self.tako.until(lambda s: self.tako.requests("thread/compact/start"), "the summary", 3)
+        before = self.tako.requests("thread/compact/start")
+        self.tako.ask("再说一句")
+        self.tako.until(lambda s: len(self.tako.said(s)) == 2, "the next answer")
+        self.assertEqual(self.tako.requests("thread/compact/start"), before, "once summarized, the screenshots are gone and don't count again")
+
+    def test_a_few_screenshots_are_left_alone(self):
+        self.looked_at_big_windows(0.2)
+        time.sleep(0.2)
+        self.assertEqual(self.tako.requests("thread/compact/start"), [])
+
+    def test_a_summary_that_cant_upload_leaves_for_a_light_thread_quietly(self):
+        (self.tako.home / "compact_cant_upload").write_text("")
+        self.looked_at_big_windows(3.2)
+        self.tako.until(lambda s: self.tako.requests("thread/compact/start"), "the summary", 3)
+        self.tako.ask("继续")
+        seen = self.tako.until(lambda s: len(self.tako.said(s)) == 2, "the next answer")
+        self.assertEqual(seen["error"], "")
+        started = self.tako.owner_turns()
+        self.assertNotEqual(started[0]["threadId"], started[-1]["threadId"], "the next sentence must not wait on the heavy thread")
+        self.assertIn("看到了", started[-1]["input"][0]["text"], "what was said in this window comes along")
+
+
+class TheModelCantBeReached(Base):
+    def test_the_panel_says_so_instead_of_showing_the_last_step(self):
+        self.tako.ask(steps({"retry": 1}, {"pause": 0.6}, {"say": "回来了"}))
+        seen = self.tako.until(lambda s: s["trouble"], "the trouble shown")
+        self.assertIn("重试", seen["trouble"])
+        self.assertTrue(seen["busy"])
+        seen = self.tako.until(lambda s: not s["busy"], "the turn ended")
+        self.assertEqual(seen["trouble"], "")
+        self.assertIn("回来了", self.tako.said(seen))
+
+    def test_it_clears_as_soon_as_the_model_answers(self):
+        self.tako.ask(steps({"retry": 1}, {"pause": 0.3}, {"say": "回来了"}, {"pause": 0.6}))
+        self.tako.until(lambda s: s["trouble"], "the trouble shown")
+        seen = self.tako.until(lambda s: s["busy"] and not s["trouble"], "progress clearing it")
+        self.assertTrue(seen["busy"])
+        self.tako.idle()
+
+    def test_a_heavy_thread_stops_retrying_and_the_next_sentence_goes_on_a_light_one(self):
+        self.tako.native["look"] = lambda c: {"ok": True, "title": "稿子", "elements": "", "image": "x" * 1_600_000}
+        self.tako.ask(steps({"call": "look_at_window", "args": {}}, {"retry": 2}, {"hang": True}))
+        seen = self.tako.until(lambda s: not s["busy"], "giving up")
+        self.assertIn("继续", seen["error"])
+        first = self.tako.owner_turns()[-1]["threadId"]
+        self.assertTrue(self.tako.requests("turn/interrupt"), "the old turn must not keep uploading")
+        self.tako.ask("继续")
+        self.tako.until(lambda s: "好的" in self.tako.said(s), "the next answer")
+        self.assertNotEqual(self.tako.owner_turns()[-1]["threadId"], first)
+
+    def test_a_light_thread_keeps_retrying_because_it_is_only_the_network(self):
+        self.tako.ask(steps({"retry": 3}, {"pause": 0.3}, {"say": "回来了"}))
+        seen = self.tako.until(lambda s: "回来了" in self.tako.said(s), "the answer")
+        self.assertEqual(seen["error"], "")
+
+
+class TheOwnerMovesOn(Base):
+    def other_window(self):
+        self.tako.stick("Safari", "com.apple.Safari", "另一个页面", "2")
+
+    def test_the_work_stays_on_the_window_it_was_asked_on(self):
+        self.tako.ask(steps({"pause": 0.4}, {"call": "look_at_window", "args": {}}, {"say": "第一个窗口做完了"}))
+        self.tako.until(lambda s: s["busy"], "running")
+        self.other_window()
+        self.tako.until(lambda s: [c for c in self.tako.commands if c["command"] == "look"], "the look", 4)
+        self.assertEqual([c.get("window") for c in self.tako.commands if c["command"] == "look"], ["1"], "not wherever the goo has gone")
+
+    def test_the_result_waits_where_it_was_asked_and_the_panel_here_says_so(self):
+        self.tako.ask(steps({"pause": 0.3}, {"say": "第一个窗口做完了"}))
+        self.tako.until(lambda s: s["busy"], "running")
+        self.other_window()
+        seen = self.tako.until(lambda s: s["others"], "told it's still going", 3)
+        self.assertEqual(seen["others"][0]["state"], "working")
+        self.assertFalse(seen["busy"], "this window isn't busy: its stop button must not stop the other one")
+        seen = self.tako.until(lambda s: s["others"] and s["others"][0]["state"] == "done", "told it's done", 3)
+        self.assertEqual(self.tako.said(seen), [])
+        self.tako.stick()
+        seen = self.tako.until(lambda s: "第一个窗口做完了" in self.tako.said(s), "the result back here", 3)
+        self.assertEqual(seen["others"], [])
+
+    def test_the_other_window_doesnt_wait_for_it(self):
+        self.tako.ask(steps({"hang": True}))
+        self.tako.until(lambda s: s["busy"] and self.tako.owner_turns(), "running")
+        self.other_window()
+        self.tako.ask(steps({"call": "look_at_window", "args": {}}, {"say": "另一个窗口答了"}))
+        seen = self.tako.until(lambda s: "另一个窗口答了" in self.tako.said(s), "an answer without waiting", 4)
+        self.assertEqual(seen["others"][0]["state"], "working", "the first one is still going")
+        first, second = self.tako.owner_turns()
+        self.assertNotEqual(first["threadId"], second["threadId"])
+        self.assertEqual([c.get("window") for c in self.tako.commands if c["command"] == "look"], ["2"])
+        self.assertIn(second["threadId"], [row["threadId"] for row in self.tako.requests("thread/unsubscribe")], "a limb is let go of")
+
+    def test_stop_stops_only_what_the_panel_shows(self):
+        self.tako.ask(steps({"hang": True}))
+        self.tako.until(lambda s: s["busy"] and self.tako.owner_turns(), "running")
+        self.other_window()
+        self.tako.ask(steps({"hang": True}))
+        self.tako.until(lambda s: s["busy"], "the second running", 3)
+        time.sleep(0.2)
+        self.tako.call("/stop", {})
+        seen = self.tako.until(lambda s: not s["busy"], "this one stopped", 3)
+        self.assertEqual(seen["others"][0]["state"], "working", "the other one goes on")
+        self.tako.stick()
+        self.tako.until(lambda s: s["busy"], "still running back there", 3)
+        self.tako.call("/stop", {})
+        self.tako.idle(3)
+
+    def test_the_brain_hears_what_a_limb_did(self):
+        release = threading.Event()
+        self.tako.native["script"] = lambda c: (release.wait(6), {"ok": True, "output": "好"})[1]
+        self.tako.ask(steps({"call": "run_in_app", "args": {"script": 'tell application "Keynote" to get name of front document', "app": "Keynote"}}, {"say": "第一件"}))
+        self.tako.until(lambda s: s["status"] == "working", "the tool running")
+        self.other_window()
+        self.tako.ask(steps({"say": "第二件做好了"}))
+        self.tako.until(lambda s: "第二件做好了" in self.tako.said(s), "the limb's answer", 4)
+        release.set()
+        self.tako.stick()
+        self.tako.until(lambda s: "第一件" in self.tako.said(s), "the first answer", 4)
+        self.tako.ask("刚才那边做了什么")
+        self.tako.until(lambda s: not s["busy"] and len(self.tako.said(s)) == 2, "the next answer", 4)
+        told = self.tako.owner_turns()[-1]["input"][0]["text"]
+        self.assertIn("第二件做好了", told)
+
+    def test_a_card_from_the_other_window_still_reaches_the_owner(self):
+        self.tako.native["step"] = lambda c: {"needs": "在 Keynote 里点“删除”"} if not c.get("confirmed") else {"ok": True, "did": "点了"}
+        self.tako.ask(steps({"pause": 0.3}, {"call": "operate_window", "args": {"steps": [{"action": "click", "text": "删除"}]}}, {"say": "好了"}))
+        self.tako.until(lambda s: s["busy"], "running")
+        self.other_window()
+        seen = self.tako.until(lambda s: s["pending"], "the card here", 4)
+        self.assertNotIn("job", seen["pending"][0])
+        self.tako.call("/decide", {"id": seen["pending"][0]["id"], "accepted": True})
+        self.tako.until(lambda s: s["others"] and s["others"][0]["state"] == "done", "finished", 4)
+
+
+class NeedingTheRealPointer(Base):
+    DRAG = {"call": "operate_window", "args": {"steps": [{"action": "drag", "x": 1, "y": 1, "x2": 2, "y2": 2}]}}
+
+    def waiting_for_owner(self):
+        self.back = threading.Event()
+        self.tako.native["step"] = lambda c: {"ok": True, "did": "拖动了"} if self.back.is_set() else {"ok": False, "needsFront": True, "error": "这一步要 Keynote 在前台才能做"}
+        self.tako.native["isBack"] = lambda c: {"ok": self.back.is_set()}
+        self.tako.ask(steps(self.DRAG, {"say": "别的都做完了，差拖动这一步"}))
+        return self.tako.until(lambda s: "别的都做完了，差拖动这一步" in self.tako.said(s) and s["trouble"], "the rest done and the wait shown", 5)
+
+    def test_finishes_the_rest_then_goes_on_when_the_owner_is_back(self):
+        seen = self.waiting_for_owner()
+        self.assertFalse(seen["busy"], "nothing is running: the owner isn't held up either")
+        self.assertIn("切回去", seen["trouble"])
+        reply = [r for r in self.tako.codex("tool_reply") if r["tool"] == "operate_window"][0]["reply"]
+        self.assertIn("先没做", json.dumps(reply, ensure_ascii=False))
+        self.back.set()
+        self.tako.until(lambda s: len(self.tako.owner_turns()) == 2, "picked up by itself", 6)
+        seen = self.tako.until(lambda s: not s["busy"] and len(self.tako.said(s)) == 2, "and answered", 5)
+        self.assertEqual(seen["trouble"], "")
+        self.assertNotIn("bringForward", [c["command"] for c in self.tako.commands], "only a button the owner pressed may bring a window forward")
+
+    def test_shows_from_any_other_window(self):
+        self.waiting_for_owner()
+        self.tako.stick("Safari", "com.apple.Safari", "另一个页面", "2")
+        seen = self.tako.until(lambda s: s["others"] and s["others"][0]["state"] == "held", "said here too", 4)
+        self.assertIn("切回去", seen["others"][0]["trouble"])
+        self.assertEqual(seen["trouble"], "")
+
+    def test_what_the_owner_says_next_replaces_the_wait(self):
+        self.waiting_for_owner()
+        self.tako.ask("算了，不用拖了")
+        seen = self.tako.until(lambda s: not s["busy"] and len(self.tako.said(s)) == 2, "the answer", 5)
+        self.assertEqual(seen["trouble"], "")
+        self.back.set()
+        time.sleep(2.5)
+        self.assertEqual(len(self.tako.owner_turns()), 2, "it must not come back to what they called off")
+
+    def test_a_window_that_closed_ends_the_wait(self):
+        self.waiting_for_owner()
+        self.tako.native["isBack"] = lambda c: {"ok": False, "error": "没找到窗口"}
+        self.tako.until(lambda s: not s["trouble"], "the wait over", 5)
+
+    def test_the_panels_own_button_may_bring_the_window_forward(self):
+        result = self.tako.call("/fill", {"text": "你好"}, timeout=12)
+        self.assertTrue(result["ok"])
+        self.assertIn("bringForward", [c["command"] for c in self.tako.commands])
+
+
+class SpeakingDuringATurn(Base):
+    def test_reaches_the_running_turn_at_once(self):
+        self.tako.ask(steps({"hear": True}))
+        self.tako.until(lambda s: s["busy"] and self.tako.owner_turns(), "the turn running")
+        self.wait_for_running()
+        self.tako.ask("你怎么卡住了？")
+        seen = self.tako.until(lambda s: "听到了：你怎么卡住了？" in self.tako.said(s), "the answer")
+        self.assertEqual(len(self.tako.owner_turns()), 1, "no second turn")
+        self.assertTrue(self.tako.requests("turn/steer")[0]["expectedTurnId"])
+        self.assertEqual(seen["queued"], False)
+
+    def wait_for_running(self):
+        time.sleep(0.15)  # Between turn/start returning and the turn being known to the server.
+
+    def test_with_files_waits_and_says_so(self):
+        attached = self.tako.home / "a.txt"
+        attached.write_text("内容")
+        self.tako.ask(steps({"hang": True}))
+        self.tako.until(lambda s: s["busy"], "busy")
+        self.wait_for_running()
+        self.tako.call("/ask", {"text": "看这个", "files": [str(attached)]})
+        self.tako.until(lambda s: s["queued"], "shown as waiting")
+        self.assertEqual(self.tako.requests("turn/steer"), [])
+        self.tako.call("/stop", {})
+        self.tako.until(lambda s: "好的" in self.tako.said(s) and not s["queued"], "its own turn after the stop")
+
+    def test_just_as_the_turn_ends_still_gets_a_turn(self):
+        self.tako.ask(steps({"say": "这轮完了"}))
+        self.tako.until(lambda s: "这轮完了" in self.tako.said(s), "the first answer")
+        self.tako.ask("还有一句")
+        self.tako.until(lambda s: "好的" in self.tako.said(s), "the second answer")
+        self.assertEqual(len(self.tako.owner_turns()), 2)
+
 
 class Inside(unittest.IsolatedAsyncioTestCase):
     """What can't be reached from the routes alone: the same server code in this process, with the same stand-in for Codex."""
@@ -408,6 +636,28 @@ class Inside(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.tako.error, "")
         self.assertEqual(self.tako.status, "idle")
 
+    async def test_retries_dont_count_as_the_turn_moving(self):
+        await self.tako._alive()
+        self.addAsyncCleanup(self.tako.runtime.close)
+        await self.tako._brain()
+        thread = self.tako.thread
+        job = self.turns.Job("owner", None, [], None)
+        job.running = (thread, "t")
+        self.tako.runtime._events[thread].append({"method": "error", "params": {"threadId": thread, "willRetry": True, "error": {"message": "x"}}})
+        real_event, seen = self.tako.runtime.event, []
+
+        async def event(thread_id, *, timeout=120):
+            seen.append(1)
+            if len(seen) == 1:
+                return await real_event(thread_id, timeout=timeout)
+            if len(seen) % 2 == 0:
+                raise asyncio.TimeoutError
+            return {"method": "error", "params": {"threadId": thread, "willRetry": True, "error": {"message": "x"}}}
+        self.tako.runtime.event = event
+        with self.assertRaises(asyncio.TimeoutError):  # The real limit is fifteen minutes of quiet; here every other event is a retry.
+            await self.tako._finish(job)
+        self.assertLess(len(seen), 70, "a retry must not restart the clock")
+
     async def test_the_process_comes_back_only_once(self):
         await self.tako._alive()
         first = self.tako.runtime
@@ -427,11 +677,10 @@ class Inside(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(alive), 1, alive)
 
     async def test_a_reader_can_never_use_the_owners_turn(self):
-        self.tako.thread = "the-brain"
-        self.tako.origin = "owner"
+        self.tako.on_thread["the-brain"] = self.turns.Job("owner", None, [], None)
         ran = []
 
-        async def run(name, args):
+        async def run(name, args, job):
             ran.append(name)
             return self.tako._reply("做了")
         self.tako._run_tool = run
@@ -480,7 +729,7 @@ class Inside(unittest.IsolatedAsyncioTestCase):
                 beats.append(time.time())
                 await asyncio.sleep(0.02)
         beating = asyncio.create_task(heart())
-        work = asyncio.create_task(self.tako._propose(str(source), str(copy), "改了"))
+        work = asyncio.create_task(self.tako._propose(str(source), str(copy), "改了", self.turns.Job("owner", None, [], None)))
         while not self.tako.pending:
             await asyncio.sleep(0.01)
         self.tako.decide(next(iter(self.tako.pending)), True)

@@ -66,8 +66,12 @@ class Companion(Chats, Turns, Hands, Lectures):
         self.following = False
         self.index = None
         self.window = None     # the window it is stuck to: app, bundle, title, id
-        self.origin = "owner"    # who started the running turn; only the owner's words may touch anything
-        self.changing = {}     # file changes under way: item id -> paths, so a card can say what would change
+        self.active = []       # every job under way, in the order they started
+        self.on_thread = {}    # thread -> the owner's job on it; only these may use tools or ask for anything
+        self.settling = False  # the brain's thread is being got ready or summarized: wait for it rather than go round it
+        self.limb_news = []    # what limbs did while the brain was busy, for its next turn
+        self.finished = {}     # conversation -> name, for jobs that ended while the owner was elsewhere
+        self.held = {}         # conversation -> a job's last step, waiting for the owner to come back to its window
         self.said = []         # (message identity, the owner's words), newest last; memory only, across all windows
         self.lecture = None    # the class it is listening to: title, what it heard, notes. Memory only until it ends.
         self.ending_lecture = None  # just stopped, with its last piece of sound still on the way
@@ -75,13 +79,6 @@ class Companion(Chats, Turns, Hands, Lectures):
         self.ear = None        # the process that turns sound into words, only while listening
         self.ear_lock = asyncio.Lock()
         self.transcribing = set()
-        self.call_waiting = None  # when the model last announced a tool call that has not reached us yet
-        self.tools_running = 0
-        self.stopping = False
-        self.running = None    # (thread, turn) of the running turn
-        self.partial = ""
-        self.steps = []
-        self.live_events = None
         self.pending = {}      # cards waiting for the owner: approvals and proposed changes
         self.outbox = queue.Queue()  # commands for the native side
         self.waiting = {}      # native commands waiting for their result
@@ -95,8 +92,7 @@ class Companion(Chats, Turns, Hands, Lectures):
         self.nudged = {}       # chat -> newest message when they last opened it, so one state is judged once
         self.learning = asyncio.Lock()
         self.compacted = (None, 0)  # thread, and its size when it was last summarized
-        self.first_text = None
-        self.usage = None
+        self.pictures = 0      # bytes of images on the brain thread since it was last summarized
         self.tasks = set()
 
     def _later(self, work):
@@ -110,16 +106,19 @@ class Companion(Chats, Turns, Hands, Lectures):
         events.append({"id": len(events), "role": role, "text": text, "time": clock(time.time()), **extra})
 
     def snapshot(self, after=0):
-        live = self.live_events is self.events
+        job = self._here()
+        status = job.status if job else self.status
         # A turn started by an incoming message may still decide to say nothing, so it stays quiet until it is done.
-        partial = self.partial if live and self.origin == "owner" else ""
-        return {"chat": self.chat and self.chat["name"], "status": self.status, "error": self.error,
+        partial = job.partial if job and job.origin == "owner" else ""
+        return {"chat": self.chat and self.chat["name"], "status": status, "error": self.error,
                 "polled_at": self.polled_at, "gen": self.generation, "events": self.events[after:],
                 "kind": self.chat.get("kind", "wechat") if self.chat else "", "app": (self.window or {}).get("app", ""),
                 "greeting": (self.chat or {}).get("greeting", ""),
                 "bundle": (self.window or {}).get("bundle", ""),
-                "partial": partial, "steps": self.steps if live else [], "busy": self.status == "thinking" or self.status == "working",
-                "pending": [{k: v for k, v in card.items() if k != "future"} for card in list(self.pending.values())],
+                "partial": partial, "steps": job.steps if job else [], "busy": status == "thinking" or status == "working",
+                "trouble": self._trouble_here(job), "queued": any(other.waiting for other in self.active if other.events is self.events),
+                "others": self._others(),
+                "pending": [{k: v for k, v in card.items() if k not in ("future", "job")} for card in list(self.pending.values())],
                 "listening": int(time.time() - self.lecture["started"]) if self.lecture else None}
 
     def shared(self, path):
@@ -147,7 +146,9 @@ class Companion(Chats, Turns, Hands, Lectures):
         self.add("owner", text + names)
         self.said = [*self.said, (secrets.token_hex(8), text)][-50:]
         self.feedback.heard((self.window or {}).get("app"), text)
-        await self.turn(text, attachments=files, where=(self.chat, self.events, self.window))
+        self.held.pop((self.chat or {}).get("username") or id(self.events), None)  # They said something else: that comes first, and it decides what is still wanted.
+        if files or not await self._steer(text):
+            await self.turn(text, attachments=files, where=(self.chat, self.events, self.window))
 
 
 async def main():

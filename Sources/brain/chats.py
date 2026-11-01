@@ -165,12 +165,10 @@ class Chats:
         self.last_id = back["last_id"] if back else 0
         self.unsent = back["unsent"] if back else []
         self.history = back["history"] if back else []
-        turning = self.turns.locked()  # a running turn keeps its status, its stop button and its error
-        if not turning:
-            self.status, self.error = "reading", ""
+        self.finished.pop(chat["username"], None)  # They're back: it's in front of them.
+        self.status, self.error = "reading", ""  # A running job keeps its own status and stop button, in its own conversation.
         if chat.get("kind") == "window":
-            if not turning:
-                self.status = "idle"
+            self.status = "idle"
             return
         reading_done = lambda: "idle" if self.status == "reading" else self.status
         if back:
