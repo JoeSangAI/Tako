@@ -20,9 +20,8 @@ swiftc -O -target "arm64-apple-macos$MINIMUM" -framework AppKit -framework WebKi
 APP="$WORK/Tako.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$WORK/Tako" "$APP/Contents/MacOS/Tako"
-cp "$ROOT/icon/TAKO.icns" "$ROOT/Sources/tako_server.py" "$ROOT/Sources/codex_runtime.py" "$ROOT/Sources/wechat_reader.py" "$ROOT/Sources/feedback.py" "$ROOT/Sources/listen_worker.py" "$ROOT/Sources/side.html" "$ROOT/CHANGELOG.md" "$APP/Contents/Resources/"
+cp "$ROOT/icon/TAKO.icns" "$ROOT/Sources/tako_server.py" "$ROOT/Sources/codex_runtime.py" "$ROOT/Sources/wechat_reader.py" "$ROOT/Sources/feedback.py" "$ROOT/Sources/greetings.py" "$ROOT/Sources/listen_worker.py" "$ROOT/Sources/side.html" "$ROOT/CHANGELOG.md" "$APP/Contents/Resources/"
 cp -R "$ROOT/Sources/vendor" "$APP/Contents/Resources/vendor"
-cp -R "$ROOT/.build/python" "$APP/Contents/Resources/python"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -50,10 +49,21 @@ PLIST
 IDENTITY="$(security find-identity -v -p codesigning | sed -n 's/.*"\(Apple Development[^"]*\)".*/\1/p' | head -1)"
 SIGN="${IDENTITY:--}"
 [ "$SIGN" = "-" ] && echo "note: no signing identity on this Mac; ad-hoc build, permissions won't survive rebuilds and one-click update is off." >&2
-find "$APP/Contents/Resources/python" -type f \( -name '*.so' -o -name '*.dylib' -o -perm -u+x \) -print0 |
-  while IFS= read -r -d '' file; do
-    if file -b "$file" | grep -q 'Mach-O'; then codesign --force --sign "$SIGN" "$file" 2>/dev/null; fi
-  done
+# A signature differs every time it is made, so the Python is signed once and reused: the same bytes in every
+# release are what let an installed Tako keep the Python it has and fetch only the rest.
+SIGNED="$ROOT/.build/signed-python/$(printf '%s' "$(ls -A "$ROOT/.build/python" | grep '^\.tako-')$SIGN" | shasum | cut -c1-16)"
+if [ ! -f "$SIGNED.id" ]; then
+  rm -rf "$ROOT/.build/signed-python"
+  mkdir -p "$ROOT/.build/signed-python"
+  cp -R "$ROOT/.build/python" "$SIGNED"
+  find "$SIGNED" -type f \( -name '*.so' -o -name '*.dylib' -o -perm -u+x \) -print0 |
+    while IFS= read -r -d '' file; do
+      if file -b "$file" | grep -q 'Mach-O'; then codesign --force --sign "$SIGN" "$file" 2>/dev/null; fi
+    done
+  (cd "$SIGNED" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256 | shasum -a 256 | cut -d' ' -f1) > "$SIGNED.id"
+fi
+cp -R "$SIGNED" "$APP/Contents/Resources/python"
+cp "$SIGNED.id" "$APP/Contents/Resources/python.id"
 codesign --force --sign "$SIGN" --identifier com.joesang.tako "$APP"
 codesign --verify --strict "$APP"
 

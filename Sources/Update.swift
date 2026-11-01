@@ -8,16 +8,22 @@ import UserNotifications
 /// Nothing is installed unless it carries the same signature as the running app, which is what keeps
 /// the system permissions across updates and keeps anyone else's build out.
 final class Updater: NSObject, UNUserNotificationCenterDelegate {
-    static let feed = URL(string: "https://github.com/JoeSangAI/Tako/releases/latest/download/latest.json")!
+    static let feed = ProcessInfo.processInfo.environment["TAKO_UPDATE_FEED"].flatMap(URL.init(string:))
+        ?? URL(string: "https://github.com/JoeSangAI/Tako/releases/latest/download/latest.json")!
     static let checkEvery: TimeInterval = 6 * 3600
 
-    struct Release { let version: String, notes: String, zip: URL, sha256: String }
+    /// `python` is set on the small package: everything but the Python, usable only where that same Python is already installed.
+    struct Package { let url: URL, sha256: String, python: String? }
+    struct Release { let version: String, notes: String, whole: Package, small: Package? }
 
     weak var owner: Controller?
     private var latest: Release?
     private var shown: [String: Any]?   // what the panel should show; survives the page reloading
     private var snoozed = false
     private var progress: NSKeyValueObservation?
+    private var fetching = false
+    private var ready: String?          // the version already fetched, checked and waiting to be swapped in
+    private var pressed = false         // the owner has asked and is watching
     private let folder = takoHome.appendingPathComponent("update")
     static var current: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0" }
 
@@ -63,7 +69,7 @@ final class Updater: NSObject, UNUserNotificationCenterDelegate {
     private func heard(_ data: Data?, ok: Bool, quietly: Bool) {
         guard ok, let data, let found = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let version = found["version"] as? String, let zipText = found["zip"] as? String, let zip = URL(string: zipText),
-              zip.scheme == "https", let sha = found["sha256"] as? String else {
+              Updater.allowed(zip), let sha = found["sha256"] as? String else {
             // A check that fails says nothing unless someone asked; the next one is hours away anyway.
             if !quietly { show(["state": "available", "version": Updater.current, "notes": "", "error": "现在连不上更新服务器，稍后再试。"]); openPanel() }
             return
@@ -73,11 +79,25 @@ final class Updater: NSObject, UNUserNotificationCenterDelegate {
             if !quietly { show(["state": "current", "version": Updater.current]); openPanel() }
             return
         }
-        latest = Release(version: version, notes: found["notes"] as? String ?? "", zip: zip, sha256: sha)
+        var small: Package?
+        if let patch = found["patch"] as? [String: Any], let text = patch["zip"] as? String, let url = URL(string: text), Updater.allowed(url),
+           let hash = patch["sha256"] as? String, let python = patch["python"] as? String {
+            small = Package(url: url, sha256: hash, python: python)
+        }
+        let release = Release(version: version, notes: found["notes"] as? String ?? "", whole: Package(url: zip, sha256: sha, python: nil), small: small)
+        latest = release
         offer()
+        fetch(release)
         NSApp.dockTile.badgeLabel = "1"
         notifyOnce(version)
         if !quietly { openPanel() }
+    }
+
+    private static func allowed(_ url: URL) -> Bool { url.scheme == "https" || url.host == "127.0.0.1" }
+
+    private static var pythonID: String? {
+        Bundle.main.url(forResource: "python", withExtension: "id").flatMap { try? String(contentsOf: $0, encoding: .utf8) }?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // ---- telling the owner ----
@@ -173,44 +193,73 @@ final class Updater: NSObject, UNUserNotificationCenterDelegate {
     }
 
     // ---- the swap ----
+    /// The button. Usually everything is already here and only the swap is left.
     private func install() {
         guard let latest else { return }
+        pressed = true
+        if ready == latest.version { return swap(version: latest.version) }
         show(["state": "downloading", "version": latest.version, "progress": 0.0])
+        fetch(latest)
+    }
+
+    /// As soon as a new version is known it is fetched and checked quietly, the way other apps do it.
+    private func fetch(_ release: Release) {
+        guard !fetching, ready != release.version else { return }
+        fetching = true
+        let small = release.small.flatMap { $0.python == Updater.pythonID ? $0 : nil }
+        download(small ?? release.whole, of: release)
+    }
+
+    private func download(_ package: Package, of release: Release) {
         try? FileManager.default.removeItem(at: folder)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let task = URLSession.shared.downloadTask(with: latest.zip) { [weak self] file, _, error in
+        let task = URLSession.shared.downloadTask(with: package.url) { [weak self] file, _, error in
             guard let self else { return }
             let kept = self.folder.appendingPathComponent("Tako.zip")
-            guard let file, error == nil, (try? FileManager.default.moveItem(at: file, to: kept)) != nil else {
-                return DispatchQueue.main.async { self.failed("下载没有完成，检查网络后再试一次。") }
-            }
-            let problem = self.prepare(kept, expecting: latest.sha256)
-            DispatchQueue.main.async {
-                if let problem { self.failed(problem) } else { self.swap(version: latest.version) }
-            }
+            let problem = file != nil && error == nil && (try? FileManager.default.moveItem(at: file!, to: kept)) != nil
+                ? self.prepare(kept, package) : "下载没有完成，检查网络后再试一次。"
+            DispatchQueue.main.async { self.fetched(package, of: release, problem: problem) }
         }
         progress = task.progress.observe(\.fractionCompleted) { [weak self] seen, _ in
             DispatchQueue.main.async {
-                guard let self, self.shown?["state"] as? String == "downloading" else { return }
-                self.show(["state": "downloading", "version": latest.version, "progress": seen.fractionCompleted])
+                guard let self, self.pressed, self.shown?["state"] as? String == "downloading" else { return }
+                self.show(["state": "downloading", "version": release.version, "progress": seen.fractionCompleted])
             }
         }
         task.resume()
     }
 
+    private func fetched(_ package: Package, of release: Release, problem: String?) {
+        // The small package didn't come together: the whole one doesn't depend on anything here.
+        if problem != nil, package.python != nil { return download(release.whole, of: release) }
+        fetching = false
+        if let problem {
+            if pressed { failed(problem) }
+            return
+        }
+        ready = release.version
+        if pressed { install() }
+    }
+
     private func failed(_ reason: String) {
+        pressed = false
         offer(error: reason)
         if latest == nil { show(nil) }
     }
 
     /// Off the main thread. Returns what went wrong, in words for the panel.
-    private func prepare(_ zip: URL, expecting sha: String) -> String? {
+    private func prepare(_ zip: URL, _ package: Package) -> String? {
         guard let data = try? Data(contentsOf: zip, options: .mappedIfSafe) else { return "下载的文件读不出来，再试一次。" }
         let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        guard digest == sha.lowercased() else { return "下载的文件不完整，再试一次。" }
+        guard digest == package.sha256.lowercased() else { return "下载的文件不完整，再试一次。" }
         let unpacked = folder.appendingPathComponent("unpacked")
         guard run("/usr/bin/ditto", ["-x", "-k", zip.path, unpacked.path]) else { return "解压失败，再试一次。" }
         let app = unpacked.appendingPathComponent("Tako.app")
+        if package.python != nil {
+            // Cloned, so it costs neither time nor disk. The signature check below covers every file of it.
+            let mine = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/python")
+            guard run("/bin/cp", ["-Rc", mine.path, app.appendingPathComponent("Contents/Resources/python").path]) else { return "解压失败，再试一次。" }
+        }
         _ = run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", app.path])
         guard sameSignature(app) else { return "这个版本的签名和正在运行的不一致，没有安装。自己编译的 Tako 请用 git pull 更新。" }
         return nil

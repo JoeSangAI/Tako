@@ -31,15 +31,25 @@ case "${1:-}" in
     esac
     (cd "$DIST" && ditto -c -k --keepParent Tako.app Tako.zip)
     SHA="$(shasum -a 256 "$DIST/Tako.zip" | cut -d' ' -f1)"
+    # What an installed Tako with this same Python fetches: about 1 MB instead of the whole thing.
+    SMALL="$(mktemp -d)"
+    ditto "$DIST/Tako.app" "$SMALL/Tako.app"
+    rm -rf "$SMALL/Tako.app/Contents/Resources/python"
+    (cd "$SMALL" && ditto -c -k --keepParent Tako.app "$DIST/Tako-update.zip")
+    rm -rf "$SMALL"
+    SMALL_SHA="$(shasum -a 256 "$DIST/Tako-update.zip" | cut -d' ' -f1)"
     notes > "$DIST/notes.md"
-    VERSION="$VERSION" SHA="$SHA" REPO="$REPO" DIST="$DIST" "$ROOT/.build/python/bin/python3" - <<'PY'
+    VERSION="$VERSION" SHA="$SHA" SMALL_SHA="$SMALL_SHA" REPO="$REPO" DIST="$DIST" "$ROOT/.build/python/bin/python3" - <<'PY'
 import json, os
 dist = os.environ["DIST"]
+base = f"https://github.com/{os.environ['REPO']}/releases/download/v{os.environ['VERSION']}"
 json.dump({"version": os.environ["VERSION"], "sha256": os.environ["SHA"], "notes": open(f"{dist}/notes.md").read().strip(),
-           "zip": f"https://github.com/{os.environ['REPO']}/releases/download/v{os.environ['VERSION']}/Tako.zip"},
+           "zip": f"{base}/Tako.zip",
+           "patch": {"zip": f"{base}/Tako-update.zip", "sha256": os.environ["SMALL_SHA"],
+                     "python": open(f"{dist}/Tako.app/Contents/Resources/python.id").read().strip()}},
           open(f"{dist}/latest.json", "w"), ensure_ascii=False, indent=1)
 PY
-    echo "built Tako $VERSION: $(du -h "$DIST/Tako.zip" | cut -f1)"
+    echo "built Tako $VERSION: $(du -h "$DIST/Tako.zip" | cut -f1), update $(du -h "$DIST/Tako-update.zip" | cut -f1)"
     ;;
   publish)
     COMMIT="$2"
@@ -48,7 +58,7 @@ PY
       sleep 2
     done
     [ "$(git -C "$ROOT" ls-remote origin refs/heads/main | cut -f1)" = "$COMMIT" ] || { echo "$COMMIT never reached GitHub" >&2; exit 1; }
-    gh release create "v$VERSION" "$DIST/Tako.zip" "$DIST/latest.json" --repo "$REPO" --target "$COMMIT" --title "Tako $VERSION" --notes-file "$DIST/notes.md"
+    gh release create "v$VERSION" "$DIST/Tako.zip" "$DIST/Tako-update.zip" "$DIST/latest.json" --repo "$REPO" --target "$COMMIT" --title "Tako $VERSION" --notes-file "$DIST/notes.md"
     ;;
   *) sed -n 2,5p "$0"; exit 2 ;;
 esac

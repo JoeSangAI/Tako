@@ -7,7 +7,7 @@ RELEASE="20261026"
 NAME="cpython-3.12.16+$RELEASE-aarch64-apple-darwin-install_only_stripped.tar.gz"
 SHA256="353d5f1b4fd2715e7053f12f068435d5bbad16b91e057006b5d01e0925709a7e"
 OUT="$ROOT/.build/python"
-STAMP="$OUT/.tako-$SHA256"
+STAMP="$OUT/.tako-$SHA256-small"
 
 [ -f "$STAMP" ] && exit 0
 
@@ -26,7 +26,8 @@ tar -xzf "$ARCHIVE" -C "$OUT" --strip-components 1
 
 LIB="$OUT/lib/python3.12"
 rm -rf "$LIB/test" "$LIB/idlelib" "$LIB/tkinter" "$LIB/turtledemo" "$LIB/ensurepip" "$LIB/site-packages/pip" "$LIB"/site-packages/pip-* "$LIB/lib2to3" \
-  "$OUT/lib/itcl"* "$OUT/lib/tcl"* "$OUT/lib/tk"* "$OUT/lib/thread"* "$OUT/lib/libtcl"* "$OUT/lib/libtk"* "$OUT/include" "$OUT/share" "$OUT/bin/idle"* "$OUT/bin/pip"* "$OUT/bin/2to3"* "$OUT/bin/pydoc"*
+  "$OUT/lib/itcl"* "$OUT/lib/tcl"* "$OUT/lib/tk"* "$OUT/lib/thread"* "$OUT/lib/libtcl"* "$OUT/lib/libtk"* "$OUT/include" "$OUT/share" "$OUT/bin/idle"* "$OUT/bin/pip"* "$OUT/bin/2to3"* "$OUT/bin/pydoc"* \
+  "$OUT/bin/python3-config" "$OUT/bin/python3.12-config" "$OUT/lib/pkgconfig" "$OUT"/lib/libpython* "$LIB/config-3.12-darwin" "$LIB/pydoc_data" "$LIB/site-packages/Crypto/SelfTest"
 find "$OUT" -name '__pycache__' -type d -prune -exec rm -rf {} +
 find "$LIB" -name '*.a' -delete
 # Compiled ahead: nothing may be written inside a signed app, and startup shouldn't pay for it every time.

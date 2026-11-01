@@ -14,6 +14,7 @@ HERE = pathlib.Path(__file__).resolve().parent.parent / "Sources"
 SERVER = (HERE / "tako_server.py").read_text()
 sys.path[:0] = [str(HERE), str(HERE.parent / "server")]
 import feedback as fb  # noqa: E402
+import greetings as greet  # noqa: E402
 import feedback_receiver as receiver  # noqa: E402
 
 
@@ -29,6 +30,56 @@ def load(name):
         scope["script_code"] = load("script_code")
     exec(compile(ast.Module([node], []), "tako_server.py", "exec"), scope)
     return scope[name]
+
+
+class Greetings(unittest.TestCase):
+    def fresh(self):
+        return greet.Greetings(tempfile.mkdtemp())
+
+    def test_only_the_apps_name_goes_out(self):
+        body = SERVER[SERVER.index("async def _more_greetings"):SERVER.index("def _park")]
+        self.assertIn('greet.ask_for(app)', body)
+        self.assertIn('kind="greeting"', body)
+        for private in ("title", "events", "history", "TOOLS", "start_thread"):
+            self.assertNotIn(private, body.split('"""')[2].replace("self.events", ""))
+        self.assertEqual(greet.ask_for("Excel").splitlines()[0], "软件：Excel")
+
+    def test_a_line_that_could_mislead_is_dropped(self):
+        for bad in ("我帮你发送这条消息吧", "看这里 https://example.com", "我是 ChatGPT 的好朋友", "短", "这句话实在是太长太长太长太长太长太长太长太长太长太长太长太长太长太长了吧", "<b>不要这样写哦</b>"):
+            self.assertEqual(greet.fit(bad), "", bad)
+        self.assertEqual(greet.fit("1. 「公式崩了就喊我，我不怕报错。」"), "公式崩了就喊我，我不怕报错。")
+
+    def test_never_the_same_line_twice(self):
+        g = self.fresh()
+        g.take("Excel", "公式崩了就喊我，我不怕报错。\n表格再大，也没我手多。\n公式崩了就喊我，我不怕报错。")
+        noon = __import__("time").strptime("2026-03-03 12:00", "%Y-%m-%d %H:%M")
+        self.assertEqual(g.pick("Excel", noon), "公式崩了就喊我，我不怕报错。")
+        self.assertEqual(g.pick("Excel", noon), "表格再大，也没我手多。")
+        g.take("Excel", "公式崩了就喊我，我不怕报错。")
+        self.assertIn(g.pick("Excel", noon), greet.PLAIN)
+        again = greet.Greetings(pathlib.Path(g.path).parent)
+        self.assertEqual(again.state["apps"]["Excel"]["said"][0], "公式崩了就喊我，我不怕报错。")
+
+    def test_asks_when_low_and_not_again_at_once(self):
+        g = self.fresh()
+        self.assertTrue(g.wants_more("Excel", now=1000))
+        self.assertFalse(g.wants_more("Excel", now=1001))
+        self.assertTrue(g.wants_more("Excel", now=1000 + greet.RETRY_AFTER))
+        self.assertFalse(g.wants_more("", now=5000))
+        g.take("Word", "这句是第一句的开场白。\n这句是第二句的开场白。\n这句是第三句的开场白。")
+        self.assertFalse(g.wants_more("Word", now=5000))
+
+    def test_an_occasion_happens_once_that_day(self):
+        g = self.fresh()
+        day = __import__("time").strptime("2026-12-25 12:00", "%Y-%m-%d %H:%M")
+        self.assertEqual(g.pick("Excel", day), greet.DAYS[(12, 25)])
+        self.assertNotEqual(g.pick("Excel", day), greet.DAYS[(12, 25)])
+
+    def test_secret_words_only_when_they_are_the_whole_message(self):
+        self.assertTrue(greet.secret("章鱼烧！"))
+        self.assertTrue(greet.secret("在吗？"))
+        for real in ("帮我查一下章鱼烧的做法", "把这个表格摸摸清楚", "在吗 帮我改一下", ""):
+            self.assertIsNone(greet.secret(real), real)
 
 
 class ScriptGuard(unittest.TestCase):

@@ -40,6 +40,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import feedback as fb  # noqa: E402
+import greetings as greet  # noqa: E402
 import wechat_reader as reader  # noqa: E402
 
 for _kind, _suffix in (("image/heic", ".heic"), ("image/heif", ".heif"), ("image/avif", ".avif"), ("image/webp", ".webp")):
@@ -579,6 +580,7 @@ class Companion:
         self.setup = Setup(self)
         self.turns = asyncio.Lock()
         self.feedback = fb.Feedback(RUNTIME, app_version(), platform.mac_ver()[0])
+        self.greetings = greet.Greetings(RUNTIME)
         self.events = []
         self.status = "idle"
         self.error = ""
@@ -645,6 +647,7 @@ class Companion:
         return {"chat": self.chat and self.chat["name"], "status": self.status, "error": self.error,
                 "polled_at": self.polled_at, "gen": self.generation, "events": self.events[after:],
                 "kind": self.chat.get("kind", "wechat") if self.chat else "", "app": (self.window or {}).get("app", ""),
+                "greeting": (self.chat or {}).get("greeting", ""),
                 "bundle": (self.window or {}).get("bundle", ""),
                 "partial": partial, "steps": self.steps if live else [], "busy": self.status == "thinking" or self.status == "working",
                 "pending": [{k: v for k, v in card.items() if k != "future"} for card in self.pending.values()],
@@ -759,7 +762,23 @@ class Companion:
         if self.chat and self.chat["username"] == key:
             self.chat["name"] = name
             return
-        await self.attach({"username": key, "name": name, "kind": "window"})
+        chat = {"username": key, "name": name, "kind": "window"}
+        app = window.get("app") or ""
+        if not (self.saved.get(key) or {}).get("events"):
+            chat["greeting"] = self.greetings.pick(app)
+            if self.greetings.wants_more(app):
+                self._later(self._more_greetings(app))
+        await self.attach(chat)
+
+    async def _more_greetings(self, app):
+        """Only the app's name goes out, on a throwaway thread with no tools. If it comes back in time, a stock line on an empty panel gives way."""
+        try:
+            self.greetings.take(app, await self._reader(greet.PROMPT, greet.ask_for(app), effort="low", kind="greeting"))
+        except Exception:
+            return  # No model right now: the stock lines will do, and it asks again later.
+        chat = self.chat or {}
+        if (self.window or {}).get("app") == app and not self.events and chat.get("greeting") in greet.PLAIN:
+            chat["greeting"] = self.greetings.next(app) or chat["greeting"]
 
     def _park(self):
         if self.chat:
@@ -1674,6 +1693,11 @@ class Companion:
         return asyncio.run_coroutine_threadsafe(coro, self.loop)
 
     def ask(self, text, files=()):
+        reply = None if files else greet.secret(text)
+        if reply:
+            self.add("owner", text)
+            self.add("tako", reply)
+            return
         names = "".join(f"\n[{Path(f).name}](</{f.lstrip('/')}>)" for f in files)
         self.add("owner", text + names)
         self.said = [*self.said, (secrets.token_hex(8), text)][-50:]

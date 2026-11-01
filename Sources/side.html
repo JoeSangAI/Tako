@@ -53,7 +53,8 @@
   .wechat-msg { color: var(--muted); font-size: 12px; border-left: 2px solid var(--line); padding-left: 8px; }
   .owner { align-self: flex-end; background: var(--btn); color: var(--btn-ink); padding: 5px 10px; border-radius: 12px 12px 3px 12px; max-width: 88%; white-space: pre-wrap; overflow-wrap: anywhere; }
   .owner a { color: inherit; }
-  .empty { color: var(--muted); margin: auto; text-align: center; font-size: 12px; padding: 0 12px; }
+  .empty { color: var(--muted); margin: auto; text-align: center; font-size: 12px; padding: 0 12px; animation: hello .5s ease; }
+  @keyframes hello { from { opacity: 0; transform: translateY(3px); } }
 
   /* what Tako says */
   .md { overflow-wrap: anywhere; min-width: 0; }
@@ -492,6 +493,7 @@ function placeholder(s) {
   const isDeck = /Powerpoint|Keynote|wpsoffice/i.test(s.bundle);
   return s.kind === 'window' ? (isDeck ? '让 Tako 看看或改这份文件…' : '问 Tako 这个窗口…') : '跟 Tako 说…';
 }
+let doingSince = 0;
 function show(s) {
   let switched = false;
   if (s.gen !== gen) {
@@ -502,13 +504,17 @@ function show(s) {
     if (!first || seen) { $('log').replaceChildren(empty); seen = 0; s = { ...s, events: [] }; switched = true; }
   }
   document.body.classList.toggle('wechat', s.kind !== 'window');
-  empty.textContent = s.kind === 'window' ? '不会用这个软件也没关系，告诉 Tako 你想做什么。' : s.chat ? '对方有新消息时，Tako 会在这里开口；也可以直接问它。' : '把 Tako 拖到任意窗口上松手，或者在任意窗口按 ⌃⌥T。';
+  const opening = s.kind === 'window' ? s.greeting || '告诉 Tako 你想做什么。' : s.chat ? '对方有新消息时，Tako 会在这里开口；也可以直接问它。' : '把 Tako 拖到任意窗口上松手，或者在任意窗口按 ⌃⌥T。';
+  if (empty.textContent !== opening) { empty.textContent = opening; empty.style.animation = 'none'; void empty.offsetWidth; empty.style.animation = ''; }
   document.body.dataset.app = s.app || '';
   setText($('who'), s.chat ? `我在看：${s.chat}` : '还没盯着哪段对话，点这里选');
   const ear = s.listening !== null && s.listening !== undefined;
   $('tick').classList.toggle('ear', ear);
   $('tick').title = ear ? '点一下不听了' : '';
-  setText($('tick'), s.status === 'working' ? 'Tako 在动手…' : s.status === 'thinking' ? 'Tako 在想…' : ear ? `在听 ${Math.floor(s.listening / 60)}:${String(s.listening % 60).padStart(2, '0')}` : s.polled_at
+  const doing = s.status === 'working' || s.status === 'thinking';
+  if (!doing) doingSince = 0; else if (!doingSince) doingSince = Date.now();
+  const doingFor = doing ? Date.now() - doingSince : 0;
+  setText($('tick'), s.status === 'working' ? (doingFor > 120e3 ? '这活儿不小，八只手都上了…' : doingFor > 45e3 ? 'Tako 又多伸了一只手…' : 'Tako 在动手…') : s.status === 'thinking' ? (doingFor > 45e3 ? 'Tako 想得有点入神…' : 'Tako 在想…') : ear ? `在听 ${Math.floor(s.listening / 60)}:${String(s.listening % 60).padStart(2, '0')}` : s.polled_at
     ? `${new Date(s.polled_at * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })} 看过` : '');
   showError(s.error);
   if ($('say').placeholder !== placeholder(s)) $('say').placeholder = placeholder(s);
@@ -612,7 +618,7 @@ function showNotice() {
     actions.append(button('好', () => say('dismiss'), true));
     box.append(actions);
   } else if (update.state === 'updated') {
-    box.append(noticeLine('title', `已更新到 Tako ${update.version}`));
+    box.append(noticeLine('title', `已更新到 Tako ${update.version}，新墨水灌好了`));
     const notes = document.createElement('div');
     notes.className = 'notes';
     notes.append(renderMarkdown(update.notes || ''));
