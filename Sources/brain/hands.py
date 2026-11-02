@@ -337,8 +337,12 @@ class Hands:
         if not accepted:
             return self._reply(f"{OWNER} 没有应用这份改动，原文件没动。")
         backup = await asyncio.to_thread(back_up, source)
-        close = await self._unless_needs_front(job, "closeDocument", timeout=15, document=str(source))
+        # The card's 看副本 leaves the copy open beside the original. It has done its job; if it won't go, nothing depends on it.
+        await self.native("closeDocument", timeout=25, document=str(copy), held=True)
+        close = await self._unless_needs_front(job, "closeDocument", timeout=25, document=str(source))
         if not close.get("ok"):
+            if close.get("closing"):  # It may close late: the owner keeps their document either way.
+                await self.native("openDocument", timeout=15, document=str(source), app=close.get("app"))
             return self._reply(close.get("error", "关不掉原文档，没有替换"), ok=False)
         problem = await asyncio.to_thread(replace_file, source, copy)
         opened = await self.native("openDocument", timeout=15, document=str(source), app=close.get("app"))

@@ -310,7 +310,19 @@ class ACard(Base):
         self.tako.until(lambda s: "好了" in self.tako.said(s), "the turn to finish")
         self.assertEqual(original.read_text(), "改过的")
         self.assertEqual([path.read_text() for path in (self.tako.home / "backups").iterdir()], ["原来的"])
-        self.assertEqual([c["command"] for c in self.tako.commands if "Document" in c["command"]], ["closeDocument", "openDocument"])
+        self.assertEqual([c["command"] for c in self.tako.commands if "Document" in c["command"]], ["closeDocument", "closeDocument", "openDocument"])
+        closes = [c for c in self.tako.commands if c["command"] == "closeDocument"]
+        self.assertTrue(closes[0].get("held"))  # The copy: only if it was looked at.
+        self.assertFalse(closes[1].get("held"))
+        self.assertEqual(closes[1]["document"], str(original))
+
+    def test_a_document_that_closes_too_late_comes_back(self):
+        card, original = self.propose()
+        self.tako.native["closeDocument"] = lambda c: {"ok": True} if c.get("held") else {"ok": False, "closing": True, "app": "/Applications/wps.app", "error": "没能关上"}
+        self.tako.call("/decide", {"id": card["id"], "accepted": True})
+        self.tako.until(lambda s: "好了" in self.tako.said(s), "the turn to finish")
+        self.assertEqual(original.read_text(), "原来的")
+        self.assertEqual([c["document"] for c in self.tako.commands if c["command"] == "openDocument"], [str(original)])
 
     def test_refusing_changes_nothing(self):
         card, original = self.propose()

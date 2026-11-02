@@ -487,6 +487,18 @@ class OwnerNamedPaths(unittest.TestCase):
         body = insert[insert.index("func insertBehindTheOwner"):insert.index("func typeBehindTheOwner")]
         self.assertIn("|| isTextField", body)
 
+    def test_choosing_from_a_dropdown_passes_the_same_gate_as_a_click(self):
+        operate = native("Operate")
+        body = operate[operate.index('case "choose":'):operate.index('case "wait":')]
+        self.assertIn("gateClick(label: wanted", body)
+        self.assertLess(body.index("gateClick("), body.index("kAXPressAction"))
+
+    def test_closing_a_document_goes_by_who_holds_the_file(self):
+        hands = native("Hands")
+        body = hands[hands.index("func closeDocument("):hands.index("nonisolated static func holderOf")]
+        self.assertIn("holderOf(path)", body)
+        self.assertIn('"closing": true', body)
+
     def test_someone_elses_message_never_opens_anything(self):
         glance = source("turns")
         self.assertEqual(glance.count("to_thread(named_paths"), 1)

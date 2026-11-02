@@ -104,13 +104,22 @@ extension Controller {
     /// Electron and Chromium hide their contents from Accessibility until somebody asks. Electron takes the first request; Chrome refuses it
     /// and answers only to the second (which also returns an error, seen 2026-11-01), and other apps animate oddly under it, so it comes only after a refusal.
     @MainActor
-    func askForAccessibleContent(pid: pid_t) async {
-        let app = AXUIElementCreateApplication(pid)
+    func askForAccessibleContent(_ win: Win) async {
+        let app = AXUIElementCreateApplication(win.pid)
         if AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue) != .success {
             AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
             // Chrome takes a moment to build what it has just been asked for.
             if askedForContent.insert(pid).inserted { try? await Task.sleep(nanoseconds: 1_500_000_000) }
         }
+    }
+
+    /// Whether the page has reached Accessibility yet. It sits a few levels down, in front of everything else in the window.
+    nonisolated static func holdsPage(_ element: AXUIElement, depth: Int = 0) -> Bool {
+        var role: CFTypeRef?, children: CFTypeRef?
+        AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role)
+        if role as? String == "AXWebArea" { return true }
+        guard depth < 12, AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &children) == .success, let list = children as? [AXUIElement] else { return false }
+        return list.contains { holdsPage($0, depth: depth + 1) }
     }
 
     /// Everything readable and everything pressable in the window. Runs off the main thread: some apps answer slowly.
@@ -158,7 +167,7 @@ extension Controller {
     func look(_ win: Win) async -> [String: Any] {
         guard CGPreflightScreenCaptureAccess() else { return ["ok": false, "error": "没有屏幕录制权限，看不到窗口"] }
         if win.id == target?.id { goo.state = "reading"; enchant.setMood("reading") } else if isFront(win) { flash(win) }
-        await askForAccessibleContent(pid: win.pid)
+        await askForAccessibleContent(win)
         await surface(win)
         let size = win.frame.size
         guard let image = await Hands.captureLive(win, scale: 2) else {
@@ -240,6 +249,23 @@ extension Controller {
             guard let box = frame(of: known.ax), box.contains(screen) else { return nil }
             return (known.ax, box.width * box.height)
         }.min { $0.1 < $1.1 }?.0
+    }
+
+    func menuItems(under element: AXUIElement, depth: Int = 0) -> [(ax: AXUIElement, label: String)] {
+        var children: CFTypeRef?
+        guard depth < 4, AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &children) == .success, let list = children as? [AXUIElement] else { return [] }
+        return list.flatMap { child -> [(ax: AXUIElement, label: String)] in
+            var role: CFTypeRef?
+            AXUIElementCopyAttributeValue(child, kAXRoleAttribute as CFString, &role)
+            guard role as? String == "AXMenuItem" else { return menuItems(under: child, depth: depth + 1) }
+            // Apps put an option's words in any of these; Chrome leaves the title empty.
+            let label = [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute].lazy.compactMap { name -> String? in
+                var value: CFTypeRef?
+                AXUIElementCopyAttributeValue(child, name as CFString, &value)
+                return value as? String
+            }.first { !$0.isEmpty }
+            return label.map { [(child, $0)] } ?? []
+        }
     }
 
     /// Presses what is at a point without touching the pointer. A press lands on the middle of an element, so a big one (a canvas, a whole page) can't take it.
@@ -713,6 +739,21 @@ extension Controller {
                 mouse(.leftMouseUp, at: to)
             }
             return ["ok": true, "did": "拖动了"]
+        case "choose":
+            // A dropdown in one go, behind the owner's back. Its options only exist once it is open, and opening it renumbers everything after it, so this can't be two clicks in a batch.
+            let wanted = step["text"] as? String ?? ""
+            guard let ref = step["ref"] as? Int, !wanted.isEmpty else { return ["ok": false, "error": "choose 要给下拉框的 ref 和选项文字 text"] }
+            guard let known = elements[win.id], known.indices.contains(ref) else { return ["ok": false, "error": "编号 \(ref) 已过期，重新看一下窗口"] }
+            if let stop = gateClick(label: wanted, at: CGPoint(x: known[ref].frame.midX, y: known[ref].frame.midY), in: win, confirmed: confirmed) { return stop }
+            guard AXUIElementPerformAction(known[ref].ax, kAXPressAction as CFString) == .success else { return ["ok": false, "error": "这个下拉框打不开，可以给 click 加 front:true，等窗口回到前台再选"] }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            let options = menuItems(under: known[ref].ax)
+            guard let option = options.first(where: { $0.label == wanted }) ?? options.first(where: { $0.label.contains(wanted) }) else {
+                AXUIElementPerformAction(known[ref].ax, kAXCancelAction as CFString)
+                return ["ok": false, "error": "下拉框里没有“\(wanted)”。选项有：\(options.map(\.label).joined(separator: "、"))"]
+            }
+            guard AXUIElementPerformAction(option.ax, kAXPressAction as CFString) == .success else { return ["ok": false, "error": "“\(wanted)”按不下去，可以给 click 加 front:true，等窗口回到前台再选"] }
+            return ["ok": true, "did": "选了 \(option.label)"]
         case "wait":
             try? await Task.sleep(nanoseconds: UInt64(max(0, min(step["seconds"] as? Double ?? 1, 8)) * 1e9))
             return ["ok": true, "did": "等了一下"]

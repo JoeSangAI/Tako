@@ -120,7 +120,7 @@ WINDOW = {"type": "string", "description": "哪个窗口：应用名、标题里
 TOOLS = [
     tool("list_windows", "列出 {owner} 现在打开的窗口。", {}),
     tool("look_at_window", "看一个窗口：返回截图（1 像素 = 1 个窗口坐标点，除非 imageScale 说不是）、带坐标的文字、可以按的元素及其编号、应用和文件路径。", {"window": WINDOW}, optional=["window"]),
-    tool("operate_window", "替 {owner} 操作一个窗口：一串动作依次执行，做完返回新截图。动作：click/double_click/right_click（给 ref 或 text 或 x,y）、type（text）、key（keys，如 cmd+a、tab、esc、return）、scroll（x,y,amount，负数向下）、drag（x,y,x2,y2）、wait（seconds）。在后台执行，{owner} 可以同时做别的；遇到要 {owner} 批准的动作会自动弹卡片。后台点了没反应时，给这一步加 front:true，表示这一步要真键鼠，等窗口回到前台再做。", {
+    tool("operate_window", "替 {owner} 操作一个窗口：一串动作依次执行，做完返回新截图。动作：click/double_click/right_click（给 ref 或 text 或 x,y）、type（text）、key（keys，如 cmd+a、tab、esc、return）、scroll（x,y,amount，负数向下）、drag（x,y,x2,y2）、wait（seconds）、choose（ref 是下拉框，text 是选项文字，一步选好，在后台也能选，不用等前台）。在后台执行，{owner} 可以同时做别的；遇到要 {owner} 批准的动作会自动弹卡片。后台点了没反应时，给这一步加 front:true，表示这一步要真键鼠，等窗口回到前台再做。", {
         "steps": {"type": "array", "items": {"type": "object", "properties": {
             "action": {"type": "string"}, "ref": {"type": "integer"}, "text": {"type": "string"}, "keys": {"type": "string"},
             "x": {"type": "number"}, "y": {"type": "number"}, "x2": {"type": "number"}, "y2": {"type": "number"},

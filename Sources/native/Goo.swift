@@ -29,6 +29,10 @@ final class GooView: NSView {
         owner?.goo.pop = 1
         return .copy
     }
+    // Entering while it was still landing on a window must not refuse the whole drag.
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        owner?.goo.mode == .attached || owner?.goo.mode == .open ? .copy : []
+    }
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         owner?.goo.kick(150)
         return owner?.takeFiles(sender) ?? false

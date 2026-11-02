@@ -197,7 +197,7 @@ extension Controller {
         if name == "windows" { return listWindows() }
         if name == "endSteps" { endSteps(); return ["ok": true] }
         if name == "listenStop" { stopListening(); return ["ok": true] }
-        if name == "closeDocument" { return await closeDocument(command["document"] as? String ?? "") }
+        if name == "closeDocument" { return await closeDocument(command["document"] as? String ?? "", onlyIfHeld: command["held"] as? Bool ?? false) }
         if name == "openDocument" { return openDocument(command["document"] as? String ?? "", in: command["app"] as? String) }
         guard let win = await resolve(command["window"] as? String) else {
             return ["ok": false, "error": (command["window"] as? String).map { "没找到窗口“\($0)”，它可能没打开" } ?? "TAKO 现在没有粘在窗口上"]
@@ -234,7 +234,9 @@ extension Controller {
             let title = currentTitle(id: win.id).replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
             let result = await script("tell application \"Finder\"\nrepeat with w in Finder windows\nif name of w is \"\(title)\" then return POSIX path of (target of w as alias)\nend repeat\nend tell")
             let path = (result["output"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            return path.hasPrefix("/") ? path : nil
+            if path.hasPrefix("/") { return path }
+            // Finder said no (nobody has allowed Tako to ask it). Spotlight knows folders by name without that; only an answer with one folder in it is an answer.
+            return await Task.detached { Controller.onlyFolder(named: title) }.value
         }
         if trusted, let window = axWindow(pid: win.pid, frame: win.frame, id: win.id) {
             var value: CFTypeRef?
@@ -248,6 +250,20 @@ extension Controller {
         // A browser tab named after a website gets here too; lsof can take a while and the goo must keep moving.
         let pid = win.pid
         return await Task.detached { Controller.openFile(of: pid, named: title) }.value
+    }
+
+    nonisolated static func onlyFolder(named quoted: String) -> String? {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
+        task.arguments = ["kMDItemFSName == \"\(quoted)\" && kMDItemContentType == \"public.folder\""]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = FileHandle.nullDevice
+        guard (try? task.run()) != nil else { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+        let found = String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init).filter { $0.hasPrefix("/") }
+        return found.count == 1 ? found[0] : nil
     }
 
     nonisolated static func openFile(of pid: pid_t, named title: String) -> String? {
@@ -427,40 +443,60 @@ extension Controller {
     }
 
     /// Closes the document so its file can be replaced. Refuses unless the window shows exactly this document, saved.
+    /// The app holding the file says which document it is and whether it has really gone: a title can't, with a copy of the same name in the next tab (seen 2026-11-02).
     @MainActor
-    func closeDocument(_ path: String) async -> [String: Any] {
+    func closeDocument(_ path: String, onlyIfHeld: Bool = false) async -> [String: Any] {
         let name = URL(fileURLWithPath: path).lastPathComponent
-        // Whichever window has it, whatever window the goo is on.
-        guard let win = openWindows().first(where: { $0.title.contains(name) || name.hasPrefix($0.title + ".") }) else {
-            // Held open with no window showing it: a tab at the back, or another app. Replacing it now would lose to its next save.
-            if let holder = await Task.detached(operation: { Controller.holderOf(path) }).value { return ["ok": false, "error": "\(holder) 还开着 \(name)，先切到那个标签或关掉它，原文件没动"] }
+        let holder = await Task.detached(operation: { Controller.holderOf(path) }).value
+        if holder == nil && onlyIfHeld { return ["ok": true] }
+        let holding = holder.flatMap { NSRunningApplication(processIdentifier: $0.pid) }
+        func showing(_ title: String) -> Bool { title.contains(name) || name.hasPrefix(title + ".") }
+        func window() -> Win? { openWindows().first { (holding == nil || $0.pid == holding?.processIdentifier) && showing($0.title) } }
+        // A tab at the back can't be closed with a key: asking the app to open it brings that very tab up.
+        if let appURL = holding?.bundleURL {
+            let quietly = NSWorkspace.OpenConfiguration()
+            quietly.activates = false
+            NSWorkspace.shared.open([URL(fileURLWithPath: path)], withApplicationAt: appURL, configuration: quietly, completionHandler: nil)
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            for _ in 0..<12 where window() == nil { try? await Task.sleep(nanoseconds: 250_000_000) }
+        }
+        guard let win = window() else {
+            // Held open with no window showing it. Replacing it now would lose to its next save.
+            if let holder { return ["ok": false, "error": "\(holder.name) 还开着 \(name)，先切到那个标签或关掉它，原文件没动"] }
             return ["ok": true]
         }
         let app = NSRunningApplication(processIdentifier: win.pid)?.bundleURL?.path
         if win.title.contains("*") || win.title.contains("未保存") || isEdited(win) { return ["ok": false, "error": "\(name) 有没保存的改动，先保存，原文件没动"] }
         guard keysLandIn(win) else { return waitForFront(win) }
-        guard currentTitle(id: win.id).contains(name) || name.hasPrefix(currentTitle(id: win.id) + ".") else { return ["ok": false, "error": "窗口换了内容，没有替换"] }
+        guard showing(currentTitle(id: win.id)) else { return ["ok": false, "error": "窗口换了内容，没有替换"] }
         press(13, flags: .maskCommand, to: win.pid)  // W
-        for _ in 0..<20 {
-            try? await Task.sleep(nanoseconds: 150_000_000)
-            let now = currentTitle(id: win.id)
-            if !now.contains(name) && !name.hasPrefix(now + ".") || now.isEmpty { return ["ok": true, "app": app ?? ""] }
+        for _ in 0..<40 {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            if holder != nil {
+                if await Task.detached(operation: { Controller.holderOf(path) }).value == nil { return ["ok": true, "app": app ?? ""] }
+            } else {
+                let now = currentTitle(id: win.id)
+                if !showing(now) || now.isEmpty { return ["ok": true, "app": app ?? ""] }
+            }
         }
-        return ["ok": false, "error": "\(name) 没能关上，可能在等你确认保存，原文件没动"]
+        // It may still go a moment from now: `closing` tells the other side to bring it back rather than leave the owner without their document.
+        return ["ok": false, "closing": true, "app": app ?? "", "error": "\(name) 没能关上，可能在等你确认保存，原文件没动"]
     }
 
     /// The app holding a file open, if any. lsof can take seconds, so never on the main thread.
-    nonisolated static func holderOf(_ path: String) -> String? {
+    nonisolated static func holderOf(_ path: String) -> (pid: pid_t, name: String)? {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
-        task.arguments = ["-F", "c", "--", path]
+        task.arguments = ["-F", "pc", "--", path]
         let pipe = Pipe()
         task.standardOutput = pipe
         task.standardError = FileHandle.nullDevice
         guard (try? task.run()) != nil else { return nil }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         task.waitUntilExit()
-        return String(decoding: data, as: UTF8.self).split(separator: "\n").first { $0.hasPrefix("c") }.map { String($0.dropFirst()) }
+        let lines = String(decoding: data, as: UTF8.self).split(separator: "\n")
+        guard let pid = lines.first(where: { $0.hasPrefix("p") }).flatMap({ pid_t($0.dropFirst()) }), let name = lines.first(where: { $0.hasPrefix("c") }) else { return nil }
+        return (pid, String(name.dropFirst()))
     }
 
     func isEdited(_ win: Win) -> Bool {
