@@ -196,7 +196,7 @@ class CodexRuntime:
         result = await self.request("thread/start", params)
         return result
 
-    async def start_turn(self, thread_id: str, text: str, *, execution_directory: str | None = None,
+    async def start_turn(self, thread_id: str, text: str, *, execution_directory: str | None = None, writable: list[str] | None = None,
                          images: list[str] | None = None, approval_policy: str = "never", network: bool = True):
         if thread_id in self.uncertain_starts:
             raise RuntimeErrorCode("turn_start_requires_reconciliation")
@@ -204,8 +204,8 @@ class CodexRuntime:
         params = {"threadId": thread_id, "input": content, "approvalPolicy": approval_policy,
                   "sandboxPolicy": {"type": "readOnly", "networkAccess": network}}
         if execution_directory:
-            # With a folder of its own, a turn may write there and nowhere else without asking.
-            params.update(cwd=execution_directory, sandboxPolicy={"type": "workspaceWrite", "writableRoots": [execution_directory], "networkAccess": True})
+            # With a folder of its own, a turn may write there and wherever the owner pointed it, and nowhere else without asking.
+            params.update(cwd=execution_directory, sandboxPolicy={"type": "workspaceWrite", "writableRoots": [execution_directory, *(writable or [])], "networkAccess": True})
         return await self.request("turn/start", params)
 
     async def interrupt(self, thread_id: str, turn_id: str):

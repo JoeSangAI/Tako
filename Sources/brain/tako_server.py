@@ -79,6 +79,7 @@ class Companion(Chats, Turns, Hands, Lectures):
         self.ear = None        # the process that turns sound into words, only while listening
         self.ear_lock = asyncio.Lock()
         self.transcribing = set()
+        self.named = {}        # where a job may write without asking, per conversation: paths the owner said there or handed over
         self.pending = {}      # cards waiting for the owner: approvals and proposed changes
         self.outbox = queue.Queue()  # commands for the native side
         self.waiting = {}      # native commands waiting for their result

@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import unicodedata
+from pathlib import Path
 
 from settings import OWNER
 
@@ -76,6 +78,27 @@ def workbench_packet(args, said, today):
         raise ValueError(f"缺 {'、'.join(missing)}，先从 /api/desk 读这个事项")
     return {"target": "action", "source_id": source_id, "id": str(args["item"]), "action_id": str(args["action"]), "revision": args["revision"],
             "date": str(args["date"]), "kind": "text" if kind == "supplement" else kind, "text": text}
+
+
+PATH_START = re.compile(r"(?<![\w/.:~-])(?:~/|/)[^\n，。；：！？、“”‘’\"'（）()<>《》]+")
+
+
+def named_paths(words):
+    """The files and folders the owner names in their own words: what the model's shell may read for them. Only what exists, and never a whole home or disk."""
+    home = str(Path.home())
+    named = set()
+    for match in PATH_START.finditer(words or ""):
+        candidate = os.path.expanduser(match.group().strip())
+        # "/a/发票 填进去": the words after a path belong to the sentence. Only the last part can be cut, so a typo never widens to the folder above it.
+        folder, _, name = candidate.rstrip("/").rpartition("/")
+        for end in range(len(name), 0, -1):
+            path = f"{folder}/{name[:end].rstrip()}"
+            if os.path.exists(path):
+                real = os.path.realpath(path)
+                if real.count("/") > 1 and not (home == real or home.startswith(real + "/")):
+                    named.add(real)
+                break
+    return named
 
 
 def plain_command(command):

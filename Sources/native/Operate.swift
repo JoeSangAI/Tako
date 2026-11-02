@@ -7,6 +7,8 @@ import ApplicationServices
 import AppKit
 import Carbon.HIToolbox
 
+private let textRoles: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"]
+
 struct Win {
     let id: Int
     var frame: CGRect
@@ -249,7 +251,7 @@ extension Controller {
             guard let box = frame(of: current), box.width * box.height <= tooBig else { return false }
             var role: CFTypeRef?
             AXUIElementCopyAttributeValue(current, kAXRoleAttribute as CFString, &role)
-            if ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"].contains(role as? String ?? "") {
+            if textRoles.contains(role as? String ?? "") {
                 AXUIElementSetAttributeValue(current, kAXFocusedAttribute as CFString, kCFBooleanTrue)
                 typingInto[win.id] = current
             }
@@ -318,7 +320,13 @@ extension Controller {
             }
             return false
         }
-        if AXUIElementSetAttributeValue(field, kAXSelectedTextAttribute as CFString, text as CFString) == .success, await settles(on: { ($0 ?? "") != before }) { return true }
+        // A page with no cursor in it says yes to all of this too. Only a real text field can be believed without reading the words back (seen 2026-11-02).
+        var role: CFTypeRef?
+        AXUIElementCopyAttributeValue(field, kAXRoleAttribute as CFString, &role)
+        let isTextField = textRoles.contains(role as? String ?? "")
+        let probe = String(text.prefix(12))
+        if AXUIElementSetAttributeValue(field, kAXSelectedTextAttribute as CFString, text as CFString) == .success,
+           await settles(on: { isTextField ? ($0 ?? "") != before : ($0 ?? "").contains(probe) }) { return true }
         // Chrome says yes to that and does nothing; it does take a new value, with the selection worked out here.
         var range = CFRange(location: (before as NSString).length, length: 0), selected: CFTypeRef?
         if AXUIElementCopyAttributeValue(field, kAXSelectedTextRangeAttribute as CFString, &selected) == .success, let selected {
@@ -329,8 +337,7 @@ extension Controller {
         guard AXUIElementIsAttributeSettable(field, kAXValueAttribute as CFString, &settable) == .success, settable.boolValue,
               AXUIElementSetAttributeValue(field, kAXValueAttribute as CFString, after as CFString) == .success else { return false }
         // Taken, even if it can't be read back yet: typing it again would write it twice (seen 2026-11-01).
-        _ = await settles(on: { $0 == after })
-        return true
+        return await settles(on: { $0 == after }) || isTextField
     }
 
     /// By key events to that app alone, read back where the app can say: some apps quietly ignore keys while in the background.

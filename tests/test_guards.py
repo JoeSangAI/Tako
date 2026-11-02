@@ -455,6 +455,45 @@ class LearningFromEdits(unittest.TestCase):
             self.assertIn(plugin, config)
 
 
+class OwnerNamedPaths(unittest.TestCase):
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp(prefix="tako-paths-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.folder = self.root / "十月 发票"
+        self.folder.mkdir()
+        (self.folder / "a.png").write_text("x")
+        self.real = os.path.realpath(self.folder)
+
+    def test_finds_a_path_inside_a_sentence(self):
+        self.assertEqual(guards.named_paths(f"发票在 {self.folder}。填进去"), {self.real})
+        self.assertEqual(guards.named_paths(f"看{self.root}/里面"), set())  # glued to the word before it: nobody's path
+        self.assertEqual(guards.named_paths(f"读 {self.folder}/a.png 然后填进去"), {f"{self.real}/a.png"})
+
+    def test_a_typo_never_widens_to_the_folder_above(self):
+        self.assertEqual(guards.named_paths(f"读 {self.folder}/没有这个文件"), set())
+
+    def test_never_a_whole_home_or_disk(self):
+        for words in ("读 ~/ 全部", "读 / 全部", f"读 {pathlib.Path.home()}", f"读 {pathlib.Path.home().parent}", "读 /Users"):
+            self.assertEqual(guards.named_paths(words), set(), words)
+
+    def test_a_web_address_is_not_a_path(self):
+        self.assertEqual(guards.named_paths(f"看 https://example.com{self.folder}"), set())
+
+    def test_a_page_with_no_cursor_is_never_called_filled(self):
+        fill = native("Hands")
+        body = fill[fill.index("func fill(_ win"):fill.index("func focusedRole")]
+        self.assertIn('"AXWebArea"].contains(focusedRole', body)
+        insert = native("Operate")
+        body = insert[insert.index("func insertBehindTheOwner"):insert.index("func typeBehindTheOwner")]
+        self.assertIn("|| isTextField", body)
+
+    def test_someone_elses_message_never_opens_anything(self):
+        glance = source("turns")
+        self.assertEqual(glance.count("to_thread(named_paths"), 1)
+        self.assertGreater(glance.index("to_thread(named_paths"), glance.index("async def _run("))
+        self.assertLess(glance.index("to_thread(named_paths"), glance.index("async def _reader("))
+
+
 class NeverSends(unittest.TestCase):
     def test_keys_are_read_once(self):
         operate = native("Operate")

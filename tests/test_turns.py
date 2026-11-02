@@ -166,6 +166,28 @@ class AQuestion(Base):
         self.assertIn("没有", seen["error"])
 
 
+class WhereItWritesWithoutAsking(Base):
+    def test_where_the_owner_pointed(self):
+        folder = self.tako.home / "十月发票"
+        folder.mkdir()
+        dragged = self.tako.home / "拖来的.txt"
+        dragged.write_text("x")
+        self.tako.ask(f"发票在 {folder}。填进这个系统")
+        self.tako.until(lambda s: self.tako.said(s), "an answer")
+        self.tako.idle()
+        roots = self.tako.owner_turns()[-1]["sandboxPolicy"]["writableRoots"]
+        self.assertEqual(roots[1:], [os.path.realpath(folder)])
+        self.tako.call("/ask", {"text": "再看看这个", "files": [str(dragged)]})
+        self.tako.until(lambda s: len(self.tako.owner_turns()) >= 2, "the next turn")
+        self.tako.idle()
+        self.assertEqual(set(self.tako.owner_turns()[-1]["sandboxPolicy"]["writableRoots"][1:]), {os.path.realpath(folder), str(dragged)})
+
+    def test_and_nowhere_else(self):
+        self.tako.ask("随便说一句 /不存在的路径")
+        self.tako.until(lambda s: self.tako.said(s), "an answer")
+        self.assertEqual(len(self.tako.owner_turns()[-1]["sandboxPolicy"]["writableRoots"]), 1)
+
+
 class WhenTheModelFails(Base):
     def failing(self, info, message="something"):
         self.tako.ask(steps({"fail": {"message": message, "codexErrorInfo": info}}))
@@ -312,7 +334,7 @@ class Throwaways(Base):
         self.assertTrue(starts, seen)
         self.assertFalse(starts[0]["config"]["features.shell_tool"])
         for turn in self.tako.requests("turn/start"):
-            if turn["sandboxPolicy"].get("type") == "readOnly":
+            if turn.get("sandboxPolicy", {}).get("type") == "readOnly":
                 self.assertEqual(turn["input"][0]["text"], "软件：Keynote")
 
     def test_are_let_go_of_once_read(self):

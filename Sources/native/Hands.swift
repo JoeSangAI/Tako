@@ -328,6 +328,12 @@ extension Controller {
         await letTheOwnerFinishTyping(in: win)
         var inserted = false
         if !win.isWeChat, files.isEmpty { inserted = await insertBehindTheOwner(text, in: win) }
+        // Nothing but the page itself has the keyboard: the words would go nowhere, in front or not, and saying they went in is the one thing this must not do.
+        if !inserted, !win.isWeChat, files.isEmpty, typingInto[win.id] == nil, [nil, "AXWebArea"].contains(focusedRole(win.pid)) {
+            goo.reachGoal = nil
+            if here { goo.fumble() }
+            return ["ok": false, "error": "这个窗口的光标不在输入框里，没有填。先用 operate_window 点一下输入框，再填一次"]
+        }
         if !inserted {
             guard ownerIsAway(from: win) else {
                 goo.reachGoal = nil

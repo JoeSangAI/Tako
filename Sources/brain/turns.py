@@ -12,7 +12,7 @@ import feedback as fb
 from chats import render
 from codex_runtime import CodexRuntime, RuntimeErrorCode
 from first_run import codex_on_path, find_codex
-from guards import knowledge_query, last_draft, plain_command
+from guards import knowledge_query, last_draft, named_paths, plain_command
 from knowledge import knowledge_lookup
 from outputs import make_output_dir, tidy_output_dir
 from prompts import BRAIN_CONFIG, FOUND, PROMPT, READER_CONFIG, READER_PROMPT, SILENT, STEP_NAMES, TOOLS, owner_context
@@ -208,7 +208,10 @@ class Turns:
             if output:
                 parts.append(f"本轮作品目录：{output}")
             parts.append(instruction)
-            prompt = dict(images=images, execution_directory=str(output), approval_policy="on-request")
+            # The owner pointing at something is reason enough to work on it without another question. Only their own sentence and what they handed over: words in a window or a message never reach here.
+            named = self.named.setdefault(id(events), set())
+            named.update(await asyncio.to_thread(named_paths, instruction), attachments)
+            prompt = dict(images=images, execution_directory=str(output), writable=sorted(named), approval_policy="on-request")
             try:
                 started = await self.runtime.start_turn(job.thread, "\n\n".join(parts), **prompt)
             except RuntimeErrorCode as exc:

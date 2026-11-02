@@ -43,7 +43,8 @@ class Hands:
             else:
                 text = plain_command(params.get("command")) or "运行命令"
             accepted = await self._card({"kind": "approval", "text": clipped(str(text)), "reason": str(params.get("reason") or "")[:200]}, job)
-            return {"decision": "accept" if accepted else "decline"}
+            # Asked once: the same thing doesn't come back to the owner for the rest of this session.
+            return {"decision": "acceptForSession" if accepted else "decline"}
         if method == "item/permissions/requestApproval":
             return {"permissions": {}, "scope": "turn"}
         if method == "item/tool/requestUserInput":
