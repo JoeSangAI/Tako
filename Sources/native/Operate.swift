@@ -174,7 +174,7 @@ extension Controller {
         guard CGPreflightScreenCaptureAccess() else { return ["ok": false, "error": "没有屏幕录制权限，看不到窗口"] }
         // The owner is working in this app, so the window can't be raised past them, and what Chrome last drew would pass for now.
         if isFront(win), coveredByItsOwn(win), drawsLikeChrome(win.pid) {
-            return ["ok": false, "needsFront": true, "error": "\(win.app) 的另一个窗口正盖在这个窗口上，它不更新被盖住的窗口，也不给里面的控件，现在看不到真实内容"]
+            return ["ok": false, "needsFront": true, "id": win.id, "app": win.app, "error": "\(win.app) 的另一个窗口正盖在这个窗口上，它不更新被盖住的窗口，也不给里面的控件，现在看不到真实内容"]
         }
         if win.id == target?.id { goo.state = "reading"; enchant.setMood("reading") } else if isFront(win) { flash(win) }
         await askForAccessibleContent(win)
@@ -252,7 +252,7 @@ extension Controller {
     }
 
     func waitForFront(_ win: Win) -> [String: Any] {
-        ["ok": false, "needsFront": true, "error": "这一步要 \(win.app) 在前台才能做"]
+        ["ok": false, "needsFront": true, "id": win.id, "app": win.app, "error": "这一步要 \(win.app) 在前台才能做"]
     }
 
     /// What sits at a point of this window, asked of its own app, which knows whatever else covers that spot on the screen.
@@ -592,8 +592,11 @@ extension Controller {
         var objects: [NSPasteboardWriting] = files.map { URL(fileURLWithPath: $0) as NSURL }
         if !text.isEmpty { objects.append(text as NSString) }
         board.writeObjects(objects)
+        let ours = board.changeCount
         press(9, flags: .maskCommand)
         try? await Task.sleep(nanoseconds: 420_000_000)
+        // The owner copied something meanwhile: that is what the clipboard should hold now.
+        guard board.changeCount == ours else { return }
         board.clearContents()
         if !saved.isEmpty { board.writeObjects(saved) }
     }
@@ -837,11 +840,16 @@ extension Controller {
         func stillOurs() -> Bool {
             NSWorkspace.shared.frontmostApplication?.processIdentifier == win.pid && hypot(cursor().x - left.x, cursor().y - left.y) <= 6
         }
-        let takenOver = ["ok": false, "error": "用户 动了鼠标或切走了窗口，已停下，没有填"] as [String: Any]
+        // Not a failure: it goes again when they let go. Whatever it typed in the search box must not be there for that.
+        var typed = false
+        var takenOver: [String: Any] {
+            if typed { press(53, flags: [], to: win.pid) }
+            return ["ok": false, "needsFront": true, "id": win.id, "app": win.app, "error": "用户 动了鼠标或切走了窗口，已停下，没有填"]
+        }
         guard stillOurs() else { return takenOver }
         let want = Hands.normalize(name)
         // Already showing it: nothing to do.
-        if let shown = await Controller.headerTitles(windowID: win.id, width: win.frame.width, previous: 0), shown.lines.contains(where: { Hands.normalize($0) == want }) {
+        if let shown = await Controller.headerTitles(windowID: win.id, width: win.frame.width, previous: 0), shown.lines.contains(where: { Hands.sameChat(name, $0) }) {
             return ["ok": true]
         }
         // The search box sits at the top of the chat list; results open on a click, so Enter is never needed.
@@ -856,6 +864,7 @@ extension Controller {
         // The box sometimes drops what is typed while it is still opening: check it arrived, and type again if not.
         for _ in 0..<3 {
             guard stillOurs() else { return takenOver }
+            typed = true
             typeShort(name)
             try? await Task.sleep(nanoseconds: 1_400_000_000)
             guard let image = await Hands.captureLive(win, scale: 2, source: area) else { return ["ok": false, "error": "看不到搜索结果"] }
@@ -865,7 +874,17 @@ extension Controller {
         // The first rows suggest web searches; real chats come under a section heading.
         let headings = ["功能", "联系人", "群聊", "最常使用", "最近使用", "聊天记录"]
         let below = lines.first { line in headings.contains { Hands.normalize(line.text) == $0 } }?.box.maxY ?? 0
-        guard below > 0, let hit = lines.first(where: { $0.box.minY >= below && Hands.normalize($0.text).hasPrefix(want) }) else {
+        // Chats only: what comes under 聊天记录 is messages that mention the name.
+        let history = lines.first { $0.box.minY >= below && Hands.normalize($0.text) == "聊天记录" }?.box.minY ?? .greatestFiniteMagnitude
+        let rows = lines.filter { $0.box.minY >= below && $0.box.minY < history && Hands.sameChat(name, $0.text) }
+        let exact = rows.first { Hands.normalize($0.text) == want }
+        let names = Array(Set(rows.map(\.text)))
+        // A short name that fits several people is not ours to choose between.
+        if exact == nil, names.count > 1 {
+            press(53, flags: [])
+            return ["ok": false, "error": "微信里有几个“\(name)”：\(names.prefix(5).joined(separator: "、"))。问 用户 是哪一个，再填，chat 写全名"]
+        }
+        guard below > 0, let hit = exact ?? rows.first else {
             press(53, flags: [])
             return ["ok": false, "error": "微信里没搜到“\(name)”"]
         }
@@ -948,6 +967,29 @@ extension Controller {
             if !event.isARepeat { controller.summon() }
             return nil
         }
+    }
+
+    /// The owner got to the window a waiting step is for: the goo goes along, and nothing else moves. A panel they had open follows once the step is done,
+    /// because opening it can shift the window under the click, and quietly, because their next key belongs to that input box.
+    func followTo(_ win: Win) -> [String: Any] {
+        guard win.id != target?.id, goo.mode == .attached || goo.mode == .open, !blockedOwners.contains(win.app) else { return ["ok": false] }
+        reopenAfterFollow = sideOpen
+        closeSide()
+        goo.sleeping = false
+        goo.puddle = false
+        goo.peekSide = 0
+        goo.splatUntil = 0
+        goo.stick(to: win.frame.maxX, window: win.id)
+        gooPanel.orderFront(nil)
+        return ["ok": true]
+    }
+
+    func followDone() {
+        guard reopenAfterFollow else { return }
+        reopenAfterFollow = false
+        guard goo.mode == .attached else { return }
+        openQuietly = true
+        web.evaluateJavaScript("setOpen(true)")
     }
 
     /// Jumps to the frontmost window and opens the panel; on the window it is already on, opens or closes it.

@@ -43,6 +43,7 @@ final class Controller: NSObject, NSApplicationDelegate {
     var typingInto: [Int: AXUIElement] = [:]  // the text field last pressed in each window
     var askedForContent: Set<pid_t> = []      // apps already asked to show what is inside them
     var operating = false, lastSummon: CFTimeInterval = 0
+    var reopenAfterFollow = false, openQuietly = false  // the panel coming along after a step on another window, not taking the keyboard
     var listener: Listener?
     var cardsShown = false, lastStep: CFTimeInterval = 0   // a card has to be clickable, even in the middle of a run
     let inkFlash = InkFlash()

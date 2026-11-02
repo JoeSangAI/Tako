@@ -166,7 +166,80 @@ class AQuestion(Base):
         self.assertIn("没有", seen["error"])
 
 
+class PointingAtThings(Base):
+    def _replies(self, tool="point_at"):
+        return [str(line.get("reply")) for line in map(json.loads, self.tako.log.read_text().splitlines()) if line.get("kind") == "tool_reply"]
+
+    def test_a_ring_nobody_saw_goes_round_again_when_they_get_there(self):
+        here = threading.Event()
+        self.tako.native["point"] = lambda c: {"ok": True, "seen": here.is_set()}
+        self.tako.native["isBack"] = lambda c: {"ok": here.is_set(), "front": here.is_set(), "app": "Google Chrome"}
+        self.tako.stick(app="Google Chrome", bundle="com.google.Chrome", title="页面", window="7")
+        self.tako.ask(steps({"call": "point_at", "args": {"text": "价格"}}, {"say": "在价格那一行"}))
+        self.tako.until(lambda s: self.tako.said(s), "an answer")
+        self.assertIn("不在前台", " ".join(self._replies()))
+        count = lambda: len([c for c in self.tako.commands if c["command"] == "point"])
+        self.assertEqual(count(), 1)
+        here.set()
+        deadline = time.time() + 4
+        while count() < 2 and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(count(), 2)
+
+    def test_seen_is_all_it_takes(self):
+        self.tako.native["point"] = lambda c: {"ok": True, "seen": True}
+        self.tako.ask(steps({"call": "point_at", "args": {"text": "价格"}}, {"say": "好"}))
+        self.tako.until(lambda s: self.tako.said(s), "an answer")
+        self.assertEqual(self._replies()[0].count("不在前台"), 0)
+
+    def test_the_same_refusal_twice_stops_the_trying(self):
+        self.tako.native["point"] = lambda c: {"ok": False, "error": "这段字不在这个窗口里，没有标。"}
+        self.tako.ask(steps({"call": "point_at", "args": {"text": "价格"}}, {"call": "point_at", "args": {"text": "价格"}}, {"say": "没找到"}))
+        self.tako.until(lambda s: self.tako.said(s), "an answer")
+        replies = self._replies()
+        self.assertNotIn("不要再试", replies[0])
+        self.assertIn("不要再试", replies[1])
+
+
+class WhereScriptsGo(Base):
+    def test_the_name_a_chinese_mac_gives_it(self):
+        self.tako.native["script"] = lambda c: {"ok": True, "output": "好"}
+        self.tako.stick(app="访达", bundle="com.apple.finder", title="桌面", window="5")
+        self.tako.ask(steps({"call": "run_in_app", "args": {"script": 'tell application "Finder" to get name of front window', "app": "访达"}}, {"say": "看了"}))
+        self.tako.until(lambda s: self.tako.said(s), "an answer")
+        self.assertTrue([c for c in self.tako.commands if c["command"] == "script"])
+
+
 class WhereItWritesWithoutAsking(Base):
+    def test_this_folder_is_the_finder_window_it_was_asked_on(self):
+        folder = self.tako.home / "十月发票"
+        folder.mkdir()
+        self.tako.native["about"] = lambda c: {"ok": True, "folder": str(folder), "selected": ["a.pdf", "b.pdf"]}
+        self.tako.stick(app="访达", bundle="com.apple.finder", title="十月发票", window="5")
+        self.tako.ask("把这些归到一个子文件夹")
+        self.tako.until(lambda s: self.tako.said(s), "an answer")
+        self.tako.idle()
+        turn = self.tako.owner_turns()[-1]
+        self.assertIn(os.path.realpath(folder), turn["sandboxPolicy"]["writableRoots"])
+        self.assertIn(f"这个文件夹：{folder}", json.dumps(turn, ensure_ascii=False))
+        self.assertIn("选中的：a.pdf、b.pdf", json.dumps(turn, ensure_ascii=False))
+
+    def test_a_home_folder_window_gives_no_write_to_the_whole_home(self):
+        self.tako.native["about"] = lambda c: {"ok": True, "folder": str(pathlib.Path.home()), "selected": []}
+        self.tako.stick(app="访达", bundle="com.apple.finder", title="home", window="5")
+        self.tako.ask("看看这里")
+        self.tako.until(lambda s: self.tako.said(s), "an answer")
+        self.tako.idle()
+        self.assertNotIn(str(pathlib.Path.home()), self.tako.owner_turns()[-1]["sandboxPolicy"]["writableRoots"][1:])
+
+    def test_finder_saying_nothing_is_just_a_window(self):
+        self.tako.native["about"] = lambda c: {"ok": True}
+        self.tako.stick(app="访达", bundle="com.apple.finder", title="十月发票", window="5")
+        self.tako.ask("看看")
+        self.tako.until(lambda s: self.tako.said(s), "an answer")
+        self.tako.idle()
+        self.assertNotIn("这个文件夹", json.dumps(self.tako.owner_turns()[-1], ensure_ascii=False))
+
     def test_where_the_owner_pointed(self):
         folder = self.tako.home / "十月发票"
         folder.mkdir()
@@ -583,6 +656,185 @@ class NeedingTheRealPointer(Base):
         result = self.tako.call("/fill", {"text": "你好"}, timeout=12)
         self.assertTrue(result["ok"])
         self.assertIn("bringForward", [c["command"] for c in self.tako.commands])
+
+
+class HandingAFileToAnotherApp(Base):
+    """Asked on one app's window, it lands in WeChat. WeChat takes the real pointer, so it waits for the owner to get there, and then nobody has to say anything."""
+    WECHAT = "com.tencent.xinWeChat"
+    SEND = {"call": "fill_input", "args": {"text": "", "files": ["/tmp/名单.xlsx"], "chat": "小林"}}
+
+    def setUp(self):
+        super().setUp()
+        self.here = threading.Event()   # the owner is on WeChat
+        self.still = threading.Event()  # and has let go of the mouse
+        self.opened = threading.Event()  # WeChat is showing the chat
+        keynote = {"ok": True, "id": 1, "app": "Keynote", "bundle": "com.apple.iWork.Keynote", "title": "稿子", "stuck": True}
+        wechat = {"ok": True, "id": 9, "app": "微信", "bundle": self.WECHAT, "title": "微信", "stuck": False}
+        wants_wechat = lambda c: str(c.get("window")) == "9" or "wechat" in str(c.get("window")).lower()
+        needs_it = {"ok": False, "needsFront": True, "id": 9, "app": "微信", "error": "这一步要 微信 在前台才能做"}
+        self.tako.native.update({
+            "resolve": lambda c: wechat if wants_wechat(c) else keynote,
+            "isBack": lambda c: {"ok": wants_wechat(c) and self.still.is_set(), "front": wants_wechat(c) and self.here.is_set(), "app": "微信" if wants_wechat(c) else "Keynote"},
+            "openChat": lambda c: (self.opened.set(), {"ok": True})[1] if self.still.is_set() else needs_it,
+            "titles": lambda c: {"ok": True, "lines": ["小林" if self.opened.is_set() else "别的对话"]},
+            "fill": lambda c: {"ok": True, "message": "已填入，没有发送，等 用户 自己发。"} if self.still.is_set() else needs_it,
+        })
+
+    def sent(self, command):
+        return [c for c in self.tako.commands if c["command"] == command]
+
+    def queued(self, *more):
+        self.tako.ask(steps(self.SEND, *(more or [{"say": "切到微信就会放好"}])))
+        return self.tako.until(lambda s: not s["busy"] and s["trouble"], "told, and waiting", 6)
+
+    def test_a_chat_means_wechat_whatever_window_it_was_asked_on(self):
+        self.here.set()
+        self.still.set()
+        self.tako.ask(steps(self.SEND, {"say": "好了"}))
+        self.tako.idle()
+        self.assertEqual([c["window"] for c in self.sent("fill")], ["9"], "never into the document it was asked on")
+
+    def test_says_it_is_queued_so_the_model_stops_trying(self):
+        seen = self.queued()
+        reply = [r for r in self.tako.codex("tool_reply") if r["tool"] == "fill_input"][0]["reply"]
+        self.assertTrue(reply["success"])
+        self.assertIn("已排好", json.dumps(reply, ensure_ascii=False))
+        self.assertIn("微信", seen["trouble"])
+        self.assertNotIn("Keynote", seen["trouble"])
+
+    def test_the_owner_arriving_finishes_it_with_no_model_turn(self):
+        self.queued()
+        self.assertTrue(all(c["window"] == self.WECHAT for c in self.sent("isBack")), "it watches WeChat, not the window it was asked on")
+        self.here.set()
+        self.still.set()
+        seen = self.tako.until(lambda s: any("没有发送" in text for text in self.tako.said(s)), "placed and said", 6)
+        self.assertEqual(seen["trouble"], "")
+        self.assertEqual(len(self.sent("fill")), 1, "opening the chat is what had to wait, and it goes in once")
+        self.assertEqual(self.sent("fill")[-1]["files"], ["/tmp/名单.xlsx"])
+        time.sleep(1)
+        self.assertEqual(len(self.tako.owner_turns()), 1, "doing it costs no model call")
+        self.assertNotIn("bringForward", [c["command"] for c in self.tako.commands])
+
+    def test_coming_back_to_the_first_window_does_not_wake_the_model(self):
+        self.queued()
+        time.sleep(1.6)
+        self.assertEqual(len(self.tako.owner_turns()), 1)
+
+    def test_asking_again_replaces_it(self):
+        self.tako.native["fill"] = lambda c: {"ok": True, "message": "已填入"} if self.still.is_set() else {"ok": False, "needsFront": True, "id": 9, "app": "微信", "error": "要前台"}
+        again = {"call": "fill_input", "args": {"text": "第二版", "files": [], "chat": "小林"}}
+        self.queued(again, {"say": "好"})
+        self.here.set()
+        self.still.set()
+        self.tako.until(lambda s: not s["trouble"], "done", 6)
+        time.sleep(1)
+        placed = [c for c in self.sent("fill")][-1]
+        self.assertEqual(placed["text"], "第二版")
+        self.assertEqual(len(self.sent("fill")), 1, "the latest one, once")
+
+    def test_the_goo_goes_along_while_the_hand_is_still_moving(self):
+        self.queued()
+        self.here.set()
+        self.tako.until(lambda s: self.sent("followTo"), "goes there", 4)
+        seen = self.tako.until(lambda s: "停" in s["trouble"], "and says what it is waiting for", 4)
+        self.assertEqual(seen["busy"], False)
+        time.sleep(1)
+        self.assertEqual(len(self.sent("followTo")), 1)
+        self.assertEqual(self.sent("followTo")[0]["window"], self.WECHAT)
+        self.assertEqual(self.sent("fill"), [], "a moving hand: nothing happens yet")
+
+    def test_a_short_name_is_the_chat_it_is_short_for(self):
+        self.here.set()
+        self.still.set()
+        self.tako.native["titles"] = lambda c: {"ok": True, "lines": ["小林-市场 助理"]}
+        self.tako.ask(steps(self.SEND, {"say": "好了"}))
+        self.tako.idle()
+        self.assertEqual(len(self.sent("fill")), 1, "said 小林, the title reads 小林-市场 助理")
+        self.assertEqual(self.sent("openChat"), [], "it is already showing: no searching under the owner's hands")
+
+    def test_a_longer_name_that_only_starts_the_same_is_someone_else(self):
+        self.here.set()
+        self.still.set()
+        self.tako.native["titles"] = lambda c: {"ok": True, "lines": ["小林妈妈"]}
+        self.tako.ask(steps(self.SEND, {"say": "没放"}))
+        self.tako.idle()
+        self.assertEqual(self.sent("fill"), [])
+        self.assertIn("不是「小林」", json.dumps(self.tako.codex("tool_reply")[-1]["reply"], ensure_ascii=False))
+
+    def test_the_owner_taking_the_pointer_mid_way_only_makes_it_wait(self):
+        taken = iter([{"ok": False, "needsFront": True, "app": "微信", "error": "用户 动了鼠标或切走了窗口，已停下，没有填"}])
+        needs = self.tako.native["openChat"]
+        self.tako.native["openChat"] = lambda c: next(taken, None) or needs(c) if self.still.is_set() else needs(c)
+        self.queued()
+        self.here.set()
+        self.still.set()
+        self.tako.until(lambda s: any("没有发送" in text for text in self.tako.said(s)), "placed on the next try", 6)
+
+    def test_wechat_gone_says_where_the_file_is(self):
+        self.queued()
+        self.tako.native["isBack"] = lambda c: {"ok": False, "error": "没找到窗口“微信”，它可能没打开"}
+        seen = self.tako.until(lambda s: not s["trouble"], "the wait over", 5)
+        self.assertTrue(any("名单.xlsx" in text and "没放" in text for text in self.tako.said(seen)))
+
+    def test_a_chat_not_found_says_where_the_file_is(self):
+        self.queued()
+        self.tako.native["openChat"] = lambda c: {"ok": False, "error": "微信里没搜到“小林”"}
+        self.here.set()
+        self.still.set()
+        seen = self.tako.until(lambda s: not s["trouble"], "the wait over", 5)
+        self.assertTrue(any("没搜到" in text and "名单.xlsx" in text for text in self.tako.said(seen)))
+        self.assertEqual(self.sent("fill"), [])
+
+    def test_what_the_owner_says_next_keeps_it_and_the_model_hears_it_is_there(self):
+        self.queued()
+        self.tako.ask("顺便看看标题")
+        self.tako.until(lambda s: not s["busy"] and len(self.tako.owner_turns()) == 2, "answered", 5)
+        words = json.dumps(self.tako.owner_turns()[-1]["input"], ensure_ascii=False)
+        self.assertIn("还排着", words)
+        self.assertNotIn("/tmp/名单.xlsx", words, "a path in the instruction would count as the owner's own words")
+        self.here.set()
+        self.still.set()
+        self.tako.until(lambda s: any("没有发送" in text for text in self.tako.said(s)), "still placed", 6)
+
+    def test_the_model_can_call_it_off(self):
+        self.queued()
+        self.tako.ask(steps({"call": "fill_input", "args": {"cancel": True}}, {"say": "不放了"}))
+        self.tako.until(lambda s: not s["busy"] and not s["trouble"] and len(self.tako.owner_turns()) == 2, "called off", 5)
+        self.here.set()
+        self.still.set()
+        time.sleep(1.2)
+        self.assertEqual(self.sent("fill"), [])
+
+    def test_the_wait_is_not_shown_as_trouble_while_it_is_still_working(self):
+        self.tako.ask(steps(self.SEND, {"pause": 1.2}, {"say": "好"}))
+        self.tako.until(lambda s: self.sent("isBack"), "queued", 4)
+        seen = self.tako.state()
+        self.assertTrue(seen["busy"])
+        self.assertEqual(seen["trouble"], "", "the panel reads trouble during a turn as the model being unreachable")
+
+
+class WaitingOnAnotherWindow(Base):
+    def setUp(self):
+        super().setUp()
+        self.tako.native["look"] = lambda c: {"ok": False, "needsFront": True, "id": 9, "app": "微信", "error": "这一步要 微信 在前台才能做"}
+        self.tako.native["isBack"] = lambda c: {"ok": str(c.get("window")) == "9", "front": str(c.get("window")) == "9"}
+
+    def test_watches_the_window_that_needed_it_and_gives_up_rather_than_loop(self):
+        self.tako.native["isBack"] = lambda c: {"ok": False}
+        self.tako.ask(steps({"call": "look_at_window", "args": {"window": "微信"}}, {"say": "差微信"}))
+        seen = self.tako.until(lambda s: not s["busy"] and s["trouble"], "waiting", 5)
+        self.assertIn("微信", seen["trouble"])
+        self.tako.until(lambda s: [c for c in self.tako.commands if c["command"] == "isBack"], "watching", 5)
+        self.assertEqual({str(c["window"]) for c in self.tako.commands if c["command"] == "isBack"}, {"9"})
+
+    def test_a_step_that_keeps_failing_does_not_keep_calling_the_model(self):
+        self.tako.ask(steps({"every_turn": True}, {"call": "look_at_window", "args": {"window": "微信"}}, {"say": "差微信"}))
+        seen = self.tako.until(lambda s: any("没走通" in text for text in self.tako.said(s)), "gives up", 14)
+        self.assertEqual(seen["trouble"], "")
+        turns = len(self.tako.owner_turns())
+        self.assertLessEqual(turns, 3)
+        time.sleep(2.5)
+        self.assertEqual(len(self.tako.owner_turns()), turns)
 
 
 class SpeakingDuringATurn(Base):

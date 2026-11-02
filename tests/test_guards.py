@@ -479,6 +479,28 @@ class OwnerNamedPaths(unittest.TestCase):
         (self.folder / "a.png").write_text("x")
         self.real = os.path.realpath(self.folder)
 
+    def test_a_folder_window_counts_as_pointing_but_a_home_or_disk_never_does(self):
+        self.assertEqual(guards.pointable(str(self.folder)), self.real)
+        for whole in (str(pathlib.Path.home()), "/", str(pathlib.Path.home().parent), f"{self.folder}/没有这个"):
+            self.assertIsNone(guards.pointable(whole), whole)
+
+    def test_a_chat_by_its_short_name_but_never_a_sibling(self):
+        self.assertTrue(guards.same_chat("小林", "小林-市场 助理"))
+        self.assertTrue(guards.same_chat("小林", "小林"))
+        self.assertTrue(guards.same_chat("小林-市场 助理", "小林-市场 助理"))
+        self.assertTrue(guards.same_chat("产品讨论组", "产品讨论组 (12)"))
+        self.assertFalse(guards.same_chat("小林", "小林妈妈"))
+        self.assertFalse(guards.same_chat("小林", "小小林-市场"))
+        self.assertFalse(guards.same_chat("产品讨论组1", "产品讨论组2"))
+        self.assertFalse(guards.same_chat("Ann", "Anna-市场"))
+
+    def test_a_short_name_settles_on_one_chat_or_says_it_cannot(self):
+        self.assertEqual(guards.full_chat_name("小林", ["小林-市场 助理", "小林妈妈"]), ("小林-市场 助理", []))
+        self.assertEqual(guards.full_chat_name("小林", ["小林", "小林-市场 助理"]), ("小林", []))
+        self.assertEqual(guards.full_chat_name("小林", ["小林-市场", "小林-财务"]), ("小林", ["小林-市场", "小林-财务"]))
+        self.assertEqual(guards.full_chat_name("小林", ["小林-市场", "小林-财务"], asked="小林-财务"), ("小林-财务", []))
+        self.assertEqual(guards.full_chat_name("小林", []), ("小林", []))
+
     def test_finds_a_path_inside_a_sentence(self):
         self.assertEqual(guards.named_paths(f"发票在 {self.folder}。填进去"), {self.real})
         self.assertEqual(guards.named_paths(f"看{self.root}/里面"), set())  # glued to the word before it: nobody's path

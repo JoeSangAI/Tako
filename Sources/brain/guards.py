@@ -1,6 +1,7 @@
 """The rules that hold whatever a model or a window says. Plain functions with no state, so each can be tested on its own."""
 from __future__ import annotations
 
+import difflib
 import hashlib
 import os
 import re
@@ -14,7 +15,9 @@ SCRIPTABLE = {"com.microsoft.Powerpoint": "Microsoft PowerPoint", "com.microsoft
               "com.microsoft.Word": "Microsoft Word", "com.apple.iWork.Keynote": "Keynote",
               "com.apple.iWork.Numbers": "Numbers", "com.apple.iWork.Pages": "Pages", "com.apple.mail": "Mail",
               "com.apple.Safari": "Safari", "com.google.Chrome": "Google Chrome", "com.apple.Notes": "Notes",
-              "com.apple.iCal": "Calendar", "com.apple.reminders": "Reminders"}
+              "com.apple.iCal": "Calendar", "com.apple.reminders": "Reminders", "com.apple.finder": "Finder"}
+# What these apps call themselves on a Chinese Mac: the owner's window and the model both use these names.
+LOCAL_NAMES = {"访达": "Finder", "备忘录": "Notes", "日历": "Calendar", "提醒事项": "Reminders", "邮件": "Mail", "信息": "Messages", "演示": "Keynote", "表格": "Numbers", "文稿": "Pages"}
 # A member count ends the title; anything after it is an icon the OCR took for a letter.
 COUNT_SUFFIX = re.compile(r"\s*[(（]\s*\d+\s*[)）].*$")
 
@@ -23,6 +26,27 @@ def normalized(name):
     """What is left of a chat name after OCR: no emoji, spaces or member count."""
     text = COUNT_SUFFIX.sub("", unicodedata.normalize("NFKC", name))
     return "".join(ch for ch in text if ch.isalnum()).lower()
+
+
+def same_chat(want, line):
+    """Whether a title read off WeChat is the chat asked for. Forgiving of a misread character, not of a sibling chat: 产品讨论组1 is not 产品讨论组2.
+    People call a chat by its short name: 小林 is 小林-市场 助理, because the name stops at a break there, but it is not 小林妈妈."""
+    key, seen = normalized(want), normalized(line)
+    digits = lambda text: "".join(ch for ch in text if ch.isdigit())
+    if seen == key or (digits(seen) == digits(key) and difflib.SequenceMatcher(None, seen, key).ratio() >= 0.9):
+        return True
+    start, whole = (unicodedata.normalize("NFKC", text).strip().lower() for text in (want, line))
+    return bool(start) and whole.startswith(start) and len(whole) > len(start) and not whole[len(start)].isalnum()
+
+
+def full_chat_name(chat, names, asked=None):
+    """The chat a short name means, from the names WeChat has: (name, the others it could equally be). The one the owner is talking about right now wins."""
+    if any(normalized(name) == normalized(chat) for name in names):
+        return chat, []
+    fits = list(dict.fromkeys(name for name in names if same_chat(chat, name)))
+    if asked in fits or len(fits) == 1:
+        return (asked if asked in fits else fits[0]), []
+    return chat, fits
 
 
 def addressed(rows, names):
@@ -83,9 +107,14 @@ def workbench_packet(args, said, today):
 PATH_START = re.compile(r"(?<![\w/.:~-])(?:~/|/)[^\n，。；：！？、“”‘’\"'（）()<>《》]+")
 
 
+def pointable(path):
+    """A place the owner can point at to have it worked on: anything but a whole home or disk."""
+    home, real = str(Path.home()), os.path.realpath(path)
+    return real if os.path.exists(real) and real.count("/") > 1 and not (home == real or home.startswith(real + "/")) else None
+
+
 def named_paths(words):
     """The files and folders the owner names in their own words: what the model's shell may read for them. Only what exists, and never a whole home or disk."""
-    home = str(Path.home())
     named = set()
     for match in PATH_START.finditer(words or ""):
         candidate = os.path.expanduser(match.group().strip())
@@ -94,8 +123,7 @@ def named_paths(words):
         for end in range(len(name), 0, -1):
             path = f"{folder}/{name[:end].rstrip()}"
             if os.path.exists(path):
-                real = os.path.realpath(path)
-                if real.count("/") > 1 and not (home == real or home.startswith(real + "/")):
+                if real := pointable(path):
                     named.add(real)
                 break
     return named

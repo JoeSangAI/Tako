@@ -572,7 +572,8 @@ const PERMISSION_WORDS = {
 const SETUP_WORDS = {
   install: ['还差一步：装上 Codex', 'Tako 的大脑是 OpenAI 的 Codex，用你自己的 ChatGPT 账号。', '安装 Codex', '正在安装 Codex，大约一分钟…'],
   update: ['还差一步：更新 Codex', '这台电脑上的 Codex 太旧，Tako 连不上它。更新后不用重新登录。', '更新 Codex', '正在更新 Codex，大约一分钟…'],
-  login: ['还差一步：登录 ChatGPT', '浏览器会打开登录页，登录后回到这里就能用了。', '登录', '在浏览器里登录，登录好这里会自动继续…'],
+  login: ['还差一步：登录 ChatGPT', '浏览器会打开 OpenAI 的授权页。网页上已经登录的话，确认一下就好。Tako 粘在 ChatGPT 网页上不算登录。', '登录', '在浏览器里确认，好了这里会自动继续…'],
+  config: ['还差一步：修好 Codex 的设置', 'Codex 读不了自己的设置文件，所以登录不上。可以把它改个名留在原处（不删），Codex 用默认设置继续。', '改名并继续'],
 };
 function noticeLine(cls, text) { const el = document.createElement('div'); el.className = cls; el.textContent = text; return el; }
 function showNotice() {
@@ -600,6 +601,11 @@ function showNotice() {
     box.append(noticeLine('title', words[0]), noticeLine('body', setup.busy ? words[3] : words[1]));
     if (setup.error) box.append(noticeLine('why', setup.error));
     if (!setup.busy) { actions.append(button(words[2], () => api('/setup/next', {}).then(setSetup), true)); box.append(actions); }
+    else if (setup.step === 'login') {
+      if (setup.link) actions.append(button('浏览器没打开？', () => { if (native) native.postMessage({ openURL: setup.link }); else window.open(setup.link); }));
+      actions.append(button('取消', () => api('/setup/cancel', {}).then(setSetup)));
+      box.append(actions);
+    }
     return;
   }
   if (!update) return;

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import difflib
 import json
 import secrets
 import subprocess
@@ -13,12 +12,13 @@ from pathlib import Path
 import feedback as fb
 import wechat_reader as reader
 from chats import render
-from guards import SCRIPTABLE, clipped, normalized, plain_command, risky_script, unsafe_script, workbench_packet
+from guards import LOCAL_NAMES, SCRIPTABLE, clipped, full_chat_name, plain_command, same_chat, risky_script, unsafe_script, workbench_packet
 from outputs import back_up, change_problem, replace_file
 from settings import CONFIG, HAS_WECHAT, OWNER, WECHAT, WORKBENCH, WORKBENCH_CARDS, local_today
 
 FEEDBACK_KINDS = {"bug": "出了问题", "rough": "不好用", "wish": "想用的场景"}
 COMING_BACK_SECONDS = 1800  # How long the last step of a job waits for the owner to come back to its window.
+PICK_UPS = 2  # Turns a step that needs the window in front may start by itself before it stops asking the model.
 
 
 class Hands:
@@ -81,42 +81,121 @@ class Hands:
         try:
             return await asyncio.wait_for(future, timeout)
         except asyncio.TimeoutError:
-            return {"ok": False, "error": "TAKO 那边没有回应"}
+            return {"ok": False, "noAnswer": True, "error": "TAKO 那边没有回应"}
         finally:
             self.waiting.pop(request, None)
 
     async def _unless_needs_front(self, job, command, timeout=30, **args):
-        """Nearly everything happens behind the owner's back. What needs the real pointer never takes it: the model finishes the rest, and the job picks it up when they are back on that window."""
+        """Nearly everything happens behind the owner's back. What needs the real pointer never takes it: the model finishes the rest, and the job picks it up when they are on the window that needs it."""
         began = time.time()
         while True:
             result = await self.native(command, timeout=timeout, **args)
             if not result.get("needsFront"):
                 return result
             if job:
-                job.left_for_owner = True
-                return {"ok": False, "error": f"{result.get('error')}，先没做。后面能做的先做完，最后说一句差哪一步；{OWNER} 回到这个窗口时你会被叫来接着做，TA不用开口。"}
+                job.left_for_owner = {"window": str(result.get("id") or args.get("window") or job.window_id or ""), "app": result.get("app")}
+                return {"ok": False, "error": f"{result.get('error')}，先没做。后面能做的先做完，最后说一句差哪一步；{OWNER} 切到 {result.get('app') or '那个窗口'} 时你会被叫来接着做，TA不用开口。"}
             # The owner just pressed a button on the panel: a few seconds for their hand to settle is all this takes.
             if time.time() - began > 8:
                 return {"ok": False, "error": f"{result.get('error')}，这一步没有做"}
             await asyncio.sleep(0.5)
 
+    @staticmethod
+    def _conversation(job):
+        return (job.chat or {}).get("username") or id(job.events)
+
+    def _say_to_owner(self, events, text):
+        """In the conversation it belongs to, and on the panel in front of them if that is another one."""
+        self.add("tako", text, events)
+        if events is not self.events:
+            self.add("tako", text)
+
     async def _pick_up_when_back(self, job):
-        key = (job.chat or {}).get("username") or id(job.events)
-        mark = self.held[key] = {"name": job.name, "events": job.events, "trouble": f"差一步要 {(job.window or {}).get('app') or '那个窗口'} 在前台，切回去就接着做。"}
+        key = self._conversation(job)
+        window, app = job.left_for_owner["window"], job.left_for_owner.get("app") or (job.window or {}).get("app") or "那个窗口"
+        self.picked_up[key] = self.picked_up.get(key, 0) + 1
+        # The window was in front and the step still could not be done: asking the model again only spends money until the owner leaves.
+        if self.picked_up[key] > PICK_UPS:
+            self._say_to_owner(job.events, "差的这一步试了几次都没走通，先放下了。还要的话说一声。")
+            return
+        where = "切回去" if window == job.window_id else f"切到 {app} "
+        mark = self.held[key] = {"name": job.name, "events": job.events, "trouble": f"差一步要 {app} 在前台，{where}就接着做。"}
         deadline = time.time() + COMING_BACK_SECONDS
         try:
             while self.held.get(key) is mark and time.time() < deadline:
                 await asyncio.sleep(2)
-                seen = await self.native("isBack", timeout=5, window=job.window_id)
-                if seen.get("error"):  # The window has gone.
+                seen = await self.native("isBack", timeout=5, window=window)
+                if seen.get("error") and not seen.get("noAnswer"):  # The window has gone.
                     return
                 if seen.get("ok") and self.held.get(key) is mark:
                     del self.held[key]
-                    await self.turn("窗口回到前台了。把刚才差的那一步做完，做完说一声。", where=(job.chat, job.events, job.window))
+                    await self.turn(f"{app} 回到前台了。把刚才差的那一步做完，做完说一声。", where=(job.chat, job.events, job.window))
                     return
         finally:
             if self.held.get(key) is mark:
                 del self.held[key]
+
+    def _hold_fill(self, text, files, window, chat, job, app):
+        """The hand-over itself is known exactly, so no model is needed to finish it: the owner getting to that window is enough. Asked again, the newest one stands."""
+        key = ("fill", self._conversation(job))
+        where = f"{app}「{chat}」" if chat else app
+        what = "、".join(Path(f).name for f in files) or "这段话"
+        mark = self.held[key] = {"name": job.name, "events": job.events, "what": what, "where": where, "app": app,
+                                 "trouble": f"{what} 备好了，切到{app}就自动放进去。", "placed": asyncio.Event()}
+        self._later(self._place_when_back(key, mark, text, files, window, chat, job))
+        return {"ok": True, "message": f"已排好，还没放进去：这一步要{app}在前台。{OWNER} 切到{app}时系统自己放好，不要再试，也不用再看那个窗口。其余能做的接着做，最后提一句就够了。"}
+
+    async def _place_when_back(self, key, mark, text, files, window, chat, job):
+        ending = f"文件在这里：{' '.join(f'[{Path(f).name}](</{f.lstrip(chr(47))}>)' for f in files)}" if files else ""
+        deadline = time.time() + COMING_BACK_SECONDS
+        here = False
+        try:
+            while self.held.get(key) is mark:
+                if time.time() > deadline:
+                    self._say_to_owner(mark["events"], f"等了半小时{mark['app']}都没到前台，{mark['what']}没放进去。{ending}")
+                    return
+                seen = await self.native("isBack", timeout=5, window=window)
+                if self.held.get(key) is not mark:
+                    return
+                if seen.get("error") and not seen.get("noAnswer"):
+                    self._say_to_owner(mark["events"], f"{mark['app']}的窗口没了，{mark['what']}没放进去。{ending}")
+                    return
+                if seen.get("front") and not here:
+                    await self.native("followTo", timeout=5, window=window)
+                    mark["trouble"] = f"到{mark['app']}了，鼠标停一下就放。"
+                    await asyncio.sleep(0.4)  # The panel moves over with the goo before it says anything there.
+                elif not seen.get("front") and here:
+                    mark["trouble"] = f"{mark['what']} 备好了，切到{mark['app']}就自动放进去。"
+                here = bool(seen.get("front"))
+                if seen.get("ok"):
+                    mark["placing"] = True
+                    result = await self._place(text, files, window, chat, job)
+                    if not result.get("needsFront"):  # The owner's hand came back: not a failure, only not yet.
+                        await self._placed(mark, result, ending)
+                        return
+                    mark["placing"] = False
+                await asyncio.sleep(0.7)
+        finally:
+            mark["placed"].set()
+            if self.held.get(key) is mark:
+                del self.held[key]
+            await self.native("followDone", timeout=5)
+
+    async def _placed(self, mark, result, ending):
+        mark["result"] = result
+        if result.get("ok"):
+            said = str(result.get("message") or "").replace(" 用户 ", "你")
+            self.limb_news = [*self.limb_news, f"（刚才排着的一步系统已做完：{mark['what']} 放进了{mark['where']}的输入框，没有发送。不要再放一次。）"][-5:]
+            self._say_to_owner(mark["events"], f"{mark['what']} 放进{mark['where']}了。{said}")
+        else:
+            self._say_to_owner(mark["events"], f"{mark['what']} 没放进{mark['where']}：{result.get('error') or '这一步没走通'}。{ending}")
+
+    def _waiting_fill_note(self):
+        """The owner is talking while a hand-over waits: the model should know, and only it can tell whether this calls it off. No paths here: this reads as the owner's own words."""
+        mark = self.held.get(("fill", (self.chat or {}).get("username") or id(self.events)))
+        if not mark:
+            return ""
+        return f"（系统提示，不是 {OWNER} 说的：还排着一步，把 {mark['what']} 放进{mark['where']}，TA切过去就自动放。下面这句话如果是不要了，调 fill_input 传 cancel:true；否则不用管，不要重放。）\n"
 
     def native_done(self, request, result):
         future = self.waiting.get(request)
@@ -130,6 +209,35 @@ class Hands:
             items.append({"type": "inputImage", "imageUrl": f"data:image/jpeg;base64,{image}"})
         return {"success": ok, "contentItems": items}
 
+    async def _point_when_back(self, text, window):
+        """A ring nobody saw is no answer: it goes round again when the owner gets to that window. Only the latest one for a window."""
+        self.rings[window] = mark = object()
+        deadline = time.time() + COMING_BACK_SECONDS
+        try:
+            while self.rings.get(window) is mark and time.time() < deadline:
+                await asyncio.sleep(1)
+                seen = await self.native("isBack", timeout=5, window=window)
+                if seen.get("error"):
+                    return
+                if seen.get("front"):
+                    await self.native("point", text=text, window=window)
+                    return
+        finally:
+            if self.rings.get(window) is mark:
+                del self.rings[window]
+
+    @staticmethod
+    def _once_is_enough(result, job, name):
+        """The same refusal twice means a third try won't change it. The model hears so, whichever tool and whatever the reason."""
+        if result.get("success", True):
+            return result
+        said = " ".join(item.get("text", "") for item in result.get("contentItems", []))
+        key = (name, said[:200])
+        job.refused[key] = job.refused.get(key, 0) + 1
+        if job.refused[key] >= 2:
+            result["contentItems"].append({"type": "inputText", "text": "这一步已经同样失败两次，不要再试。先把能做的做完，用一句话告诉 {} 结果和差什么。".format(OWNER)})
+        return result
+
     async def _tool(self, name, args, job):
         # Whatever an incoming message says, it cannot make TAKO look around or act.
         if job.origin != "owner":
@@ -138,7 +246,7 @@ class Hands:
         job.tools_running += 1
         job.status = "working"
         try:
-            return await self._run_tool(name, args, job)
+            return self._once_is_enough(await self._run_tool(name, args, job), job, name)
         except Exception as exc:
             # Whatever went wrong here, the model hears it and the turn goes on.
             self.feedback.error(f"tool.{name}", exc)
@@ -161,13 +269,22 @@ class Hands:
         if name == "operate_window":
             return await self._operate(args.get("steps") or [], window, job)
         if name == "fill_input":
+            if args.get("cancel"):
+                dropped = self.held.pop(("fill", self._conversation(job)), None)
+                return self._reply(f"不放了：{dropped['what']}。" if dropped else "没有排着的。")
             result = await self.fill(str(args.get("text") or ""), [str(f) for f in args.get("files") or []], window, str(args.get("chat") or "") or None, job)
             return self._reply(result.get("message") or result.get("error") or "", ok=bool(result.get("ok")))
         if name == "read_wechat":
             return await self._read_wechat(str(args.get("chat") or ""), int(args.get("limit") or 30))
         if name == "point_at":
-            result = await self.native("point", text=str(args.get("text") or ""), window=window)
-            return self._reply("标好了" if result.get("ok") else result.get("error", "窗口上没找到这段文字"), ok=bool(result.get("ok")))
+            text = str(args.get("text") or "")
+            result = await self.native("point", text=text, window=window)
+            if not result.get("ok"):
+                return self._reply(result.get("error", "窗口上没找到这段文字"), ok=False)
+            if result.get("seen", True):
+                return self._reply("标好了")
+            self._later(self._point_when_back(text, window))
+            return self._reply(f"标好了，但这个窗口现在不在前台，{OWNER} 切过来时会再标一次。回答里也用文字说清在哪。")
         if name == "run_in_app":
             return await self._script(str(args.get("script") or ""), str(args.get("app") or ""), job)
         if name == "tell_workbench":
@@ -283,7 +400,8 @@ class Hands:
 
     async def _script(self, script, app_name, job):
         if app_name:
-            app = next((name for name in SCRIPTABLE.values() if app_name.lower() in name.lower() or name.lower() in app_name.lower()), None)
+            app = LOCAL_NAMES.get(app_name) or next((name for name in SCRIPTABLE.values() if app_name.lower() in name.lower() or name.lower() in app_name.lower()), None)
+            app = app if app in SCRIPTABLE.values() else None
         else:
             app = SCRIPTABLE.get((job.window or {}).get("bundle"))
         if not app:
@@ -297,35 +415,60 @@ class Hands:
         return self._reply(str(result.get("output") or result.get("error") or "完成"), ok=bool(result.get("ok")))
 
     async def fill(self, text, files=(), window=None, chat=None, job=None):
-        """Into a window's input. WeChat must be showing the conversation this was written for. `job` left out: the owner pressed the panel's button, right here."""
-        if chat and not window:
-            window = WECHAT  # A chat is a WeChat chat, whichever window it was asked in.
-        shown = await self.native("resolve", window=window)
+        """Into a window's input. `job` left out: the owner pressed the panel's button, right here. A job's fill that needs the window in front waits for the owner to get there, and that is not a failure."""
+        if job:
+            key = ("fill", self._conversation(job))
+            earlier = self.held.get(key)
+            if earlier and earlier.get("placing"):  # Going in right now: another one would make two.
+                await earlier["placed"].wait()
+                if (earlier.get("result") or {}).get("ok"):
+                    return {"ok": True, "message": "刚才排着的那一步刚放好，没有再放一次。"}
+            self.held.pop(key, None)
+        if chat and HAS_WECHAT:
+            known = await asyncio.to_thread(lambda: [found["name"] for found in reader.find_chats(chat)[:40]])
+            chat, others = full_chat_name(chat, known, ((job.chat if job else self.chat) or {}).get("name"))
+            if others:
+                return {"ok": False, "error": f"微信里有几个「{chat}」：{'、'.join(others[:5])}。问 {OWNER} 是哪一个，再填，chat 写全名"}
+        result = await self._place(text, files, window, chat, job)
+        if job and result.get("needsFront"):
+            return self._hold_fill(text, files, WECHAT if result.get("bundle") == WECHAT else str(result.get("id") or window or ""), chat, job, result.get("app") or "那个窗口")
+        return result
+
+    async def _place(self, text, files, window, chat, job):
+        """WeChat must be showing the conversation this was written for, checked again every time: the owner may have moved on since it was asked."""
+        hand = self.native if job else lambda command, **args: self._unless_needs_front(None, command, **args)
+        shown = await self.native("resolve", window=window or (WECHAT if chat else None))
+        # A chat is a WeChat chat, whichever window it was asked in. Left to the job's own window, the file goes into the document.
+        if chat and shown.get("bundle") != WECHAT:
+            shown = await self.native("resolve", window=WECHAT)
         if not shown.get("ok"):
             return shown
         window = str(shown.get("id") or "") or window
         if not job:
             await self.native("bringForward", window=window)
         asked = job.chat if job else self.chat
+        waiting = {"needsFront": True, "app": shown.get("app"), "bundle": shown.get("bundle"), "id": shown.get("id")}
         if shown.get("bundle") == WECHAT:
             want = chat or ((asked or {}).get("name") if (asked or {}).get("kind", "wechat") != "window" and (job or shown.get("stuck")) else None)
             # Without the optional reader no draft belongs to a chat: it goes where the owner is looking, and nothing is sent.
             if not want and HAS_WECHAT:
                 return {"ok": False, "error": "要说清填到微信的哪段对话，没有填"}
-            if chat:
-                opened = await self._unless_needs_front(job, "openChat", timeout=15, window=window, name=chat)
+            # Already showing it: nothing to search for, and the owner's pointer stays out of it.
+            showing = (await self.native("titles", timeout=10, window=window)).get("lines") or [] if chat else []
+            if chat and not any(same_chat(chat, line) for line in showing):
+                opened = await hand("openChat", timeout=15, window=window, name=chat)
+                if opened.get("needsFront"):
+                    return {**opened, **waiting}
                 if not opened.get("ok"):
                     return opened
             if want:
                 seen = await self.native("titles", timeout=10, window=window)
-                key = normalized(want)
-                lines = [normalized(line) for line in seen.get("lines") or []]
-                digits = lambda text: "".join(ch for ch in text if ch.isdigit())
-                # Forgiving of a misread character, not of a sibling chat: 产品讨论组1 is not 产品讨论组2.
-                if not any(line == key or (digits(line) == digits(key) and difflib.SequenceMatcher(None, line, key).ratio() >= 0.9) for line in lines):
+                if not any(same_chat(want, line) for line in seen.get("lines") or []):
                     return {"ok": False, "error": f"微信现在打开的不是「{want}」，没有填"}
-        result = await self._unless_needs_front(job, "fill", timeout=20, text=text, files=list(files), window=window)
-        if result.get("ok") and shown.get("bundle") == WECHAT and asked and (not chat or normalized(chat) == normalized(asked["name"])):
+        result = await hand("fill", timeout=20, text=text, files=list(files), window=window)
+        if result.get("needsFront"):
+            return {**result, **waiting}
+        if result.get("ok") and shown.get("bundle") == WECHAT and asked and (not chat or same_chat(chat, asked["name"])):
             self._remember_draft(text, asked, filled=True)
         return result
 

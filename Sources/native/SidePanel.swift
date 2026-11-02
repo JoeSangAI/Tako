@@ -78,7 +78,8 @@ extension Controller: WKScriptMessageHandler, WKNavigationDelegate {
                 // It only speaks while stuck on, so an opening side window always has a window to sit on.
                 if goo.mode == .attached { goo.mode = .open }
                 side.ignoresMouseEvents = false
-                side.makeKeyAndOrderFront(nil)
+                if openQuietly { side.orderFront(nil) } else { side.makeKeyAndOrderFront(nil) }
+                openQuietly = false
                 if let id = target?.id { side.order(.above, relativeTo: id) }
                 if enchant.panel.isVisible { enchant.panel.order(.above, relativeTo: side.windowNumber) }
                 gooPanel.order(.above, relativeTo: enchant.panel.isVisible ? enchant.panel.windowNumber : side.windowNumber)

@@ -8,6 +8,7 @@ What a turn does is written in its own text as @@[...steps...]@@; with no steps 
   {"hear": true}                waits for the owner's next words through turn/steer, then answers with them
   {"retry": n}                  n failed uploads, each announced as an error it will retry
   {"pause": seconds}            waits, with nothing to report
+  {"every_turn": true}          first step only: the rest also runs for every later turn that has no steps of its own
   {"die": true}                 the process goes away
   {"usage": n}                  reports n input tokens
 Everything received is written to $FAKE_CODEX_LOG, one JSON object per line.
@@ -50,6 +51,9 @@ def ask(request_id, method, **params):
     return waiting["reply"]
 
 
+every_turn = []
+
+
 def finish(thread, turn, status="completed", error=None):
     active.discard(turn)
     event("turn/completed", threadId=thread, turn={"id": turn, "status": status, "error": error, "items": []})
@@ -57,7 +61,9 @@ def finish(thread, turn, status="completed", error=None):
 
 def run_turn(thread, turn, text):
     found = re.findall(r"@@(\[.*?\])@@", text.split("\n\n")[-1], re.S)  # Only the sentence itself: a recap may quote earlier ones.
-    steps = json.loads(found[-1]) if found else [{"say": "好的"}]
+    steps = json.loads(found[-1]) if found else list(every_turn) or [{"say": "好的"}]
+    if steps and steps[0].get("every_turn"):  # A model that does the same thing whatever it is told next.
+        every_turn[:] = steps = steps[1:]
     stop = interrupts[turn] = threading.Event()
     active.add(turn)
     event("turn/started", threadId=thread, turn={"id": turn, "status": "inProgress", "items": []})

@@ -71,7 +71,9 @@ class Companion(Chats, Turns, Hands, Lectures):
         self.settling = False  # the brain's thread is being got ready or summarized: wait for it rather than go round it
         self.limb_news = []    # what limbs did while the brain was busy, for its next turn
         self.finished = {}     # conversation -> name, for jobs that ended while the owner was elsewhere
-        self.held = {}         # conversation -> a job's last step, waiting for the owner to come back to its window
+        self.rings = {}        # window -> the latest ring to draw again when the owner gets there
+        self.held = {}         # conversation -> a job's last step, waiting for the owner to get to the window it needs; ("fill", conversation) -> a hand-over that finishes by itself
+        self.picked_up = {}    # conversation -> turns a waiting step has started by itself since the owner last spoke there
         self.said = []         # (message identity, the owner's words), newest last; memory only, across all windows
         self.lecture = None    # the class it is listening to: title, what it heard, notes. Memory only until it ends.
         self.ending_lecture = None  # just stopped, with its last piece of sound still on the way
@@ -133,6 +135,11 @@ class Companion(Chats, Turns, Hands, Lectures):
     def submit(self, coro):
         return asyncio.run_coroutine_threadsafe(coro, self.loop)
 
+    async def start_over(self):
+        """Codex's login or settings just changed under the running server: a new one reads them. `_alive` brings it back."""
+        await self.runtime.close()
+        await self.warm()
+
     def ask(self, text, files=()):
         # On the loop, in the order things arrived: a sentence right after sticking to a window belongs to that window.
         self.submit(self._ask(text, list(files)))
@@ -147,9 +154,12 @@ class Companion(Chats, Turns, Hands, Lectures):
         self.add("owner", text + names)
         self.said = [*self.said, (secrets.token_hex(8), text)][-50:]
         self.feedback.heard((self.window or {}).get("app"), text)
-        self.held.pop((self.chat or {}).get("username") or id(self.events), None)  # They said something else: that comes first, and it decides what is still wanted.
-        if files or not await self._steer(text):
-            await self.turn(text, attachments=files, where=(self.chat, self.events, self.window))
+        here = (self.chat or {}).get("username") or id(self.events)
+        self.held.pop(here, None)  # They said something else: that comes first, and it decides what is still wanted.
+        self.picked_up.pop(here, None)
+        words = self._waiting_fill_note() + text
+        if files or not await self._steer(words):
+            await self.turn(words, attachments=files, where=(self.chat, self.events, self.window))
 
 
 async def main():
@@ -159,15 +169,16 @@ async def main():
     parser.add_argument("--replay", type=int, default=0, help="把最后 N 条当作新消息，用于验证")
     parser.add_argument("--with-app", action="store_true", help="跟着 app 走：标准输入一关就退出")
     args = parser.parse_args()
-    if args.with_app:
-        def leave_with_app():
-            sys.stdin.buffer.read()
-            os._exit(0)
-        threading.Thread(target=leave_with_app, daemon=True).start()
     RUNTIME.mkdir(parents=True, exist_ok=True)
 
     companion = Companion(None)
     companion.loop = asyncio.get_running_loop()
+    if args.with_app:
+        def leave_with_app():
+            sys.stdin.buffer.read()
+            companion.setup.cancel()
+            os._exit(0)
+        threading.Thread(target=leave_with_app, daemon=True).start()
     # Pasted images and whatever else was handed over last time do not outlive the app.
     shutil.rmtree(INBOX, ignore_errors=True)
     with contextlib.suppress(OSError, RuntimeErrorCode):  # Not fatal: the next question tries again and says what is wrong.

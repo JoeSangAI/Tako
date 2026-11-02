@@ -124,6 +124,67 @@ enum Hands {
         return NSBitmapImageRep(cgImage: picture).representation(using: .jpeg, properties: [.compressionFactor: quality])?.base64EncodedString()
     }
 
+    /// Where these words are among lines read off a picture: inside one line, or running over a few. `forgiving` lets about one character in five differ, never a number.
+    static func place(of text: String, in lines: [(text: String, box: CGRect)], forgiving: Bool = false) -> CGRect? {
+        let want = normalize(text)
+        guard !want.isEmpty else { return nil }
+        let plain = lines.map { normalize($0.text) }
+        // Ending as early and starting as late as it can: the ring goes round these words, not the lines above them.
+        for end in lines.indices {
+            var joined = "", box = lines[end].box
+            for start in stride(from: end, through: max(0, end - 5), by: -1) {
+                joined = plain[start] + joined
+                box = box.union(lines[start].box)
+                guard forgiving ? (want.count >= 4 && closeEnough(want, within: joined)) : joined.contains(want) else { continue }
+                // One line and only part of it: narrow down to about where the words sit.
+                if start == end, let range = lines[end].text.range(of: text), lines[end].text.count > text.count {
+                    let total = CGFloat(lines[end].text.count), before = CGFloat(lines[end].text.distance(from: lines[end].text.startIndex, to: range.lowerBound))
+                    return CGRect(x: box.minX + box.width * before / total - 4, y: box.minY, width: box.width * CGFloat(text.count) / total + 8, height: box.height)
+                }
+                return box
+            }
+        }
+        // Asked about a whole passage, and the picture shows a line of it.
+        return forgiving ? nil : zip(plain, lines).filter { $0.0.count >= 4 && want.contains($0.0) }.max { $0.0.count < $1.0.count }?.1.box
+    }
+
+    /// Whether the words appear somewhere in the text with few enough differences (the smallest edit distance to any stretch of it), their numbers intact.
+    static func closeEnough(_ want: String, within text: String) -> Bool {
+        let digits = { (words: String) in words.filter(\.isNumber) }
+        guard digits(text).contains(digits(want)) || digits(want).isEmpty else { return false }
+        let a = Array(want), b = Array(text)
+        var column = Array(0...a.count)
+        var best = column[a.count]
+        for character in b {
+            var previous = column[0]
+            column[0] = 0
+            for i in 1...a.count {
+                let held = column[i]
+                column[i] = min(held + 1, column[i - 1] + 1, previous + (a[i - 1] == character ? 0 : 1))
+                previous = held
+            }
+            best = min(best, column[a.count])
+        }
+        return best * 5 <= a.count
+    }
+
+    /// The lines most like what was asked for, for saying what is there instead.
+    static func nearest(to want: String, in lines: [(text: String, box: CGRect)]) -> [String] {
+        let wanted = Set(want)
+        let scored: [(text: String, shared: Int)] = lines.map { ($0.text, Set(normalize($0.text)).intersection(wanted).count) }
+        let likely = scored.filter { $0.shared * 2 >= min(wanted.count, 8) }.sorted { $0.shared > $1.shared }
+        return likely.prefix(3).map { String($0.text.prefix(40)) }
+    }
+
+    /// A chat by its full name or its short one: 小林 is 小林-市场 助理, because the name stops at a break there, but it is not 小林妈妈.
+    static func sameChat(_ want: String, _ line: String) -> Bool {
+        if !normalize(want).isEmpty, normalize(want) == normalize(line) { return true }
+        let tidy = { (text: String) in text.precomposedStringWithCompatibilityMapping.lowercased().trimmingCharacters(in: .whitespaces) }
+        let start = tidy(want), whole = tidy(line)
+        guard !start.isEmpty, whole.hasPrefix(start), let next = whole.dropFirst(start.count).first else { return false }
+        return !(next.isLetter || next.isNumber)
+    }
+
     static func normalize(_ text: String) -> String {
         String(text.precomposedStringWithCompatibilityMapping.filter { $0.isLetter || $0.isNumber }).lowercased()
     }
@@ -213,6 +274,7 @@ extension Controller {
         let name = command["command"] as? String
         if name == "windows" { return listWindows() }
         if name == "endSteps" { endSteps(); return ["ok": true] }
+        if name == "followDone" { followDone(); return ["ok": true] }
         if name == "listenStop" { stopListening(); return ["ok": true] }
         if name == "closeDocument" { return await closeDocument(command["document"] as? String ?? "", onlyIfHeld: command["held"] as? Bool ?? false) }
         if name == "openDocument" { return openDocument(command["document"] as? String ?? "", in: command["app"] as? String) }
@@ -220,6 +282,7 @@ extension Controller {
             return ["ok": false, "error": (command["window"] as? String).map { "没找到窗口“\($0)”，它可能没打开" } ?? "TAKO 现在没有粘在窗口上"]
         }
         switch name {
+        case "about": return await about(win)
         case "resolve": return ["ok": true, "id": win.id, "app": win.app, "bundle": win.bundle, "title": win.title, "stuck": win.id == target?.id]
         case "look": return await look(win)
         case "listenStart": return await startListening(win)
@@ -228,7 +291,11 @@ extension Controller {
         case "point": return await point(win, at: command["text"] as? String ?? "")
         case "script": return await script(command["script"] as? String ?? "")
         case "openChat": return await openChat(command["name"] as? String ?? "", in: win)
-        case "isBack": return ["ok": ownerIsAway(from: win)]
+        case "isBack":
+            // Their words going into the panel: the input box is about to be clicked out from under them.
+            let typing = side.isKeyWindow && CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown) < 3
+            return ["ok": ownerIsAway(from: win) && !typing, "front": isFront(win) && !coveredByItsOwn(win), "app": win.app]
+        case "followTo": return followTo(win)
         case "bringForward":
             // Only ever for a button the owner pressed: everything else works without being in front.
             if side.isKeyWindow { side.resignKey() }
@@ -249,11 +316,13 @@ extension Controller {
         if win.bundle == "com.apple.finder" {
             // A Finder window only shows a folder's name; two folders can share it, so the path has to come from Finder.
             let title = currentTitle(id: win.id).replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-            let result = await script("tell application \"Finder\"\nrepeat with w in Finder windows\nif name of w is \"\(title)\" then return POSIX path of (target of w as alias)\nend repeat\nend tell")
+            // By where it sits too: two windows can show folders of one name. Short: the first time this is the system asking the owner, and nothing waits for that.
+            let result = await script("tell application \"Finder\"\nrepeat with i from 1 to count of Finder windows\nset w to Finder window i\nset b to bounds of w\nif name of w is \"\(title)\" and item 1 of b is \(Int(win.frame.minX)) and item 2 of b is \(Int(win.frame.minY)) then return POSIX path of (target of w as alias)\nend repeat\nend tell", within: 3)
             let path = (result["output"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             if path.hasPrefix("/") { return path }
-            // Finder said no (nobody has allowed Tako to ask it). Spotlight knows folders by name without that; only an answer with one folder in it is an answer.
-            return await Task.detached { Controller.onlyFolder(named: title) }.value
+            // Finder said no (nobody has allowed Tako to ask it). Spotlight knows folders by name without that, and what the window lists tells apart folders of one name.
+            let listed = Controller.finderRows(win, axWindow(pid: win.pid, frame: win.frame, id: win.id)).map(\.name)
+            return await Task.detached { Controller.onlyFolder(named: title, listing: listed) }.value
         }
         if trusted, let window = axWindow(pid: win.pid, frame: win.frame, id: win.id) {
             var value: CFTypeRef?
@@ -269,7 +338,46 @@ extension Controller {
         return await Task.detached { Controller.openFile(of: pid, named: title) }.value
     }
 
-    nonisolated static func onlyFolder(named quoted: String) -> String? {
+    /// What a Finder window lists, and which of that the owner has selected; the sidebar is the outline before it. Asked of Accessibility: it needs no permission beyond that and never disturbs them.
+    static func finderRows(_ win: Win, _ window: AXUIElement?) -> [(name: String, selected: Bool)] {
+        guard let window else { return [] }
+        func value(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
+            var found: CFTypeRef?
+            return AXUIElementCopyAttributeValue(element, name as CFString, &found) == .success ? found : nil
+        }
+        func children(_ element: AXUIElement) -> [AXUIElement] { value(element, kAXChildrenAttribute) as? [AXUIElement] ?? [] }
+        func name(of element: AXUIElement, _ depth: Int = 0) -> String? {
+            if ["AXStaticText", "AXTextField"].contains(value(element, kAXRoleAttribute) as? String ?? ""), let text = value(element, kAXValueAttribute) as? String, !text.isEmpty { return text }
+            guard depth < 4 else { return nil }
+            return children(element).lazy.compactMap { name(of: $0, depth + 1) }.first
+        }
+        var content: AXUIElement?, visited = 0
+        func walk(_ element: AXUIElement, _ depth: Int) {
+            guard depth < 10, visited < 400 else { return }
+            visited += 1
+            if ["AXOutline", "AXTable", "AXList"].contains(value(element, kAXRoleAttribute) as? String ?? "") { content = element; return }
+            children(element).forEach { walk($0, depth + 1) }
+        }
+        walk(window, 0)
+        guard let content else { return [] }
+        return children(content).prefix(400).compactMap { row in
+            // Rows opened out under a folder are that folder's, not this one's.
+            guard ["AXRow", "AXImage", "AXGroup"].contains(value(row, kAXRoleAttribute) as? String ?? ""), (value(row, "AXDisclosureLevel") as? Int ?? 0) == 0, let found = name(of: row) else { return nil }
+            return (found, value(row, kAXSelectedAttribute) as? Bool ?? false)
+        }
+    }
+
+    /// The folder behind a Finder window, and what is selected in it. Anything else has nothing to say here.
+    @MainActor
+    func about(_ win: Win) async -> [String: Any] {
+        guard win.bundle == "com.apple.finder" else { return ["ok": true] }
+        var result: [String: Any] = ["ok": true]
+        if let folder = await documentPath(win) { result["folder"] = folder }
+        result["selected"] = Controller.finderRows(win, axWindow(pid: win.pid, frame: win.frame, id: win.id)).filter(\.selected).map(\.name)
+        return result
+    }
+
+    nonisolated static func onlyFolder(named quoted: String, listing listed: [String] = []) -> String? {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
         task.arguments = ["kMDItemFSName == \"\(quoted)\" && kMDItemContentType == \"public.folder\""]
@@ -280,7 +388,12 @@ extension Controller {
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         task.waitUntilExit()
         let found = String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init).filter { $0.hasPrefix("/") }
-        return found.count == 1 ? found[0] : nil
+        if found.count < 2 { return found.first }
+        // Several by that name: the one holding what the window lists (nearly: Finder can hide an extension). Nothing listed, or more than one fits, is no answer.
+        guard !listed.isEmpty else { return nil }
+        let some = listed.prefix(30)
+        let fits = found.filter { path in some.filter { FileManager.default.fileExists(atPath: path + "/" + $0) }.count * 5 >= some.count * 4 }
+        return fits.count == 1 ? fits[0] : nil
     }
 
     nonisolated static func openFile(of pid: pid_t, named title: String) -> String? {
@@ -411,36 +524,136 @@ extension Controller {
 
     @MainActor
     func point(_ win: Win, at text: String) async -> [String: Any] {
-        let size = win.frame.size
-        guard let image = await Hands.capture(windowID: win.id, size: size, scale: 2) else { return ["ok": false, "error": "窗口截不到"] }
-        let lines = await Task.detached { Hands.recognize(image, size: size) }.value
         let want = Hands.normalize(text)
         guard !want.isEmpty else { return ["ok": false, "error": "没有要找的文字"] }
-        let hit = lines.first { let line = Hands.normalize($0.text); return !line.isEmpty && (line.contains(want) || want.contains(line) && line.count >= 4) }
-        guard let hit else { return ["ok": false, "error": "窗口上没找到这段文字"] }
-        var box = hit.box
-        // The picture is read a line at a time: when the words are only part of the line, narrow down to about where they sit.
-        if let range = hit.text.range(of: text), hit.text.count > text.count {
-            let total = CGFloat(hit.text.count), before = CGFloat(hit.text.distance(from: hit.text.startIndex, to: range.lowerBound))
-            box = CGRect(x: box.minX + box.width * before / total - 4, y: box.minY, width: box.width * CGFloat(text.count) / total + 8, height: box.height)
+        guard CGPreflightScreenCaptureAccess() else { return ["ok": false, "error": "没有屏幕录制权限，看不到窗口"] }
+        let size = win.frame.size
+        func onThePicture() async -> [(text: String, box: CGRect)] {
+            guard let image = await Hands.captureLive(win, scale: 2) else { return [] }
+            return await Task.detached { Hands.recognize(image, size: size) }.value
+        }
+        var lines = await onThePicture()
+        var box = Hands.place(of: text, in: lines)
+        // Not on the picture: a page knows the words it holds further down, and can bring them into view without touching the owner's pointer.
+        var heldBack = false
+        if box == nil, trusted, let window = axWindow(pid: win.pid, frame: win.frame, id: win.id) {
+            await askForAccessibleContent(win)
+            let origin = win.frame.origin
+            var inPage = await Task.detached(operation: { Controller.wordsInPage(text, under: window) }).value
+            // Asked for the first time, Chrome hands over the page's frame before its words.
+            if drawsLikeChrome(win.pid) {
+                for _ in 0..<4 where inPage == nil {
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    inPage = await Task.detached(operation: { Controller.wordsInPage(text, under: window) }).value
+                }
+            }
+            if let found = inPage {
+                let view = found.page ?? CGRect(origin: origin, size: size)
+                let shown = { (place: CGRect) in place.height >= 1 && view.contains(CGPoint(x: place.midX, y: place.midY)) }
+                // A run taller than the page comes up a stretch at a time: asking again goes further, and so does scrolling.
+                for _ in 0..<10 where !shown(Controller.bounds(of: found)) {
+                    AXUIElementPerformAction(found.element, "AXScrollToVisible" as CFString)
+                    try? await Task.sleep(nanoseconds: 350_000_000)
+                    let now = Controller.bounds(of: found)
+                    if shown(now) { break }
+                    _ = await scrollBehindTheOwner(at: CGPoint(x: view.midX, y: view.midY), lines: now.midY > view.midY ? -10 : 10, in: win)
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                }
+                let place = Controller.bounds(of: found)
+                if shown(place) {
+                    lines = await onThePicture()
+                    box = found.exact ? place.offsetBy(dx: -origin.x, dy: -origin.y) : Hands.place(of: text, in: lines) ?? place.offsetBy(dx: -origin.x, dy: -origin.y)
+                } else {
+                    heldBack = true
+                }
+            }
+        }
+        if heldBack { return ["ok": false, "error": "页面里有这段字，但滚不到它那里，没有标。用文字告诉 用户 它在页面的哪一部分"] }
+        // The model read this off the same picture and may have put a misread character right.
+        box = box ?? Hands.place(of: text, in: lines, forgiving: true)
+        guard let box else {
+            if lines.isEmpty { return ["ok": false, "error": "这个窗口现在截不到，没有标"] }
+            let near = Hands.nearest(to: want, in: lines).map { "“\($0)”" }.joined(separator: "、")
+            return ["ok": false, "error": "这段字不在这个窗口里，没有标" + (near.isEmpty ? "。" : "。最接近的是 \(near)，要标的是其中一句就照原样再标一次；都不是就") + "用文字告诉 用户 在哪"]
         }
         let rect = box.offsetBy(dx: win.frame.minX, dy: win.frame.minY)
         guard win.id == target?.id else {
             flash(win)
             inkFlash.tap(at: CGPoint(x: rect.midX, y: rect.midY), over: win)
-            return ["ok": true]
+            return ["ok": true, "seen": isFront(win), "at": [box.minX, box.minY, box.width, box.height]]
         }
         enchant.circle(rect)
         goo.reachGoal = V(rect.maxX + 14, rect.midY)
         goo.armArrived = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 4.5) { [weak self] in self?.goo.reachGoal = nil }
-        return ["ok": true]
+        return ["ok": true, "seen": isFront(win), "at": [box.minX, box.minY, box.width, box.height]]
+    }
+
+    /// The first run of a page's text holding these words, wherever on the page it is. A page splits a sentence at every link and bold word, so a few runs in a row count as one.
+    nonisolated static func wordsInPage(_ text: String, under window: AXUIElement) -> (element: AXUIElement, location: Int, length: Int, exact: Bool, page: CGRect?)? {
+        func value(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
+            var found: CFTypeRef?
+            return AXUIElementCopyAttributeValue(element, name as CFString, &found) == .success ? found : nil
+        }
+        let want = Hands.normalize(text)
+        var runs: [(element: AXUIElement, raw: String, plain: String)] = [], visited = 0, page: CGRect?
+        func walk(_ element: AXUIElement, _ depth: Int) {
+            guard depth < 40, visited < 6000 else { return }
+            visited += 1
+            let role = value(element, kAXRoleAttribute) as? String
+            if role == "AXWebArea", page == nil {
+                var at = CGPoint.zero, dimension = CGSize.zero
+                if let position = value(element, kAXPositionAttribute), let extent = value(element, kAXSizeAttribute) {
+                    AXValueGetValue(position as! AXValue, .cgPoint, &at)
+                    AXValueGetValue(extent as! AXValue, .cgSize, &dimension)
+                    page = CGRect(origin: at, size: dimension)
+                }
+            }
+            if role == "AXStaticText", let raw = value(element, kAXValueAttribute) as? String {
+                let plain = Hands.normalize(raw)
+                if !plain.isEmpty { runs.append((element, raw, plain)) }
+            }
+            (value(element, kAXChildrenAttribute) as? [AXUIElement] ?? []).forEach { walk($0, depth + 1) }
+        }
+        walk(window, 0)
+        for end in runs.indices {
+            var joined = ""
+            for start in stride(from: end, through: max(0, end - 7), by: -1) {
+                joined = runs[start].plain + joined
+                guard joined.contains(want) else { continue }
+                let run = runs[start]
+                // Asked of the words themselves where the text says them just so: nothing narrower to go on otherwise than the whole run.
+                if start == end, let range = run.raw.range(of: text, options: .caseInsensitive) {
+                    return (run.element, run.raw.utf16.distance(from: run.raw.startIndex, to: range.lowerBound), text.utf16.count, true, page)
+                }
+                return (run.element, 0, run.raw.utf16.count, false, page)
+            }
+        }
+        return nil
+    }
+
+    /// Where these characters really are. A run's own frame won't say: Chrome cuts it down to what shows of it, so a long paragraph with its first lines on screen
+    /// looks on screen whatever part of it is meant, and what is out of view lies flat against the page's edge (both seen 2026-11-02).
+    nonisolated static func bounds(of found: (element: AXUIElement, location: Int, length: Int, exact: Bool, page: CGRect?)) -> CGRect {
+        var range = CFRange(location: found.location, length: found.length), answer: CFTypeRef?, box = CGRect.zero
+        if let asked = AXValueCreate(.cfRange, &range),
+           AXUIElementCopyParameterizedAttributeValue(found.element, kAXBoundsForRangeParameterizedAttribute as CFString, asked, &answer) == .success, let answer {
+            AXValueGetValue(answer as! AXValue, .cgRect, &box)
+            if box.height >= 1 { return box }
+        }
+        var position: CFTypeRef?, extent: CFTypeRef?
+        var at = CGPoint.zero, dimension = CGSize.zero
+        guard AXUIElementCopyAttributeValue(found.element, kAXPositionAttribute as CFString, &position) == .success,
+              AXUIElementCopyAttributeValue(found.element, kAXSizeAttribute as CFString, &extent) == .success else { return .zero }
+        AXValueGetValue(position as! AXValue, .cgPoint, &at)
+        AXValueGetValue(extent as! AXValue, .cgSize, &dimension)
+        return CGRect(origin: at, size: dimension)
     }
 
     // MARK: documents
 
     /// Runs AppleScript with osascript, so a hung app can't freeze the goo. The server has checked what it talks to.
-    func script(_ source: String) async -> [String: Any] {
+    func script(_ source: String, within limit: Double = 80) async -> [String: Any] {
         await Task.detached { () -> [String: Any] in
             let task = Process()
             task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
@@ -450,7 +663,7 @@ extension Controller {
             task.standardError = err
             guard (try? task.run()) != nil else { return ["ok": false, "error": "osascript 启动失败"] }
             let killer = DispatchWorkItem { task.terminate() }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 80, execute: killer)
+            DispatchQueue.global().asyncAfter(deadline: .now() + limit, execute: killer)
             let output = out.fileHandleForReading.readDataToEndOfFile(), problem = err.fileHandleForReading.readDataToEndOfFile()
             task.waitUntilExit()
             killer.cancel()

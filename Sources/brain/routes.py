@@ -138,6 +138,9 @@ def serve(companion, token, port):
             if url.path == "/setup/next":
                 companion.setup.next_step()
                 return self.reply(companion.setup.state())
+            if url.path == "/setup/cancel":
+                companion.setup.cancel()
+                return self.reply(companion.setup.state())
             if url.path == "/current" and isinstance(body.get("titles"), list):
                 if not HAS_WECHAT:
                     return self.reply({"ok": True})
