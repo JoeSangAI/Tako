@@ -33,7 +33,7 @@ from first_run import Setup, codex_on_path, find_codex
 from hands import Hands
 from lecture import Lectures
 from routes import serve
-from settings import HAS_WECHAT, HAS_WORKBENCH, INBOX, RUNTIME, app_version, clock
+from settings import HAS_WECHAT, HAS_WORKBENCH, INBOX, RUNTIME, app_version, clock, hour_minute
 from turns import Turns
 
 
@@ -114,7 +114,7 @@ class Companion(Chats, Turns, Hands, Lectures):
         # A turn started by an incoming message may still decide to say nothing, so it stays quiet until it is done.
         partial = job.partial if job and job.origin == "owner" else ""
         return {"chat": self.chat and self.chat["name"], "status": status, "error": self.error,
-                "polled_at": self.polled_at, "gen": self.generation, "events": self.events[after:],
+                "polled_at": self.polled_at, "polled_time": hour_minute(self.polled_at) if self.polled_at else "", "gen": self.generation, "events": self.events[after:],
                 "kind": self.chat.get("kind", "wechat") if self.chat else "", "app": (self.window or {}).get("app", ""),
                 "greeting": (self.chat or {}).get("greeting", ""),
                 "bundle": (self.window or {}).get("bundle", ""),

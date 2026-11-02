@@ -6,6 +6,7 @@ import os
 import pathlib
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -639,6 +640,25 @@ class FirstRun(unittest.TestCase):
         self.assertIn("CGRequestScreenCaptureAccess", controller)
         self.assertNotIn("CGRequestScreenCaptureAccess", (NATIVE / "WeChatHeader.swift").read_text())
         self.assertIn("trusted && !captureAsked", controller)
+
+    def _clock_in(self, config):
+        home = tempfile.mkdtemp()
+        (pathlib.Path(home) / "config.json").write_text(json.dumps(config))
+        code = "import os, time, settings; print(settings.hour_minute(0), time.strftime('%H:%M', time.localtime(0)), os.environ.get('TZ'))"
+        env = {**os.environ, "TAKO_HOME": home, "TZ": "America/New_York", "PYTHONPATH": str(BRAIN)}
+        return subprocess.run([sys.executable, "-B", "-c", code], capture_output=True, text=True, env=env).stdout.split()
+
+    def test_the_zone_the_owner_set_is_the_clock_for_everything(self):
+        self.assertEqual(self._clock_in({"timezone": "Asia/Shanghai"}), ["08:00", "08:00", "Asia/Shanghai"])
+
+    def test_with_no_zone_set_or_a_wrong_one_the_mac_keeps_its_own(self):
+        for config in ({}, {"timezone": "Not/AZone"}):
+            self.assertEqual(self._clock_in(config)[2], "America/New_York", config)
+
+    def test_the_panel_prints_the_time_it_is_given(self):
+        page = (BRAIN / "side.html").read_text()
+        self.assertNotIn("toLocaleTimeString", page)
+        self.assertIn("s.polled_time", page)
 
     def test_an_update_reaches_someone_stuck_on_a_step(self):
         page = (BRAIN / "side.html").read_text()

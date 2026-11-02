@@ -54,6 +54,10 @@ def local_zone():
 
 
 ZONE = local_zone()
+# One clock everywhere: what Tako says, and what the model's own `date` and the commands it runs say. Only what the owner set, and only a zone that exists.
+if CONFIG.get("timezone") and isinstance(ZONE, ZoneInfo) and ZONE.key == CONFIG["timezone"]:
+    os.environ["TZ"] = ZONE.key
+    time.tzset()
 OWNER = str(CONFIG.get("name") or account_name())
 MODEL = CONFIG.get("model") or None  # None leaves it to the model the owner's Codex is set to.
 OUTPUT_ROOT = configured_path(CONFIG.get("output_root")) or Path.home() / "Desktop" / "Tako"
@@ -84,6 +88,10 @@ METRICS = RUNTIME / "metrics.jsonl"  # Numbers only, never chat content.
 
 def clock(ts):
     return dt.datetime.fromtimestamp(ts, ZONE).strftime("%m-%d %H:%M")
+
+
+def hour_minute(ts):
+    return dt.datetime.fromtimestamp(ts, ZONE).strftime("%H:%M")
 
 
 def local_today():

@@ -25,7 +25,7 @@ Tako 不需要任何设置就能用。想让它更懂你，在 `~/Library/Applic
 | --- | --- | --- |
 | `name` | Tako 怎么称呼你 | 用 Mac 账户名 |
 | `model` | 用哪个模型 | 跟随你的 Codex 设置 |
-| `timezone` | 判断“今天”用的时区 | 这台 Mac 的时区 |
+| `timezone` | Tako 用的时区：判断“今天”、面板上的时间、问候，以及模型跑命令时的时钟 | 这台 Mac 的时区 |
 | `clock_note` | 关于时间的补充说明，每轮都会告诉模型 | 无 |
 | `output_root` | 做好的文件放哪 | `~/Desktop/Tako` |
 | `background_file` | 背景文件的位置 | `about-me.md` |

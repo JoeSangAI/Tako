@@ -113,6 +113,7 @@ def handle(message):
     method, params, request_id = message.get("method"), message.get("params") or {}, message.get("id")
     note("request", method=method, params=params)
     if method == "initialize":
+        note("clock", tz=os.environ.get("TZ"))
         send({"id": request_id, "result": {"userAgent": "fake"}})
     elif method == "thread/start":
         thread = str(uuid.uuid4())

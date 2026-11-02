@@ -166,6 +166,13 @@ class AQuestion(Base):
         self.assertIn("没有", seen["error"])
 
 
+class OneClock(Base):
+    def test_the_models_commands_tell_the_time_the_owner_set(self):
+        self.tako.ask("几点了")
+        self.tako.until(lambda s: self.tako.said(s), "an answer")
+        self.assertEqual(self.tako.codex("clock")[0]["tz"], "Asia/Shanghai")
+
+
 class PointingAtThings(Base):
     def _replies(self, tool="point_at"):
         return [str(line.get("reply")) for line in map(json.loads, self.tako.log.read_text().splitlines()) if line.get("kind") == "tool_reply"]
