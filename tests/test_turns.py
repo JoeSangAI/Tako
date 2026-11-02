@@ -559,6 +559,26 @@ class NeedingTheRealPointer(Base):
         self.tako.native["isBack"] = lambda c: {"ok": False, "error": "没找到窗口"}
         self.tako.until(lambda s: not s["trouble"], "the wait over", 5)
 
+    def test_a_window_under_the_owners_other_chrome_window_is_not_passed_off_as_seen(self):
+        self.back = threading.Event()
+        self.tako.native["look"] = lambda c: {"ok": True, "id": 7, "app": "Google Chrome", "title": "邮件", "lines": "收件人"} if self.back.is_set() else {"ok": False, "needsFront": True, "error": "Google Chrome 的另一个窗口正盖在这个窗口上，它不更新被盖住的窗口，也不给里面的控件，现在看不到真实内容"}
+        self.tako.native["isBack"] = lambda c: {"ok": self.back.is_set()}
+        self.tako.ask(steps({"call": "look_at_window", "args": {}}, {"say": "差你切回那个窗口"}))
+        seen = self.tako.until(lambda s: "差你切回那个窗口" in self.tako.said(s) and s["trouble"], "told, and waiting", 5)
+        self.assertFalse(seen["busy"])
+        reply = json.dumps([r for r in self.tako.codex("tool_reply") if r["tool"] == "look_at_window"][0]["reply"], ensure_ascii=False)
+        self.assertIn("盖在这个窗口上", reply)
+        self.assertIn("先没做", reply)
+        self.back.set()
+        self.tako.until(lambda s: len(self.tako.owner_turns()) == 2, "picked up by itself", 6)
+
+    def test_a_window_on_another_desktop_says_it_can_only_be_looked_at(self):
+        self.tako.native["look"] = lambda c: {"ok": True, "id": 7, "app": "Google Chrome", "title": "邮件", "note": "这个窗口不在当前桌面：只看得到画面，里面的东西按不了，要操作得等 用户 切到那个桌面。", "lines": "收件人"}
+        self.tako.ask(steps({"call": "look_at_window", "args": {}}, {"say": "好了"}))
+        self.tako.until(lambda s: not s["busy"] and self.tako.said(s), "answered", 5)
+        reply = json.dumps([r for r in self.tako.codex("tool_reply") if r["tool"] == "look_at_window"][0]["reply"], ensure_ascii=False)
+        self.assertIn("不在当前桌面", reply)
+
     def test_the_panels_own_button_may_bring_the_window_forward(self):
         result = self.tako.call("/fill", {"text": "你好"}, timeout=12)
         self.assertTrue(result["ok"])

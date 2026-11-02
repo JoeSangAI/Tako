@@ -51,6 +51,23 @@ enum Hands {
         }
     }
 
+    /// ScreenCaptureKit never answers for a minimized window or a hidden app's (seen 2026-11-02), and the whole tool call would wait for it.
+    static func shot(_ filter: SCContentFilter, _ config: SCStreamConfiguration) async -> CGImage? {
+        await withCheckedContinuation { (done: CheckedContinuation<CGImage?, Never>) in
+            let lock = NSLock()
+            var answered = false
+            let answer: (CGImage?) -> Void = { image in
+                lock.lock()
+                defer { lock.unlock() }
+                guard !answered else { return }
+                answered = true
+                done.resume(returning: image)
+            }
+            SCScreenshotManager.captureImage(contentFilter: filter, configuration: config) { image, _ in answer(image) }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 3) { answer(nil) }
+        }
+    }
+
     /// The window as it looks with its own menus and pop-ups, which are separate windows; other apps don't get in the picture.
     static func captureLive(_ win: Win, scale: CGFloat, source: CGRect? = nil) async -> CGImage? {
         do {
@@ -63,7 +80,7 @@ enum Hands {
                 config.width = Int(area.width * scale)
                 config.height = Int(area.height * scale)
                 config.showsCursor = false
-                return try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: only), configuration: config)
+                return await shot(SCContentFilter(desktopIndependentWindow: only), config)
             }
             // Its own menus and sheets, not the app's other windows, which may lie in front of this one.
             let windows = content.windows.filter {
@@ -76,7 +93,7 @@ enum Hands {
             config.width = Int(area.width * scale)
             config.height = Int(area.height * scale)
             config.showsCursor = false
-            return try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(display: display, including: windows), configuration: config)
+            return await shot(SCContentFilter(display: display, including: windows), config)
         } catch {
             return nil
         }

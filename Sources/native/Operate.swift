@@ -108,8 +108,14 @@ extension Controller {
         let app = AXUIElementCreateApplication(win.pid)
         if AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue) != .success {
             AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
-            // Chrome takes a moment to build what it has just been asked for.
-            if askedForContent.insert(pid).inserted { try? await Task.sleep(nanoseconds: 1_500_000_000) }
+            guard askedForContent.insert(win.pid).inserted else { return }
+            // Chrome takes a moment to build what it has just been asked for, and it can be several: a first look without the page can't press anything in it (seen 2026-11-02).
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard drawsLikeChrome(win.pid), let window = axWindow(pid: win.pid, frame: win.frame, id: win.id) else { return }
+            for _ in 0..<14 {
+                if await Task.detached(operation: { Controller.holdsPage(window) }).value { return }
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
         }
     }
 
@@ -166,12 +172,16 @@ extension Controller {
     @MainActor
     func look(_ win: Win) async -> [String: Any] {
         guard CGPreflightScreenCaptureAccess() else { return ["ok": false, "error": "没有屏幕录制权限，看不到窗口"] }
+        // The owner is working in this app, so the window can't be raised past them, and what Chrome last drew would pass for now.
+        if isFront(win), coveredByItsOwn(win), drawsLikeChrome(win.pid) {
+            return ["ok": false, "needsFront": true, "error": "\(win.app) 的另一个窗口正盖在这个窗口上，它不更新被盖住的窗口，也不给里面的控件，现在看不到真实内容"]
+        }
         if win.id == target?.id { goo.state = "reading"; enchant.setMood("reading") } else if isFront(win) { flash(win) }
         await askForAccessibleContent(win)
         await surface(win)
         let size = win.frame.size
         guard let image = await Hands.captureLive(win, scale: 2) else {
-            return ["ok": false, "error": "这个窗口现在截不到（可能不在当前桌面）"]
+            return ["ok": false, "error": "这个窗口现在截不到（可能最小化了、应用被隐藏，或不在当前桌面）"]
         }
         let wide = max(size.width, 1), shrink = wide > 1600 ? 1600 / wide : 1
         let read = await Task.detached { (Hands.recognize(image, size: size), Hands.jpeg(image, scale: shrink / 2, quality: 0.72)) }.value
@@ -185,6 +195,8 @@ extension Controller {
         result["text"] = surveyed.text.count > 300 ? surveyed.text : read.0.map(\.text).joined(separator: "\n")
         result["lines"] = read.0.prefix(220).map { "(\(Int($0.box.minX)),\(Int($0.box.minY)),\(Int($0.box.width)),\(Int($0.box.height))) \($0.text)" }.joined(separator: "\n")
         result["elements"] = surveyed.elements.enumerated().map { "[\($0.offset)] \($0.element.role.dropFirst(2)) \"\($0.element.label)\"\($0.element.value.isEmpty || $0.element.value == $0.element.label ? "" : " = \"\($0.element.value)\"") (\(Int($0.element.frame.minX)),\(Int($0.element.frame.minY)),\(Int($0.element.frame.width)),\(Int($0.element.frame.height)))" }.joined(separator: "\n")
+        // Accessibility only knows the windows on this desktop.
+        if surveyed.elements.isEmpty, !openWindows().contains(where: { $0.id == win.id }) { result["note"] = "这个窗口不在当前桌面：只看得到画面，里面的东西按不了，要操作得等 用户 切到那个桌面。" }
         if let document = await documentPath(win) { result["document"] = document }
         if let picture = read.1 { result["image"] = picture }
         return result
@@ -212,9 +224,29 @@ extension Controller {
 
     func isFront(_ win: Win) -> Bool { NSWorkspace.shared.frontmostApplication?.processIdentifier == win.pid }
 
+    /// Another window of the same app lies wholly over this one.
+    func coveredByItsOwn(_ win: Win) -> Bool {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return false }
+        // Front to back, so only what lies above it is looked at.
+        for info in list {
+            if info[kCGWindowNumber as String] as? Int == win.id { return false }
+            guard info[kCGWindowLayer as String] as? Int == 0, info[kCGWindowOwnerPID as String] as? Int == Int(win.pid),
+                  let raw = info[kCGWindowBounds as String] as? NSDictionary, let rect = CGRect(dictionaryRepresentation: raw) else { continue }
+            if rect.contains(win.frame) { return true }
+        }
+        return false
+    }
+
+    /// Chrome and whatever runs on its engine, Electron too: they all carry a "<name> Framework.framework".
+    func drawsLikeChrome(_ pid: pid_t) -> Bool {
+        guard let bundle = NSRunningApplication(processIdentifier: pid)?.bundleURL,
+              let parts = try? FileManager.default.contentsOfDirectory(atPath: bundle.appendingPathComponent("Contents/Frameworks").path) else { return false }
+        return parts.contains { $0.hasSuffix(" Framework.framework") }
+    }
+
     /// The real pointer and keyboard belong to the owner: only with this window in front and them idle may anything else touch them.
     func ownerIsAway(from win: Win) -> Bool {
-        isFront(win) && [CGEventType.mouseMoved, .leftMouseDown, .leftMouseDragged, .scrollWheel, .keyDown].allSatisfy {
+        isFront(win) && !coveredByItsOwn(win) && [CGEventType.mouseMoved, .leftMouseDown, .leftMouseDragged, .scrollWheel, .keyDown].allSatisfy {
             CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: $0) > 1
         }
     }

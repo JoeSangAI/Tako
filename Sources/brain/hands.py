@@ -157,7 +157,7 @@ class Hands:
             lines = [f"{w['id']}｜{w['app']}｜{w['title']}" + ("｜TAKO 粘在这里" if w.get("stuck") else "") for w in result.get("windows", [])]
             return self._reply("\n".join(lines) or "没有打开的窗口")
         if name == "look_at_window":
-            return await self._look(window)
+            return await self._look(window, job)
         if name == "operate_window":
             return await self._operate(args.get("steps") or [], window, job)
         if name == "fill_input":
@@ -180,11 +180,13 @@ class Hands:
             return await self._propose(str(args.get("original")), str(args.get("edited")), str(args.get("summary")), job)
         return self._reply("没有这个工具", ok=False)
 
-    async def _look(self, window):
-        result = await self.native("look", window=window)
+    async def _look(self, window, job=None):
+        result = await self._unless_needs_front(job, "look", window=window)
         if not result.get("ok"):
             return self._reply(result.get("error", "看不到窗口"), ok=False)
         lines = [f"窗口 id：{result.get('id')}", f"应用：{result.get('app')}", f"标题：{result.get('title')}"]
+        if result.get("note"):
+            lines.append(result["note"])
         if result.get("imageScale", 1) != 1:
             lines.append(f"截图比例：1 个窗口坐标点 = {result['imageScale']:.3f} 像素")
         if result.get("document"):

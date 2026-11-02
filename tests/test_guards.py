@@ -367,6 +367,21 @@ class WorkbenchTakesOnlyOwnersWords(unittest.TestCase):
         before = step.split("await withRealPointer")
         self.assertTrue(all("mouse(." not in piece and ".post(tap:" not in piece for piece in before[:1]))
 
+    def test_looking_at_a_window_cannot_hang_or_pass_off_what_it_cannot_see(self):
+        operate = (ROOT / "Sources/native/Operate.swift").read_text()
+        hands = (ROOT / "Sources/native/Hands.swift").read_text()
+        # ScreenCaptureKit never answers for a minimized or hidden window: every picture for the model goes through the one with a limit.
+        live = hands[hands.index("static func captureLive"):hands.index("/// Text and where it is")]
+        self.assertNotIn("SCScreenshotManager", live)
+        self.assertIn("asyncAfter(deadline: .now() + 3)", hands[hands.index("static func shot"):hands.index("static func captureLive")])
+        # The owner counts as back on a window only when no window of the same app lies over it: the pointer would land on that one.
+        self.assertIn("!coveredByItsOwn(win)", operate[operate.index("func ownerIsAway"):operate.index("func waitForFront")])
+        look = operate[operate.index("func look(_ win"):operate.index("// MARK: acting")]
+        self.assertLess(look.index("coveredByItsOwn"), look.index("surface(win)"))
+        # The first look at a new Chrome waits for the page to reach Accessibility, not just a moment: without it nothing in the page can be pressed.
+        asked = operate[operate.index("func askForAccessibleContent"):operate.index("nonisolated static func holdsPage")]
+        self.assertIn("Controller.holdsPage(window)", asked)
+
     def test_what_is_under_a_click_is_read_from_that_windows_own_app(self):
         operate = (ROOT / "Sources/native/Operate.swift").read_text()
         # The system-wide question answers for whatever covers that spot on the screen, and a send button behind it would pass the check.
