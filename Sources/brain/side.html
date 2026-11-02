@@ -589,14 +589,16 @@ function showNotice() {
   if (up !== noticeUp) { noticeUp = up; tellCards(); }
   const actions = document.createElement('div');
   actions.className = 'card-actions';
-  if (permission) {
+  // Stuck on a step is just when a newer Tako may be what gets them past it, and the menu's check answers here too. Only a login open in the browser goes on first; 稍后 brings the step back.
+  const updateFirst = update && !(pending && setup.busy);
+  if (permission && !updateFirst) {
     const words = PERMISSION_WORDS[permission];
     box.append(noticeLine('title', words[0]), noticeLine('body', words[1]));
     actions.append(button(words[2], () => native?.postMessage({ settings: permission }), true));
     box.append(actions);
     return;
   }
-  if (pending) {
+  if (pending && !updateFirst) {
     const words = SETUP_WORDS[setup.step];
     box.append(noticeLine('title', words[0]), noticeLine('body', setup.busy ? words[3] : words[1]));
     if (setup.error) box.append(noticeLine('why', setup.error));

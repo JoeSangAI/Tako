@@ -640,6 +640,12 @@ class FirstRun(unittest.TestCase):
         self.assertNotIn("CGRequestScreenCaptureAccess", (NATIVE / "WeChatHeader.swift").read_text())
         self.assertIn("trusted && !captureAsked", controller)
 
+    def test_an_update_reaches_someone_stuck_on_a_step(self):
+        page = (BRAIN / "side.html").read_text()
+        self.assertIn("const updateFirst = update && !(pending && setup.busy);", page)
+        self.assertIn("if (permission && !updateFirst) {", page)
+        self.assertIn("if (pending && !updateFirst) {", page)
+
     def test_the_panel_shows_one_next_step_and_opens_only_two_settings_pages(self):
         page = (BRAIN / "side.html").read_text()
         self.assertIn("!canMove ? 'accessibility' : !canRead ? 'screen' : null", page)

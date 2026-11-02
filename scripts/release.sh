@@ -18,8 +18,14 @@ case "${1:-}" in
   build)
     [ -n "$(notes)" ] || { echo "CHANGELOG.md has no section for $VERSION" >&2; exit 1; }
     "$ROOT/scripts/fetch_python.sh"
-    for suite in test_guards test_turns; do
-      "$ROOT/.build/python/bin/python3" -B -W ignore "$ROOT/tests/$suite.py" 2>&1 | tail -1 | grep -q '^OK' || { echo "$suite failed: nothing goes out" >&2; exit 1; }
+    mkdir -p "$ROOT/.local/release-tests"
+    for suite in test_guards test_first_run test_turns; do
+      log="$ROOT/.local/release-tests/$suite.log"
+      if ! "$ROOT/.build/python/bin/python3" -B -W ignore "$ROOT/tests/$suite.py" > "$log" 2>&1 || ! tail -1 "$log" | grep -q '^OK'; then
+        echo "$suite failed: nothing goes out. Whole output: $log" >&2
+        grep -E '^(FAIL|ERROR):' "$log" >&2 || tail -5 "$log" >&2
+        exit 1
+      fi
     done
     "$ROOT/scripts/check_public.sh"
     rm -rf "$DIST"
