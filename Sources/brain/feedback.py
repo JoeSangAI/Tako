@@ -21,7 +21,7 @@ TASKS = ("填表单", "写回复", "改文档", "整理数据", "找功能入口
 RESULTS = ("完成", "没做到", "放弃")
 # What they wished it would do, and where it let them down: fixed words too, so nothing anyone said can travel in them.
 WANTS = ("替我操作软件", "少动手自动做完", "批量做重复的事", "定时自动做", "跨软件搬内容", "看懂这个界面", "一步步教我", "读长文件", "做成文件交付", "写得更像我", "记住我的习惯", "帮我拿主意", "其他")
-STUCK = ("太慢", "理解错了", "结果要大改", "要确认太多", "缺权限", "读不到窗口内容", "点错地方", "找不到入口", "不知道怎么说", "连不上", "其他")
+STUCK = ("太慢", "理解错了", "结果要大改", "要确认太多", "缺权限", "读不到窗口内容", "点错地方", "找不到入口", "不知道怎么说", "连不上", "没做完就停了", "其他")
 # Words that say something went wrong, in the owner's own voice.
 TROUBLE = re.compile(r"不对|不好用|没用|错了|不行|搞错|弄错|怎么还|还是不|做不到|卡住|卡死|崩了|太慢|算了")
 

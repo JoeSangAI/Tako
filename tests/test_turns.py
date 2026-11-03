@@ -419,6 +419,19 @@ class ACard(Base):
         self.assertIn("没保存", self.tako.codex("tool_reply")[-1]["reply"]["contentItems"][0]["text"])
 
 
+class TwoTiers(Base):
+    """Joe 2026-11-03: different work on different models. The owner's jobs on the stronger one, the throwaway threads on the light one."""
+    config = {"model": "gpt-6.1-sol", "light_model": "gpt-6.1-terra"}
+
+    def test_the_owners_job_and_a_greeting_each_get_their_own_model(self):
+        self.tako.ask("你好")
+        self.tako.until(lambda s: self.tako.said(s), "an answer")
+        self.tako.until(lambda s: len(self.tako.requests("thread/start")) >= 2, "the greeting thread")
+        starts = self.tako.requests("thread/start")
+        self.assertEqual({row.get("model") for row in starts if row.get("dynamicTools")}, {"gpt-6.1-sol"})
+        self.assertEqual({row.get("model") for row in starts if not row.get("dynamicTools")}, {"gpt-6.1-terra"})
+
+
 class Throwaways(Base):
     def test_a_greeting_thread_gets_no_tools_and_only_the_apps_name(self):
         seen = self.tako.until(lambda s: self.tako.requests("thread/unsubscribe") or len(self.tako.requests("thread/start")) >= 2, "the greeting thread")
@@ -1053,6 +1066,23 @@ class Inside(unittest.IsolatedAsyncioTestCase):
         self.tako.thread = None
         await self.tako.turn("再看看")
         self.assertIn("第一条", prompts[-1])
+
+    async def test_a_restart_remembers_what_the_owner_asked_and_how_it_ended(self):
+        """Joe 2026-11-03: “excel 弄好了吗” right after an update, and Tako had forgotten the morning's job."""
+        reads, prompts = await self.wechat([self.row(1, "附件3 在这里")])
+        await self.tako.turn("把她发的表填好")
+        folder = next(iter(self.tako.named.values()), None)
+        # What a restarted app has: nothing in memory, a new thread.
+        self.tako.thread, self.tako.events, self.tako.saved, self.tako.brain_lost = None, [], {}, False
+        await self.tako.turn("excel 弄好了吗")
+        self.assertIn("把她发的表填好", prompts[-1])
+        self.assertIn("结局：答完了", prompts[-1])
+        self.assertNotIn("附件3 在这里", prompts[-1].split("聊天记录")[0], "the memory holds the owner's words, not the chat")
+        kept = (self.home / "asked.json")
+        self.assertEqual(kept.stat().st_mode & 0o777, 0o600)
+        self.assertNotIn("附件3 在这里", kept.read_text())
+        await self.tako.turn("好的")
+        self.assertNotIn("交代过你的事", prompts[-1], "only a new thread is told")
 
     async def test_a_draft_is_watched_only_until_sent_and_without_a_model(self):
         now = int(time.time())

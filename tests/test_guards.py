@@ -167,6 +167,21 @@ class FilesPeopleSend(unittest.TestCase):
         self.assertNotIn('step["front"]', native("Operate"))
 
 
+class WhatTheOwnerAsked(unittest.TestCase):
+    """Joe 2026-11-03: after an update Tako had forgotten the morning's job. What the owner asked is kept on disk, and only that."""
+
+    def test_only_the_owners_own_words_are_kept(self):
+        self.assertIn("asked.begin, (chat or {}).get(\"name\") or (window or {}).get(\"app\"), instruction, output)", TURNS)
+        self.assertEqual(TURNS.count("asked.begin"), 1)
+        kept = source("asked")
+        for private in ("render", "said", "events", "read_wechat", "screenshot"):
+            self.assertNotIn(private, kept.split('"""')[2])
+
+    def test_stopping_short_is_a_word_the_owner_can_be_heard_saying(self):
+        self.assertIn("没做完就停了", fb.STUCK)
+        self.assertEqual(fb.parse_extract(json.dumps({"stuck": ["没做完就停了"]}, ensure_ascii=False)), ["卡在|没做完就停了"])
+
+
 class ScriptGuard(unittest.TestCase):
     unsafe = staticmethod(guards.unsafe_script)
 

@@ -91,6 +91,7 @@ Chrome 要先打开它的辅助功能才看得到网页里的东西（`askForAcc
 | `guards.py` | 无状态的底线规则：脚本检查、工作台只收原话、标题核对 | 一条“不管模型怎么说都要成立”的规则 |
 | `outputs.py` | 作品目录、备份、替换文件、文档转图片（`file_pictures`，沙箱外跑，不开应用不弹卡片）、窗口标题落到文件（`file_in_title`） | 文件写到哪、怎么看文件 |
 | `first_run.py` | 找 Codex、安装、登录 | 新用户第一次打开 |
+| `asked.py` | 主人交代过的事，存一周，重启后的新线程靠它记得 | 只存主人原话 |
 | `feedback.py` | 回传给作者的数字和固定词 | 改了就要同步改 `docs/PRIVACY.md` |
 | `greetings.py` | 开场白 | 彩蛋 |
 | `wechat_reader.py` | 可选的本机微信读取 | 微信数据库 |

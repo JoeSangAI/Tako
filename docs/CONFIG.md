@@ -13,7 +13,8 @@ Tako 不需要任何设置就能用。想让它更懂你，在 `~/Library/Applic
 ```json
 {
   "name": "Alex",
-  "model": "gpt-6.1-terra",
+  "model": "gpt-6.1-sol",
+  "light_model": "gpt-6.1-terra",
   "timezone": "Asia/Shanghai",
   "output_root": "~/Documents/Tako",
   "background_file": "~/Documents/about-me.md",
@@ -24,7 +25,8 @@ Tako 不需要任何设置就能用。想让它更懂你，在 `~/Library/Applic
 | 项 | 含义 | 不写时 |
 | --- | --- | --- |
 | `name` | Tako 怎么称呼你 | 用 Mac 账户名 |
-| `model` | 用哪个模型 | 跟随你的 Codex 设置 |
+| `model` | 你交代的事用哪个模型 | 跟随你的 Codex 设置 |
+| `light_model` | 后台的一次性轻活用哪个模型：开场白、听课笔记、从你改过的草稿里学写法、整理反馈 | 和 `model` 一样 |
 | `timezone` | Tako 用的时区：判断“今天”、问候，以及模型跑命令时的时钟 | 这台 Mac 的时区 |
 | `clock_note` | 关于时间的补充说明，每轮都会告诉模型 | 无 |
 | `output_root` | 做好的文件放哪 | `~/Desktop/Tako` |

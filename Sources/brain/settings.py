@@ -59,7 +59,8 @@ if CONFIG.get("timezone") and isinstance(ZONE, ZoneInfo) and ZONE.key == CONFIG[
     os.environ["TZ"] = ZONE.key
     time.tzset()
 OWNER = str(CONFIG.get("name") or account_name())
-MODEL = CONFIG.get("model") or None  # None leaves it to the model the owner's Codex is set to.
+MODEL = CONFIG.get("model") or None  # The owner's own jobs. None leaves it to the model the owner's Codex is set to.
+LIGHT_MODEL = CONFIG.get("light_model") or MODEL  # Throwaway threads: greetings, lecture notes, learning from edits, feedback.
 OUTPUT_ROOT = configured_path(CONFIG.get("output_root")) or Path.home() / "Desktop" / "Tako"
 BACKGROUND = configured_path(CONFIG.get("background_file")) or RUNTIME / "about-me.md"
 WORKBENCH_SETTING = CONFIG.get("workbench") if isinstance(CONFIG.get("workbench"), dict) else {}
@@ -77,6 +78,7 @@ CONTEXT_MESSAGES = 30
 MAX_MESSAGE_CHARS = 2000
 VOICE = RUNTIME / "voice.md"      # Habits learned from the owner's edits, never their sentences. Plain text they can read or change.
 METRICS = RUNTIME / "metrics.jsonl"  # Numbers only, never chat content.
+ASKED = RUNTIME / "asked.json"      # What the owner asked and how it ended, a week of it: their words, never a window's.
 
 
 def clock(ts):

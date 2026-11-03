@@ -8,6 +8,7 @@ import time
 import urllib.request
 from pathlib import Path
 
+import asked
 import feedback as fb
 from chats import render
 from codex_runtime import CodexRuntime, RuntimeErrorCode
@@ -15,7 +16,7 @@ from first_run import codex_on_path, find_codex
 from guards import last_draft, named_paths, plain_command, pointable
 from outputs import make_output_dir, tidy_output_dir
 from prompts import BRAIN_CONFIG, PROMPT, READER_CONFIG, STEP_NAMES, TOOLS
-from settings import (COMPACT_AT, COMPACT_PICTURES_AT, MODEL, OWNER, RUNTIME, WORKBENCH, local_now, local_today, note_metric, user_background, voice_block, voice_notes)
+from settings import (COMPACT_AT, COMPACT_PICTURES_AT, LIGHT_MODEL, MODEL, OWNER, RUNTIME, WORKBENCH, local_now, local_today, note_metric, user_background, voice_block, voice_notes)
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic"}
 
@@ -184,7 +185,7 @@ class Turns:
     async def _run(self, job, instruction, attachments):
         chat, events, window = job.chat, job.events, job.window
         began = time.time()
-        output = None
+        output, kept, ended = None, None, "出错"
         try:
             # In a thread: on a new Mac this is what asks for the Desktop permission, and everything would wait for the answer.
             output = await asyncio.to_thread(make_output_dir, chat)
@@ -192,6 +193,7 @@ class Turns:
             if job.brain:
                 job.thread = self.thread
             self.on_thread[job.thread] = job
+            kept = await asyncio.to_thread(asked.begin, (chat or {}).get("name") or (window or {}).get("app"), instruction, output)
             said = await self._said_since(chat, fresh=not job.brain)
             pointed_at = set()
             parts = [recap] if recap else []
@@ -235,6 +237,7 @@ class Turns:
                 self.read_up_to[chat["username"]] = said[-1]["id"]
             answer = await self._finish(job)
             job.running = None
+            ended = "停了" if job.stopping else "差一步" if job.left_for_owner else "答完了" if answer else "没回答"
             if answer:
                 self.add("tako", answer, events, steps=job.steps)
                 self._remember_draft(last_draft(answer), chat)
@@ -243,7 +246,7 @@ class Turns:
                     self.limb_news = [*self.limb_news, f"（你的另一条触手刚在「{job.name}」替 {OWNER} 做了一件事。TA说：{instruction[:200]}\n结果：{answer[:400]}）"][-5:]
             elif not answer and not job.stopping:
                 self._say_failed(job, "这一轮没有给出回答，再说一次试试。")
-            note_metric(kind="turn", seconds=round(time.time() - began, 1), first_text=round(job.first_text - began, 1) if job.first_text else None, steps=len(job.steps), brain=job.brain, **usage_fields(job.usage))
+            note_metric(kind="turn", model=MODEL, seconds=round(time.time() - began, 1), first_text=round(job.first_text - began, 1) if job.first_text else None, steps=len(job.steps), brain=job.brain, **usage_fields(job.usage))
             self.feedback.count("turn", time.time() - began)
             self.feedback.count("job.left_a_step" if job.left_for_owner else "job.finished")
             for why in job.blocked:
@@ -270,6 +273,8 @@ class Turns:
             self.on_thread.pop(job.thread, None)
             if job.thread and not job.brain:
                 self._later(self.runtime.let_go(job.thread))
+            if kept:
+                await asyncio.to_thread(asked.end, kept, "停了" if job.stopping else ended, output)
             if output:
                 tidy_output_dir(output)
             if self.feedback.extract_due():
@@ -351,13 +356,13 @@ class Turns:
         began = time.time()
         runtime = self.runtime
         result = await runtime.start_thread(str(RUNTIME), sandbox="read-only", approval_policy="never", developer_instructions=instructions,
-                                            model=MODEL, effort=effort, config=READER_CONFIG)
+                                            model=LIGHT_MODEL, effort=effort, config=READER_CONFIG)
         thread = result["thread"]["id"]
         try:
             answer, usage = await self._ask_reader(thread, text)
         finally:
             await runtime.let_go(thread)  # A long-running app makes many of these; none should stay loaded.
-        note_metric(kind=kind, seconds=round(time.time() - began, 1), **usage_fields(usage))
+        note_metric(kind=kind, model=LIGHT_MODEL, seconds=round(time.time() - began, 1), **usage_fields(usage))
         return answer
 
     async def _ask_reader(self, thread, text):
@@ -422,35 +427,37 @@ class Turns:
             self.thread = None
             await self.runtime.start()
 
-    async def _brain(self, events=(), asked=None):
+    async def _brain(self, events=(), said=None):
         """One brain for every window. If its thread went away it comes back here, with what was said in this window as memory."""
         await self._alive()
+        jobs = ""
         if not self.thread:
             result = await self.runtime.start_thread(
                 str(Path.home()), sandbox="read-only", approval_policy="never", dynamic_tools=TOOLS,
                 developer_instructions=f"{PROMPT}\n\n{user_background()}", model=MODEL, config=BRAIN_CONFIG)
             self.thread, self.pictures = result["thread"]["id"], 0
             self.read_up_to = {}  # A new thread has seen none of it.
-        lines = self._said_here(events, asked) if self.brain_lost else ""
-        if not lines:
-            return ""
+            jobs = await asyncio.to_thread(asked.memory, OWNER)
+        lines = self._said_here(events, said) if self.brain_lost else ""
         self.brain_lost = False
-        return f"（你刚重启过。这是重启前这个窗口里说过的话，只是记忆，不是新要求；别的窗口说过的你不记得了，被问到就如实说。）\n{lines}"
+        here = f"（你刚重启过。这是重启前这个窗口里说过的话，只是记忆，不是新要求；别的窗口说过的你不记得了，被问到就如实说。）\n{lines}" if lines else ""
+        return "\n\n".join(part for part in (jobs, here) if part)
 
-    def _said_here(self, events, asked):
-        said = [e for e in events if e["role"] in ("owner", "tako") and e["text"] != asked][-12:]
+    def _said_here(self, events, said):
+        said = [e for e in events if e["role"] in ("owner", "tako") and e["text"] != said][-12:]
         return "\n".join(f"{OWNER if e['role'] == 'owner' else '你'}：{e['text'][:600]}" for e in said)
 
-    async def _limb(self, job, asked):
+    async def _limb(self, job, said):
         """The brain is busy in another window and this one should not wait: the same tools and rules on a thread of its own, let go of when done."""
         await self._alive()
         result = await self.runtime.start_thread(
             str(Path.home()), sandbox="read-only", approval_policy="never", dynamic_tools=TOOLS,
             developer_instructions=f"{PROMPT}\n\n{user_background()}", model=MODEL, config=BRAIN_CONFIG)
         job.thread = result["thread"]["id"]
-        lines = self._said_here(job.events, asked)
+        lines = self._said_here(job.events, said)
         memory = f"这是这个窗口里说过的话，只是记忆，不是新要求：\n{lines}" if lines else "这个窗口还没说过别的。"
-        return f"（你的另一条触手正在别的窗口替 {OWNER} 做事，这件事由你接手。{memory}）"
+        jobs = await asyncio.to_thread(asked.memory, OWNER)
+        return "\n\n".join(part for part in (f"（你的另一条触手正在别的窗口替 {OWNER} 做事，这件事由你接手。{memory}）", jobs) if part)
 
     def _note_step(self, job, item):
         kind = item.get("type")
