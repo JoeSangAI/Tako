@@ -9,7 +9,9 @@ committed WAL frames, and deserializes it into an in-memory SQLite handle.
 """
 from __future__ import annotations
 
+import glob
 import hashlib
+import html
 import json
 import re
 import sqlite3
@@ -116,12 +118,6 @@ def session_mark(username):
         con.close()
 
 
-def my_name():
-    _, me = account()
-    name = json.loads((WXEXPORT / "work/namemap.json").read_text())["names"].get(me)
-    return name if isinstance(name, str) else ""
-
-
 def find_chats(query):
     names = json.loads((WXEXPORT / "work/namemap.json").read_text())["names"]
     hits = [{"username": u, "name": n} for u, n in names.items() if isinstance(n, str) and query in n]
@@ -133,9 +129,26 @@ def _table(username):
     return "Msg_" + hashlib.md5(username.encode()).hexdigest()
 
 
+def received_file(content, when, folder):
+    """Where a file someone sent sits once WeChat has it: None when this isn't a file, "" when it isn't here. The name is theirs, so it only ever points inside this folder; WeChat numbers repeats ("a(1).docx"), so the size says which one this is."""
+    def tag(name):
+        found = re.search(rf"<{name}>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</{name}>", content, re.S)
+        return html.unescape(found.group(1)).strip() if found else ""
+
+    name = Path(tag("title")).name
+    if tag("type") != "6" or name in ("", ".", ".."):
+        return None
+    stem, suffix = Path(name).stem, Path(name).suffix
+    same = re.compile(re.escape(stem) + r"(\(\d+\))?" + re.escape(suffix))
+    size = tag("totallen")
+    found = [path for path in Path(folder).glob(f"*/{glob.escape(stem)}*{glob.escape(suffix)}")
+             if same.fullmatch(path.name) and path.is_file() and (not size.isdigit() or path.stat().st_size == int(size))]
+    return str(min(found, key=lambda path: abs(path.stat().st_mtime - when))) if found else ""
+
+
 def read_messages(con, username, after_id=0, limit=200):
     """Newest messages after a local_id, oldest first, with sender resolved."""
-    _, me = account()
+    root, me = account()
     names = json.loads((WXEXPORT / "work/namemap.json").read_text())["names"]
     senders = dict(con.execute("SELECT rowid, user_name FROM Name2Id"))
     try:
@@ -156,6 +169,8 @@ def read_messages(con, username, after_id=0, limit=200):
         out.append({"id": local_id, "time": created, "is_me": who == me,
                     "who": "我" if who == me else names.get(who, who or "对方"),
                     "text": _render((local_type or 0) & 0xFFFFFFFF, text)})
+        if (local_type or 0) & 0xFFFFFFFF == 49 and (file := received_file(text, created, root / "msg/file")) is not None:
+            out[-1]["file"] = file
     return out
 
 

@@ -49,11 +49,6 @@ def full_chat_name(chat, names, asked=None):
     return chat, fits
 
 
-def addressed(rows, names):
-    """A group is only worth judging when someone in it speaks to the owner."""
-    return any(not row["is_me"] and any(name.lower() in str(row["text"]).lower() for name in names if name) for row in rows)
-
-
 def last_draft(answer):
     found = re.findall(r"```draft[^\n]*\n(.*?)```", answer or "", re.S)
     return found[-1].strip() if found else ""
@@ -72,12 +67,6 @@ def learned_notes(answer, draft, sent):
             continue
         notes.append(f"- {line}")
     return "\n".join(notes[:15]) or None
-
-
-def knowledge_query(answer):
-    """The one line a tool-less reader writes to ask for a lookup: only ever a search term, never a command."""
-    found = re.search(r"^\s*【查】(.+)$", answer or "", re.M)
-    return " ".join(found.group(1).split())[:80] if found else None
 
 
 def clipped(text, limit=1500):

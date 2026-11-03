@@ -24,6 +24,7 @@ import feedback as fb  # noqa: E402
 import feedback_receiver as receiver  # noqa: E402
 import greetings as greet  # noqa: E402
 import guards  # noqa: E402
+import wechat_reader  # noqa: E402
 
 
 def source(name):
@@ -34,7 +35,7 @@ def native(name):
     return (NATIVE / f"{name}.swift").read_text()
 
 
-CHATS, TURNS, HANDS, LECTURE, PROMPTS, MAIN, ROUTES, KNOWLEDGE = map(source, ("chats", "turns", "hands", "lecture", "prompts", "tako_server", "routes", "knowledge"))
+CHATS, TURNS, HANDS, LECTURE, PROMPTS, MAIN, ROUTES = map(source, ("chats", "turns", "hands", "lecture", "prompts", "tako_server", "routes"))
 EVERYTHING = "".join(source(path.stem) for path in sorted(BRAIN.glob("*.py")))
 
 
@@ -45,6 +46,7 @@ class Greetings(unittest.TestCase):
     def test_only_the_apps_name_goes_out(self):
         body = CHATS[CHATS.index("async def _more_greetings"):CHATS.index("def _park")]
         self.assertIn('greet.ask_for(app)', body)
+        self.assertIn('greet.ask_for(greet.WECHAT_NAME)', body)
         self.assertIn('kind="greeting"', body)
         for private in ("title", "events", "history", "TOOLS", "start_thread"):
             self.assertNotIn(private, body.split('"""')[2].replace("self.events", ""))
@@ -81,11 +83,88 @@ class Greetings(unittest.TestCase):
         self.assertEqual(g.pick("Excel", day), greet.DAYS[(12, 25)])
         self.assertNotEqual(g.pick("Excel", day), greet.DAYS[(12, 25)])
 
+    def test_a_chat_gets_a_different_line_each_time_and_none_promises_to_speak_up(self):
+        g = self.fresh()
+        said = [g.in_a_chat() for _ in range(30)]
+        self.assertTrue(all(a != b for a, b in zip(said, said[1:])))
+        for line in greet.WECHAT:
+            self.assertEqual(greet.fit(line), line)
+            self.assertLessEqual(len(line), 22, line)
+            self.assertNotIn("新消息", line)
+        self.assertEqual(greet.fit("有新消息我帮你看一眼"), "")
+
+    def test_a_chat_batch_lasts_a_day_and_a_poor_answer_changes_nothing(self):
+        g = self.fresh()
+        noon, next_noon = 1_800_000_000, 1_800_000_000 + 86400
+        batch = "公式崩了就喊我\n草稿我来起头\n这句有点硬，我来揉\n客气话我存了一抽屉"
+        self.assertTrue(g.chat_lines_are_old(noon))
+        self.assertFalse(g.chat_lines_are_old(noon + 1), "a try just went out")
+        g.take_chat_lines("一句\n短", noon)
+        self.assertIn(g.in_a_chat(), greet.WECHAT)
+        self.assertTrue(g.chat_lines_are_old(noon + greet.RETRY_AFTER))
+        g.take_chat_lines(batch, noon)
+        self.assertIn(g.in_a_chat(), batch.splitlines())
+        self.assertFalse(g.chat_lines_are_old(noon + greet.RETRY_AFTER * 2))
+        self.assertTrue(g.chat_lines_are_old(next_noon))
+        g.take_chat_lines(batch, next_noon)
+        self.assertIn(g.in_a_chat(), batch.splitlines(), "yesterday's lines again are no new batch")
+        self.assertTrue(g.chat_lines_are_old(next_noon + greet.RETRY_AFTER))
+        again = greet.Greetings(pathlib.Path(g.path).parent)
+        self.assertEqual(again.state["chat_lines"], batch.splitlines())
+
     def test_secret_words_only_when_they_are_the_whole_message(self):
         self.assertTrue(greet.secret("章鱼烧！"))
         self.assertTrue(greet.secret("在吗？"))
         for real in ("帮我查一下章鱼烧的做法", "把这个表格摸摸清楚", "在吗 帮我改一下", ""):
             self.assertIsNone(greet.secret(real), real)
+
+
+class FilesPeopleSend(unittest.TestCase):
+    """A file message points at the real file, and the name in it, being someone else's words, can't point anywhere else."""
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp(prefix="tako-files-"))
+        self.addCleanup(shutil.rmtree, self.root)
+        (self.root / "msg/file/2026-11").mkdir(parents=True)
+        self.folder = self.root / "msg/file"
+
+    @staticmethod
+    def message(title, size=None):
+        return f"<msg><appmsg><title>{title}</title><type>6</type>" + (f"<appattach><totallen>{size}</totallen></appattach>" if size else "") + "</appmsg></msg>"
+
+    def found(self, content):
+        return wechat_reader.received_file(content, 1793666465, self.folder)
+
+    def test_says_where_it_is_and_when_it_isnt_here(self):
+        path = self.folder / "2026-11/附件4、介绍.docx"
+        path.write_bytes(b"12345")
+        self.assertEqual(self.found(self.message("附件4、介绍.docx", 5)), str(path))
+        self.assertEqual(self.found(self.message("<![CDATA[附件4、介绍.docx]]>", 5)), str(path))
+        self.assertEqual(self.found(self.message("没下载的.docx", 5)), "")
+
+    def test_only_a_file_message_counts(self):
+        self.assertIsNone(self.found("<msg><appmsg><title>一篇文章</title><type>5</type></appmsg></msg>"))
+
+    def test_the_size_tells_repeats_apart(self):
+        (self.folder / "2026-11/表.xlsx").write_bytes(b"old")
+        newer = self.folder / "2026-11/表(1).xlsx"
+        newer.write_bytes(b"newest")
+        (self.folder / "2026-11/表格别的.xlsx").write_bytes(b"newest")
+        self.assertEqual(self.found(self.message("表.xlsx", 6)), str(newer))
+
+    def test_a_name_cannot_leave_the_folder(self):
+        (self.root / "secret.txt").write_bytes(b"x")
+        for name in ("../../../secret.txt", "/etc/passwd", "..", "../.."):
+            self.assertFalse(self.found(self.message(name)), name)
+
+    def test_a_name_full_of_wildcards_is_only_a_name(self):
+        (self.folder / "2026-11/a.docx").write_bytes(b"x")
+        self.assertEqual(self.found(self.message("*.docx")), "")
+
+    def test_the_model_is_never_told_to_ask_for_the_foreground(self):
+        self.assertNotIn("front:true", PROMPTS + native("Operate"))
+        self.assertNotIn('"front"', PROMPTS)
+        self.assertNotIn('step["front"]', native("Operate"))
 
 
 class ScriptGuard(unittest.TestCase):
@@ -247,7 +326,7 @@ class FeedbackLeavesOnlyFixedShapes(unittest.TestCase):
     def test_extraction_reads_only_the_owners_words(self):
         self.tako.heard("Mail", "帮我回一下")
         self.assertEqual(self.tako.take_words(), "[Mail] 帮我回一下")
-        body = TURNS[TURNS.index("    async def turn("):TURNS.index("    async def _glance(")]
+        body = TURNS[TURNS.index("    async def turn("):TURNS.index("    async def _reader(")]
         self.assertIn('self.feedback.heard((window or {}).get("app"), "", failed=True)', body)
         self.assertEqual(EVERYTHING.count("self.feedback.heard("), 2)
         self.assertIn('self.feedback.heard((self.window or {}).get("app"), text)', MAIN[MAIN.index("    def ask(self, text"):MAIN.index("async def main(")])
@@ -270,9 +349,9 @@ class FeedbackLeavesOnlyFixedShapes(unittest.TestCase):
         self.assertLess(body.index("self._card("), body.index("self.feedback.send"))
         self.assertIn("fb.scrub(", body[:body.index("self._card(")])
 
-    def test_a_turn_someone_else_started_cant_reach_it(self):
-        call = HANDS[HANDS.index("async def _tool"):HANDS.index("async def _run_tool")]
-        self.assertIn('if job.origin != "owner":\n            return self._reply(', call)
+    def test_only_the_owners_threads_can_reach_it(self):
+        self.assertIn('job = self.on_thread.get(params.get("threadId"))', HANDS)
+        self.assertIn('if not job:\n                return self._reply("这个线程没有工具。", ok=False)', HANDS)
 
     def test_no_key_in_the_code(self):
         code = source("feedback") + (ROOT / "server" / "feedback_receiver.py").read_text()
@@ -364,7 +443,7 @@ class WorkbenchTakesOnlyOwnersWords(unittest.TestCase):
         self.assertEqual(hands.count("?.activate()"), 2, "bringing a window forward is for a button the owner pressed, and the file picker they opened")
         # Every use of the real pointer and keyboard in a step goes through the one door, behind the one check that the owner is away.
         step = operate[operate.index("func step(_ step"):operate.index("/// While the real pointer is in use")]
-        self.assertEqual(step.count("withRealPointer"), step.count("guard ownerIsAway(from: win) else { return waitForFront(win) }"))
+        self.assertEqual(step.count("withRealPointer"), step.count("guard await ownerSettles(on: win) else { return waitForFront(win) }"))
         before = step.split("await withRealPointer")
         self.assertTrue(all("mouse(." not in piece and ".post(tap:" not in piece for piece in before[:1]))
 
@@ -391,43 +470,25 @@ class WorkbenchTakesOnlyOwnersWords(unittest.TestCase):
     def test_a_job_uses_tools_only_on_a_thread_the_owner_started(self):
         self.assertIn('job = self.on_thread.get(params.get("threadId"))', HANDS)
         self.assertNotIn("self.on_thread[", TURNS[TURNS.index("    async def _reader("):TURNS.index("    async def _compact_if_long(")])
-        self.assertNotIn("self.on_thread[", TURNS[TURNS.index("    async def _glance("):TURNS.index("    async def _reader(")])
 
-    def test_incoming_messages_cannot_reach_it(self):
-        call = HANDS[HANDS.index("async def _tool"):HANDS.index("async def _run_tool")]
-        self.assertIn('if job.origin != "owner"', call)
+    def test_a_thread_nobody_owns_has_no_hands(self):
+        self.assertIn('if not job:\n                return self._reply("这个线程没有工具。", ok=False)', HANDS)
+        self.assertIn('if not job:\n                return {"decision": "decline"}', HANDS)
 
 
 class SomeoneElsesMessage(unittest.TestCase):
-    def test_gets_no_tools_at_all(self):
-        glance = TURNS[TURNS.index("async def _glance"):TURNS.index("async def _compact_if_long")]
-        self.assertIn("config=READER_CONFIG", glance)
-        self.assertNotIn("dynamic_tools", glance)
-        self.assertIn("network=False", glance)
-        self.assertNotIn("execution_directory", glance)
+    def test_starts_nothing(self):
+        self.assertNotIn("self.turn(", CHATS)
+        poll = CHATS[CHATS.index("async def poll_forever"):CHATS.index("# ---- learning from what the owner actually sends")]
+        self.assertNotIn("_reader", poll)
+        self.assertNotIn("self.add(", CHATS)
 
-    def test_a_lookup_is_a_fixed_read_only_command(self):
-        lookup = KNOWLEDGE[KNOWLEDGE.index("def knowledge_lookup"):]
-        self.assertIn('"query", "--mode", "knowledge", "--limit", "5", "--", query]', lookup)
-        self.assertNotIn("shell=True", lookup)
-        self.assertNotIn("--external", lookup)
-        self.assertIn("is_relative_to(KNOWLEDGE_DIR", lookup)
-
-    def test_a_lookup_request_is_only_a_search_term_and_never_shown(self):
-        query = guards.knowledge_query
-        self.assertEqual(query("【查】碰一下  全球品牌\n别的"), "碰一下 全球品牌")
-        self.assertEqual(query("Alex 想找案例。\n\n【查】乐高 碰一下"), "乐高 碰一下")
-        self.assertIsNone(query("Alex 想看案例"))
-        self.assertLessEqual(len(query("【查】" + "很长" * 100)), 80)
-        reader = TURNS[TURNS.index("async def _reader"):TURNS.index("async def _ask_reader")]
-        self.assertIn("return SILENT if knowledge_query(answer)", reader)
-
-    def test_a_group_is_judged_only_when_it_speaks_to_the_owner(self):
-        called = guards.addressed
-        names = ("Alex", "@所有人")
-        self.assertTrue(called([{"is_me": False, "text": "Alex 这个怎么看"}], names))
-        self.assertFalse(called([{"is_me": False, "text": "今天天气不错"}], names))
-        self.assertFalse(called([{"is_me": True, "text": "Alex 在"}], names))
+    def test_a_throwaway_thread_gets_no_tools_at_all(self):
+        reader = TURNS[TURNS.index("async def _reader"):TURNS.index("async def _compact_if_long")]
+        self.assertIn("config=READER_CONFIG", reader)
+        self.assertNotIn("dynamic_tools", reader)
+        self.assertIn("network=False", reader)
+        self.assertNotIn("execution_directory", reader)
 
     def test_every_turn_is_told_the_time_in_the_owners_zone(self):
         settings = source("settings")
@@ -435,9 +496,8 @@ class SomeoneElsesMessage(unittest.TestCase):
         for name in ("local_today", "local_now"):
             body = settings[settings.index(f"def {name}"):]
             self.assertIn("dt.datetime.now(ZONE)", body[:body.index("\n\n")])
-        turn = TURNS[TURNS.index("async def turn"):TURNS.index("async def _glance")]
+        turn = TURNS[TURNS.index("async def turn"):TURNS.index("async def _reader")]
         self.assertIn("local_now()", turn)
-        self.assertIn("local_now()", TURNS[TURNS.index("def _reader_context"):TURNS.index("async def _reader(")])
 
 
 class LearningFromEdits(unittest.TestCase):
@@ -571,10 +631,6 @@ class NeverSends(unittest.TestCase):
     def test_only_these_apps_are_off_limits_and_dingtalk_is_one(self):
         self.assertIn('"钉钉"', native("Windows").split("blockedOwners")[1].split("\n")[0])
 
-    def test_incoming_messages_cannot_use_tools(self):
-        self.assertIn('if job.origin != "owner":\n            return self._reply(', HANDS)
-        self.assertIn('origin="message"', CHATS)
-
 
 class Listening(unittest.TestCase):
     def test_what_a_class_says_cannot_act(self):
@@ -644,7 +700,7 @@ class FirstRun(unittest.TestCase):
     def _clock_in(self, config):
         home = tempfile.mkdtemp()
         (pathlib.Path(home) / "config.json").write_text(json.dumps(config))
-        code = "import os, time, settings; print(settings.hour_minute(0), time.strftime('%H:%M', time.localtime(0)), os.environ.get('TZ'))"
+        code = "import os, time, settings; print(settings.clock(0).split()[1], time.strftime('%H:%M', time.localtime(0)), os.environ.get('TZ'))"
         env = {**os.environ, "TAKO_HOME": home, "TZ": "America/New_York", "PYTHONPATH": str(BRAIN)}
         return subprocess.run([sys.executable, "-B", "-c", code], capture_output=True, text=True, env=env).stdout.split()
 
@@ -655,10 +711,8 @@ class FirstRun(unittest.TestCase):
         for config in ({}, {"timezone": "Not/AZone"}):
             self.assertEqual(self._clock_in(config)[2], "America/New_York", config)
 
-    def test_the_panel_prints_the_time_it_is_given(self):
-        page = (BRAIN / "side.html").read_text()
-        self.assertNotIn("toLocaleTimeString", page)
-        self.assertIn("s.polled_time", page)
+    def test_the_panel_has_no_clock_of_its_own(self):
+        self.assertNotIn("toLocaleTimeString", (BRAIN / "side.html").read_text())
 
     def test_an_update_reaches_someone_stuck_on_a_step(self):
         page = (BRAIN / "side.html").read_text()

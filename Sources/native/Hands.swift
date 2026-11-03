@@ -331,7 +331,8 @@ extension Controller {
                 return found
             }
         }
-        let title = currentTitle(id: win.id)
+        // WPS says "[只读]" in front of a file it opened read-only; the name of the file is what's after it.
+        let title = currentTitle(id: win.id).replacingOccurrences(of: "[只读]", with: "")
         guard !title.isEmpty, title.contains(".") else { return nil }
         // A browser tab named after a website gets here too; lsof can take a while and the goo must keep moving.
         let pid = win.pid
@@ -481,7 +482,7 @@ extension Controller {
             return ["ok": false, "error": "这个窗口的光标不在输入框里，没有填。先用 operate_window 点一下输入框，再填一次"]
         }
         if !inserted {
-            guard ownerIsAway(from: win) else {
+            guard await ownerSettles(on: win) else {
                 goo.reachGoal = nil
                 return waitForFront(win)
             }

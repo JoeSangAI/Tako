@@ -609,9 +609,12 @@ class NeedingTheRealPointer(Base):
     def test_finishes_the_rest_then_goes_on_when_the_owner_is_back(self):
         seen = self.waiting_for_owner()
         self.assertFalse(seen["busy"], "nothing is running: the owner isn't held up either")
-        self.assertIn("切回去", seen["trouble"])
+        self.assertIn("不用专门切", seen["trouble"], "the panel never asks them over")
         reply = [r for r in self.tako.codex("tool_reply") if r["tool"] == "operate_window"][0]["reply"]
-        self.assertIn("先没做", json.dumps(reply, ensure_ascii=False))
+        said = json.dumps(reply, ensure_ascii=False)
+        self.assertIn("先没做", said)
+        self.assertIn("不要让 Alex 切窗口", said)
+        self.assertFalse(reply["success"], "a step that didn't happen isn't a success, in the counts either")
         self.back.set()
         self.tako.until(lambda s: len(self.tako.owner_turns()) == 2, "picked up by itself", 6)
         seen = self.tako.until(lambda s: not s["busy"] and len(self.tako.said(s)) == 2, "and answered", 5)
@@ -622,7 +625,7 @@ class NeedingTheRealPointer(Base):
         self.waiting_for_owner()
         self.tako.stick("Safari", "com.apple.Safari", "另一个页面", "2")
         seen = self.tako.until(lambda s: s["others"] and s["others"][0]["state"] == "held", "said here too", 4)
-        self.assertIn("切回去", seen["others"][0]["trouble"])
+        self.assertIn("不用专门切", seen["others"][0]["trouble"])
         self.assertEqual(seen["trouble"], "")
 
     def test_what_the_owner_says_next_replaces_the_wait(self):
@@ -638,6 +641,21 @@ class NeedingTheRealPointer(Base):
         self.waiting_for_owner()
         self.tako.native["isBack"] = lambda c: {"ok": False, "error": "没找到窗口"}
         self.tako.until(lambda s: not s["trouble"], "the wait over", 5)
+
+    def test_leaves_the_scene_on_this_mac_in_fixed_words(self):
+        self.tako.native["step"] = lambda c: {"ok": False, "needsFront": True, "why": "hand_moving", "error": "这一步后台做不了"}
+        self.tako.native["isBack"] = lambda c: {"ok": False}
+        self.tako.ask(steps(self.DRAG, {"say": "差拖动"}))
+        self.tako.until(lambda s: "差拖动" in self.tako.said(s), "answered", 5)
+        path = self.tako.home / "metrics.jsonl"
+        for _ in range(30):
+            scenes = [json.loads(line) for line in path.read_text().splitlines() if '"scene"' in line] if path.exists() else []
+            if scenes:
+                break
+            time.sleep(0.1)
+        self.assertEqual(scenes[0]["blocked"], ["hand_moving"])
+        self.assertEqual(scenes[0]["trail"], ["operate_window:failed"])
+        self.assertNotIn("差拖动", path.read_text())
 
     def test_a_window_under_the_owners_other_chrome_window_is_not_passed_off_as_seen(self):
         self.back = threading.Event()
@@ -820,6 +838,16 @@ class HandingAFileToAnotherApp(Base):
         self.assertEqual(seen["trouble"], "", "the panel reads trouble during a turn as the model being unreachable")
 
 
+class SeeingAFileWithoutAnApp(Base):
+    def test_a_file_is_seen_with_no_window_no_card_and_no_app(self):
+        self.tako.ask(steps({"call": "look_at_file", "args": {"path": "/no/such/介绍.docx"}}, {"say": "读内容"}))
+        self.tako.until(lambda s: not s["busy"] and self.tako.said(s), "answered", 8)
+        reply = [r for r in self.tako.codex("tool_reply") if r["tool"] == "look_at_file"][0]["reply"]
+        self.assertFalse(reply["success"])
+        self.assertIn("转不成图片", json.dumps(reply, ensure_ascii=False))
+        self.assertFalse([c for c in self.tako.commands if c["command"] not in ("resolve", "beginSteps", "endSteps")], "the app has no part in it")
+
+
 class WaitingOnAnotherWindow(Base):
     def setUp(self):
         super().setUp()
@@ -919,42 +947,134 @@ class Inside(unittest.IsolatedAsyncioTestCase):
     def chat(self, name):
         return {"username": f"{name}@chatroom", "name": name}
 
-    async def test_a_message_is_judged_in_the_chat_it_came_to(self):
-        a, b = self.chat("甲"), self.chat("乙")
-        said_a, said_b = [], []
-        a_rows = [{"id": 1, "time": 1_800_000_000, "who": "老王", "is_me": False, "text": "甲群的消息"}]
-        self.tako.chat, self.tako.events, self.tako.history = b, said_b, [{"id": 9, "time": 1_800_000_000, "who": "老李", "is_me": False, "text": "乙群的消息"}]
-        seen = {}
-        original = self.tako._reader
+    async def wechat(self, rows):
+        """A conversation as it is with a chat database behind it. Reads are counted and what reaches the model is kept."""
+        chats = __import__("chats")
+        self.addCleanup(setattr, chats, "HAS_WECHAT", chats.HAS_WECHAT)
+        self.addCleanup(setattr, chats, "POLL_SECONDS", chats.POLL_SECONDS)
+        chats.HAS_WECHAT, chats.POLL_SECONDS = True, 0.01
+        reads, prompts = [], []
 
-        async def reader(instructions, text, **kw):
-            seen["text"] = text
-            return "你要回一下"
-        self.tako._reader = reader
-        await self.tako.turn("判断", origin="message", where=(a, said_a, None), history=a_rows)
-        self.tako._reader = original
-        self.assertIn("甲群的消息", seen["text"])
-        self.assertNotIn("乙群的消息", seen["text"])
-        self.assertEqual([e["text"] for e in said_a], ["你要回一下"])
-        self.assertEqual(said_b, [])
-        self.assertEqual(self.tako.unsent, [], "what was said in 甲 must not land in 乙's memory")
-        self.assertEqual(self.tako.saved["甲@chatroom"]["unsent"][0]["text"], "你要回一下")
+        def read(chat, after, limit):
+            reads.append(after)
+            return None if rows is None else [row for row in rows if row["id"] > after][-limit:]
+        self.tako._read = read
+        await self.tako._alive()
+        self.addAsyncCleanup(self.tako.runtime.close)
+        real = self.tako.runtime.start_turn
 
-    async def test_a_glance_that_fails_says_nothing(self):
-        async def reader(*a, **kw):
-            raise self.turns.TurnFailed({"message": "x", "codexErrorInfo": "usageLimitExceeded"})
-        self.tako._reader = reader
-        chat = self.chat("甲")
-        await self.tako.turn("判断", origin="message", where=(chat, [], None), history=[])
-        self.assertEqual(self.tako.error, "")
-        self.assertEqual(self.tako.status, "idle")
+        async def start_turn(thread, text, **kw):
+            prompts.append(text)
+            return await real(thread, text, **kw)
+        self.tako.runtime.start_turn = start_turn
+        self.tako.greetings.state["chat_lines_day"] = time.strftime("%Y-%m-%d")
+        await self.tako.attach({"username": "xiaolin", "name": "小林"})
+        return reads, prompts
+
+    def row(self, number, text, is_me=False, at=1_800_000_000):
+        return {"id": number, "time": at, "who": "我" if is_me else "小林", "is_me": is_me, "text": text}
+
+    async def tick(self):
+        """Let the background loop run while the test watches."""
+        loop = asyncio.create_task(self.tako.poll_forever())
+        await asyncio.sleep(0.05)
+        loop.cancel()
+
+    async def test_a_message_coming_in_costs_nothing_and_shows_nothing(self):
+        rows = [self.row(1, "在吗")]
+        reads, prompts = await self.wechat(rows)
+        rows.append(self.row(2, "看一下这个"))
+
+        async def no_model(*a, **kw):
+            raise AssertionError("nobody asked")
+        self.tako._reader = no_model
+        await self.tick()
+        self.assertEqual(reads, [], "opening a chat or a new message reads nothing")
+        self.assertEqual(prompts, [])
+        self.assertEqual(self.tako.events, [])
+        self.assertEqual(self.tako.snapshot()["status"], "idle")
+        self.assertIn(self.tako.snapshot()["greeting"], __import__("greetings").WECHAT, "an empty panel gets a line that cost nothing")
+
+    async def test_the_first_chat_of_a_day_asks_for_new_lines_and_only_says_wechat(self):
+        await self.wechat([self.row(1, "保密的内容")])
+        asked = []
+        lines = ["公式崩了就喊我", "草稿我来起头", "这句有点硬，我来揉", "客气话我存了一抽屉"]
+
+        async def write(instructions, text, **kw):
+            asked.append(text)
+            return "\n".join(lines)
+        self.tako._reader = write
+        self.tako.greetings.state.pop("chat_lines_day")
+        await self.tako.attach({"username": "xiaolin", "name": "小林"})
+        await asyncio.sleep(0.01)
+        self.assertEqual(asked, ["软件：微信"])
+        await self.tako.attach({"username": "xiaohua", "name": "小花"})
+        await asyncio.sleep(0.01)
+        self.assertEqual(len(asked), 1, "one batch a day, however many chats")
+        self.assertIn(self.tako.snapshot()["greeting"], lines)
+        self.assertEqual(self.tako.events, [])
+
+    async def test_speaking_reads_what_the_model_has_not_seen(self):
+        rows = [self.row(1, "第一条")]
+        reads, prompts = await self.wechat(rows)
+        self.assertEqual(reads, [])
+        await self.tako.turn("帮我回")
+        self.assertIn("第一条", prompts[-1])
+        rows.append(self.row(2, "第二条"))
+        await self.tako.turn("再看看")
+        self.assertIn("第二条", prompts[-1])
+        self.assertNotIn("第一条", prompts[-1])
+        await self.tako.turn("还有吗")
+        self.assertNotIn("聊天记录", prompts[-1])
+
+    async def test_a_chat_it_cannot_read_is_said_out_loud_to_the_model(self):
+        _, prompts = await self.wechat(None)
+        await self.tako.turn("帮我回")
+        self.assertIn("这次没读到", prompts[-1])
+        self.assertEqual(self.tako.events[-1]["role"], "tako", "the turn still goes on")
+
+    async def test_a_limb_reads_the_chat_from_the_start_and_the_brain_still_gets_it(self):
+        rows = [self.row(1, "第一条")]
+        reads, prompts = await self.wechat(rows)
+        await self.tako.turn("帮我回")
+        rows.append(self.row(2, "第二条"))
+        async with self.tako.turns:  # The brain is busy in another window.
+            await self.tako.turn("这条呢")
+        self.assertIn("第一条", prompts[-1])
+        self.assertIn("第二条", prompts[-1])
+        await self.tako.turn("回来了")
+        self.assertIn("第二条", prompts[-1])
+        self.assertNotIn("第一条", prompts[-1])
+
+    async def test_a_new_brain_is_given_the_chat_again(self):
+        reads, prompts = await self.wechat([self.row(1, "第一条")])
+        await self.tako.turn("帮我回")
+        self.tako.thread = None
+        await self.tako.turn("再看看")
+        self.assertIn("第一条", prompts[-1])
+
+    async def test_a_draft_is_watched_only_until_sent_and_without_a_model(self):
+        now = int(time.time())
+        rows = [self.row(1, "在吗", at=now - 60)]
+        reads, prompts = await self.wechat(rows)
+        self.tako._chat_changed = lambda username: True
+        self.tako._remember_draft("好的，我下午发你", self.tako.chat)
+        rows.append(self.row(2, "下午发你", is_me=True, at=now))
+        self.tako.watching = False
+        await self.tick()
+        self.assertEqual(reads, [], "off the window it reads nothing")
+        self.tako.watching = True
+        await self.tick()
+        self.assertEqual(self.tako.drafts["xiaolin"]["sent"], ["下午发你"])
+        self.assertEqual(prompts, [])
+        self.assertEqual(self.tako.events, [])
 
     async def test_retries_dont_count_as_the_turn_moving(self):
         await self.tako._alive()
         self.addAsyncCleanup(self.tako.runtime.close)
         await self.tako._brain()
         thread = self.tako.thread
-        job = self.turns.Job("owner", None, [], None)
+        job = self.turns.Job(None, [], None)
         job.running = (thread, "t")
         self.tako.runtime._events[thread].append({"method": "error", "params": {"threadId": thread, "willRetry": True, "error": {"message": "x"}}})
         real_event, seen = self.tako.runtime.event, []
@@ -990,7 +1110,7 @@ class Inside(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(alive), 1, alive)
 
     async def test_a_reader_can_never_use_the_owners_turn(self):
-        self.tako.on_thread["the-brain"] = self.turns.Job("owner", None, [], None)
+        self.tako.on_thread["the-brain"] = self.turns.Job(None, [], None)
         ran = []
 
         async def run(name, args, job):
@@ -1042,7 +1162,7 @@ class Inside(unittest.IsolatedAsyncioTestCase):
                 beats.append(time.time())
                 await asyncio.sleep(0.02)
         beating = asyncio.create_task(heart())
-        work = asyncio.create_task(self.tako._propose(str(source), str(copy), "改了", self.turns.Job("owner", None, [], None)))
+        work = asyncio.create_task(self.tako._propose(str(source), str(copy), "改了", self.turns.Job(None, [], None)))
         while not self.tako.pending:
             await asyncio.sleep(0.01)
         self.tako.decide(next(iter(self.tako.pending)), True)

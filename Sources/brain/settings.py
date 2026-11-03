@@ -65,33 +65,22 @@ BACKGROUND = configured_path(CONFIG.get("background_file")) or RUNTIME / "about-
 WORKBENCH_SETTING = CONFIG.get("workbench") if isinstance(CONFIG.get("workbench"), dict) else {}
 WORKBENCH = os.environ.get("TAKO_WORKBENCH") or WORKBENCH_SETTING.get("url")  # Write tests point this at an isolated copy.
 WORKBENCH_CARDS = configured_path(WORKBENCH_SETTING.get("cards"))
-KNOWLEDGE = CONFIG.get("knowledge") if isinstance(CONFIG.get("knowledge"), dict) else {}
-KNOWLEDGE_COMMAND = configured_path(KNOWLEDGE.get("command"))
-KNOWLEDGE_DIR = configured_path(KNOWLEDGE.get("dir"))
-KNOWLEDGE_NAME = str(KNOWLEDGE.get("name") or "资料库")
 HAS_WORKBENCH = bool(WORKBENCH and WORKBENCH_CARDS and WORKBENCH_CARDS.is_file())
-HAS_KNOWLEDGE = bool(KNOWLEDGE_COMMAND and KNOWLEDGE_COMMAND.exists() and KNOWLEDGE_DIR and KNOWLEDGE_DIR.is_dir())
 HAS_WECHAT = reader.enable(CONFIG.get("wechat_export"))
 WECHAT = "com.tencent.xinWeChat"
-POLL_SECONDS = 3         # Only looks at file stats; the heavy read waits until this chat really changed.
+POLL_SECONDS = 3         # While a draft waits to be sent. Only looks at file stats; the heavy read waits until this chat really changed.
 FULL_READ_SECONDS = 60   # In case the session list misses a message.
 SENT_SETTLE_SECONDS = 45 # The owner often sends one reply in several messages.
-OPENED_DWELL_SECONDS = 4 # Clicking through chats is not opening one.
 COMPACT_AT = 120_000     # Input tokens per request at which the shared thread gets summarized.
 COMPACT_PICTURES_AT = 3_000_000  # Bytes of screenshots on the thread. They cost few tokens, but a reconnect uploads every one of them again.
 CONTEXT_MESSAGES = 30
 MAX_MESSAGE_CHARS = 2000
-GROUP_CALLS = (OWNER, *[str(name) for name in CONFIG.get("calls") or []], "@所有人")
 VOICE = RUNTIME / "voice.md"      # Habits learned from the owner's edits, never their sentences. Plain text they can read or change.
 METRICS = RUNTIME / "metrics.jsonl"  # Numbers only, never chat content.
 
 
 def clock(ts):
     return dt.datetime.fromtimestamp(ts, ZONE).strftime("%m-%d %H:%M")
-
-
-def hour_minute(ts):
-    return dt.datetime.fromtimestamp(ts, ZONE).strftime("%H:%M")
 
 
 def local_today():

@@ -33,7 +33,9 @@ from first_run import Setup, codex_on_path, find_codex
 from hands import Hands
 from lecture import Lectures
 from routes import serve
-from settings import HAS_WECHAT, HAS_WORKBENCH, INBOX, RUNTIME, app_version, clock, hour_minute
+from settings import HAS_WECHAT, HAS_WORKBENCH, INBOX, RUNTIME, app_version, clock
+
+SAME_THING_SECONDS = 600
 from turns import Turns
 
 
@@ -52,13 +54,10 @@ class Companion(Chats, Turns, Hands, Lectures):
         self.error = ""
         self.chat = chat
         self.thread = None
-        self.last_id = 0
-        self.unsent = []
+        self.read_up_to = {}   # chat -> newest message the brain's thread has been given
         self.signature = None
-        self.polled_at = 0.0
         self.generation = 0
         self.watching = True  # peeled off the window, it stops reading altogether
-        self.missed = False
         self.saved = {}        # conversations already visited, so returning to one keeps its thread
         self.offered = set()   # files the owner dragged or picked, which the panel may preview before they send them
         self.last_header = ""
@@ -74,6 +73,7 @@ class Companion(Chats, Turns, Hands, Lectures):
         self.rings = {}        # window -> the latest ring to draw again when the owner gets there
         self.held = {}         # conversation -> a job's last step, waiting for the owner to get to the window it needs; ("fill", conversation) -> a hand-over that finishes by itself
         self.picked_up = {}    # conversation -> turns a waiting step has started by itself since the owner last spoke there
+        self.last_spoke = {}   # conversation -> when the owner last spoke there: a word soon after another is the same thing still being explained
         self.said = []         # (message identity, the owner's words), newest last; memory only, across all windows
         self.lecture = None    # the class it is listening to: title, what it heard, notes. Memory only until it ends.
         self.ending_lecture = None  # just stopped, with its last piece of sound still on the way
@@ -85,14 +85,12 @@ class Companion(Chats, Turns, Hands, Lectures):
         self.pending = {}      # cards waiting for the owner: approvals and proposed changes
         self.outbox = queue.Queue()  # commands for the native side
         self.waiting = {}      # native commands waiting for their result
-        self.history = []      # this chat's recent messages, which a reader always sees; unsent empties when the brain has read them
         self.mark = None       # what the session list last said about this chat
         self.shard_signature = None
         self.read_at = 0.0
         self.desk = None       # today's items in a few words, refreshed in the background
         self.told = {}         # what the brain thread has already been given, so it isn't sent again
         self.drafts = {}       # chat -> the draft the owner last saw there and what they then sent; memory only
-        self.nudged = {}       # chat -> newest message when they last opened it, so one state is judged once
         self.learning = asyncio.Lock()
         self.compacted = (None, 0)  # thread, and its size when it was last summarized
         self.pictures = 0      # bytes of images on the brain thread since it was last summarized
@@ -111,10 +109,9 @@ class Companion(Chats, Turns, Hands, Lectures):
     def snapshot(self, after=0):
         job = self._here()
         status = job.status if job else self.status
-        # A turn started by an incoming message may still decide to say nothing, so it stays quiet until it is done.
-        partial = job.partial if job and job.origin == "owner" else ""
+        partial = job.partial if job else ""
         return {"chat": self.chat and self.chat["name"], "status": status, "error": self.error,
-                "polled_at": self.polled_at, "polled_time": hour_minute(self.polled_at) if self.polled_at else "", "gen": self.generation, "events": self.events[after:],
+                "gen": self.generation, "events": self.events[after:],
                 "kind": self.chat.get("kind", "wechat") if self.chat else "", "app": (self.window or {}).get("app", ""),
                 "greeting": (self.chat or {}).get("greeting", ""),
                 "bundle": (self.window or {}).get("bundle", ""),
@@ -155,6 +152,9 @@ class Companion(Chats, Turns, Hands, Lectures):
         self.said = [*self.said, (secrets.token_hex(8), text)][-50:]
         self.feedback.heard((self.window or {}).get("app"), text)
         here = (self.chat or {}).get("username") or id(self.events)
+        # How many words a thing takes is the measure of Tako: the fewer after the first, the better.
+        self.feedback.count("said.more" if time.time() - self.last_spoke.get(here, 0) < SAME_THING_SECONDS else "said.first")
+        self.last_spoke[here] = time.time()
         self.held.pop(here, None)  # They said something else: that comes first, and it decides what is still wanted.
         self.picked_up.pop(here, None)
         words = self._waiting_fill_note() + text
@@ -166,7 +166,6 @@ async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--chat", default="", help="聊天名称的一部分")
     parser.add_argument("--port", type=int, default=0)
-    parser.add_argument("--replay", type=int, default=0, help="把最后 N 条当作新消息，用于验证")
     parser.add_argument("--with-app", action="store_true", help="跟着 app 走：标准输入一关就退出")
     args = parser.parse_args()
     RUNTIME.mkdir(parents=True, exist_ok=True)
@@ -203,7 +202,7 @@ async def main():
             companion.error = "没有找到可读的对话"
         else:
             # Same-named groups exist; the most recently active one is the live conversation.
-            await companion.attach(max(candidates, key=lambda c: c[0])[1], args.replay)
+            await companion.attach(max(candidates, key=lambda c: c[0])[1])
     await companion.poll_forever()
 
 

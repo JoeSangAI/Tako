@@ -13,7 +13,7 @@ import feedback as fb
 import wechat_reader as reader
 from chats import render
 from guards import LOCAL_NAMES, SCRIPTABLE, clipped, full_chat_name, plain_command, same_chat, risky_script, unsafe_script, workbench_packet
-from outputs import back_up, change_problem, replace_file
+from outputs import back_up, change_problem, file_in_title, file_pictures, replace_file
 from settings import CONFIG, HAS_WECHAT, OWNER, WECHAT, WORKBENCH, WORKBENCH_CARDS, local_today
 
 FEEDBACK_KINDS = {"bug": "出了问题", "rough": "不好用", "wish": "想用的场景"}
@@ -30,11 +30,10 @@ class Hands:
                 return self._reply("这个线程没有工具。", ok=False)
             result = await self._tool(params.get("tool"), params.get("arguments") or {}, job)
             self._weigh(job, sum(len(item.get("imageUrl") or "") for item in result.get("contentItems") or []))
-            if job.origin == "owner":
-                self.feedback.count(f"tool.{params.get('tool')}" if result.get("success") else f"tool_failed.{params.get('tool')}")
+            self.feedback.count(f"tool.{params.get('tool')}" if result.get("success") else f"tool_failed.{params.get('tool')}")
             return result
         if method in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval"):
-            if not job or job.origin != "owner":
+            if not job:
                 return {"decision": "decline"}
             if method == "item/fileChange/requestApproval":
                 await asyncio.sleep(0.1)  # the item's own start event carries the paths
@@ -86,15 +85,18 @@ class Hands:
             self.waiting.pop(request, None)
 
     async def _unless_needs_front(self, job, command, timeout=30, **args):
-        """Nearly everything happens behind the owner's back. What needs the real pointer never takes it: the model finishes the rest, and the job picks it up when they are on the window that needs it."""
+        """Nearly everything happens behind the owner's back. What needs the real pointer never takes it and never asks them over: the model finds another way or finishes the rest, and if they happen on that window later it goes on by itself."""
         began = time.time()
         while True:
             result = await self.native(command, timeout=timeout, **args)
+            if job and result.get("noAnswer"):
+                job.blocked.append("no_answer")
             if not result.get("needsFront"):
                 return result
             if job:
+                job.blocked.append(result.get("why") or "front")
                 job.left_for_owner = {"window": str(result.get("id") or args.get("window") or job.window_id or ""), "app": result.get("app")}
-                return {"ok": False, "error": f"{result.get('error')}，先没做。后面能做的先做完，最后说一句差哪一步；{OWNER} 切到 {result.get('app') or '那个窗口'} 时你会被叫来接着做，TA不用开口。"}
+                return {"ok": False, "error": f"{result.get('error')}，先没做。不要让 {OWNER} 切窗口，也不要说在等TA。先换条路：文件、命令、脚本接口、聊天记录；换不了就把其余做完，最后说清差什么。"}
             # The owner just pressed a button on the panel: a few seconds for their hand to settle is all this takes.
             if time.time() - began > 8:
                 return {"ok": False, "error": f"{result.get('error')}，这一步没有做"}
@@ -116,10 +118,10 @@ class Hands:
         self.picked_up[key] = self.picked_up.get(key, 0) + 1
         # The window was in front and the step still could not be done: asking the model again only spends money until the owner leaves.
         if self.picked_up[key] > PICK_UPS:
-            self._say_to_owner(job.events, "差的这一步试了几次都没走通，先放下了。还要的话说一声。")
+            self.feedback.count("job.gave_up")
+            self._say_to_owner(job.events, "差的这一步在后台没走通，放下了，其余的都在上面。")
             return
-        where = "切回去" if window == job.window_id else f"切到 {app} "
-        mark = self.held[key] = {"name": job.name, "events": job.events, "trouble": f"差一步要 {app} 在前台，{where}就接着做。"}
+        mark = self.held[key] = {"name": job.name, "events": job.events, "trouble": f"差一步在后台做不了。不用专门切过去，你之后用到 {app} 时我接上。"}
         deadline = time.time() + COMING_BACK_SECONDS
         try:
             while self.held.get(key) is mark and time.time() < deadline:
@@ -239,14 +241,13 @@ class Hands:
         return result
 
     async def _tool(self, name, args, job):
-        # Whatever an incoming message says, it cannot make TAKO look around or act.
-        if job.origin != "owner":
-            return self._reply("这一轮由对方的新消息触发，不能看窗口，也不能动手。", ok=False)
         job.call_waiting = None
         job.tools_running += 1
         job.status = "working"
         try:
-            return self._once_is_enough(await self._run_tool(name, args, job), job, name)
+            result = self._once_is_enough(await self._run_tool(name, args, job), job, name)
+            job.trail.append(f"{name}:{'ok' if result.get('success', True) else 'failed'}")
+            return result
         except Exception as exc:
             # Whatever went wrong here, the model hears it and the turn goes on.
             self.feedback.error(f"tool.{name}", exc)
@@ -266,6 +267,8 @@ class Hands:
             return self._reply("\n".join(lines) or "没有打开的窗口")
         if name == "look_at_window":
             return await self._look(window, job)
+        if name == "look_at_file":
+            return await self._look_at_file(str(args.get("path") or ""), int(args.get("first") or 1))
         if name == "operate_window":
             return await self._operate(args.get("steps") or [], window, job)
         if name == "fill_input":
@@ -306,8 +309,8 @@ class Hands:
             lines.append(result["note"])
         if result.get("imageScale", 1) != 1:
             lines.append(f"截图比例：1 个窗口坐标点 = {result['imageScale']:.3f} 像素")
-        if result.get("document"):
-            lines.append(f"文件：{result['document']}")
+        if document := result.get("document") or await asyncio.to_thread(file_in_title, result.get("title")):
+            lines.append(f"文件：{document}")
         if result.get("elements"):
             lines.append("可以按的元素（编号 角色 名称 (x,y,宽,高)，编号到下次看窗口前有效）：\n" + str(result["elements"])[:14000])
         if result.get("lines"):
@@ -316,12 +319,23 @@ class Hands:
             lines.append("窗口文字：\n" + str(result["text"])[:9000])
         return self._reply("\n".join(lines), result.get("image"))
 
+    async def _look_at_file(self, path, first):
+        try:
+            pages = await asyncio.to_thread(file_pictures, path, max(1, first))
+        except (OSError, subprocess.SubprocessError) as exc:
+            return self._reply(f"这个文件转不成图片（{type(exc).__name__}），先读它的内容。", ok=False)
+        if not pages:
+            return self._reply("这个文件转不成图片，或者已经没有更多页了。先读它的内容。", ok=False)
+        said = f"{Path(path).name}：从第 {max(1, first)} 页起的 {len(pages)} 页。一次最多 6 页，后面还有就把 first 往后传。"
+        return {"success": True, "contentItems": [{"type": "inputText", "text": said}, *({"type": "inputImage", "imageUrl": f"data:image/jpeg;base64,{page}"} for page in pages)]}
+
     async def _operate(self, steps, window, job):
         target = await self.native("resolve", window=window)
         if not target.get("ok"):
             return self._reply(target.get("error", "没找到窗口"), ok=False)
         window = str(target.get("id") or "") or window  # Named once, the same window for every step, whatever comes to the front.
         done = []
+        fell_short = False
         run = job.running
         try:
             for step in steps[:40]:
@@ -337,6 +351,7 @@ class Hands:
                     result = await self._unless_needs_front(job, "step", timeout=40, window=window, step=step, confirmed=True)
                 if not result.get("ok"):
                     done.append(str(result.get("error") or "这一步没做成") + ("" if not result.get("refused") else "（这是底线，不要换办法绕过）"))
+                    fell_short = True
                     break
                 done.append(str(result.get("did") or "完成"))
         finally:
@@ -345,8 +360,8 @@ class Hands:
         report = "\n".join(done)
         if seen.get("ok"):
             more = str(seen.get("elements") or "")[:6000]
-            return self._reply(f"{report}\n\n现在的窗口：{seen.get('title')}\n可以按的元素：\n{more}", seen.get("image"))
-        return self._reply(report)
+            return self._reply(f"{report}\n\n现在的窗口：{seen.get('title')}\n可以按的元素：\n{more}", seen.get("image"), ok=not fell_short)
+        return self._reply(report, ok=not fell_short)
 
     async def _report_feedback(self, args, job):
         """Something the owner chose to say: nothing leaves until they have read exactly what would, and pressed send."""

@@ -1,4 +1,4 @@
-"""Which conversation it is on and what arrives there: sticking to a window, following WeChat, deciding whether to speak up, and learning from what the owner sends."""
+"""Which conversation it is on and what arrives there: sticking to a window, following WeChat, reading it when the owner speaks, and learning from what they send."""
 from __future__ import annotations
 
 import asyncio
@@ -12,14 +12,19 @@ from pathlib import Path
 
 import greetings as greet
 import wechat_reader as reader
-from guards import addressed, last_draft, learned_notes, normalized
-from prompts import LEARN_PROMPT, OPENED, SILENT
-from settings import (CONTEXT_MESSAGES, FULL_READ_SECONDS, GROUP_CALLS, HAS_WECHAT, MAX_MESSAGE_CHARS, OPENED_DWELL_SECONDS, OWNER, POLL_SECONDS, SENT_SETTLE_SECONDS, VOICE, WECHAT,
+from guards import learned_notes, normalized
+from prompts import LEARN_PROMPT
+from settings import (CONTEXT_MESSAGES, FULL_READ_SECONDS, HAS_WECHAT, MAX_MESSAGE_CHARS, OWNER, POLL_SECONDS, SENT_SETTLE_SECONDS, VOICE, WECHAT,
                       clock, note_metric, voice_notes)
 
 
 def render(rows):
-    return "\n".join(f"[{clock(m['time'])}] {m['who']}: {m['text'][:MAX_MESSAGE_CHARS]}" for m in rows)
+    def where(message):
+        if "file" not in message:
+            return ""
+        return f"（本机路径：{message['file']}）" if message["file"] else "（这个文件微信还没下到本机）"
+
+    return "\n".join(f"[{clock(m['time'])}] {m['who']}: {m['text'][:MAX_MESSAGE_CHARS]}{where(m)}" for m in rows)
 
 
 class Chats:
@@ -150,121 +155,66 @@ class Chats:
         if (self.window or {}).get("app") == app and not self.events and chat.get("greeting") in greet.PLAIN:
             chat["greeting"] = self.greetings.next(app) or chat["greeting"]
 
+    async def _new_chat_lines(self):
+        """Only the word WeChat goes out, on a throwaway thread with no tools, and nothing from any chat."""
+        try:
+            self.greetings.take_chat_lines(await self._reader(greet.CHAT_PROMPT, greet.ask_for(greet.WECHAT_NAME), effort="low", kind="greeting"))
+        except Exception:
+            return  # No model right now: the lines it has will do, and it asks again later.
+
     def _park(self):
         if self.chat:
-            self.saved[self.chat["username"]] = {"last_id": self.last_id, "unsent": self.unsent, "events": self.events, "history": self.history}
+            self.saved[self.chat["username"]] = {"events": self.events}
 
-    async def attach(self, chat, replay=0):
-        """Bind to one conversation; its recent messages become context, not news."""
+    async def attach(self, chat):
+        """Bind to one conversation. Nothing is read until the owner speaks."""
         self._park()
         self.generation += 1
-        generation = self.generation
+        if chat.get("kind") != "window":
+            chat["greeting"] = self.greetings.in_a_chat()
+            if self.greetings.chat_lines_are_old():
+                self._later(self._new_chat_lines())
         back = self.saved.get(chat["username"])
         self.chat, self.signature, self.mark = chat, None, None
         self.events = back["events"] if back else []
-        self.last_id = back["last_id"] if back else 0
-        self.unsent = back["unsent"] if back else []
-        self.history = back["history"] if back else []
         self.finished.pop(chat["username"], None)  # They're back: it's in front of them.
-        self.status, self.error = "reading", ""  # A running job keeps its own status and stop button, in its own conversation.
-        if chat.get("kind") == "window":
-            self.status = "idle"
-            return
-        reading_done = lambda: "idle" if self.status == "reading" else self.status
-        if back:
-            try:
-                rows = await asyncio.to_thread(self._read, chat, self.last_id, 200)
-            except Exception:
-                rows = None
-            if generation != self.generation:
-                return
-            if rows:
-                self.unsent = (self.unsent + rows)[-CONTEXT_MESSAGES:]
-                self.history = (self.history + rows)[-CONTEXT_MESSAGES:]
-                self.last_id = rows[-1]["id"]
-            self.polled_at = time.time()
-            self.status = reading_done()
-            self._later(self._opened(chat, generation))
-            return
-        try:
-            rows = await asyncio.to_thread(self._read, chat, 0, CONTEXT_MESSAGES)
-        except Exception:
-            rows, self.last_header = None, ""  # WeChat was mid-write; seeing the same title again tries again
-        if generation != self.generation:
-            return
-        if rows is None:
-            # No baseline yet, so whatever is read later is history, not news.
-            self.missed = True
-            self.status, self.error = reading_done(), "这段对话不在当前可读的消息库里"
-            return
-        cut = len(rows) - replay if replay else len(rows)
-        self.unsent, self.last_id = rows[:cut], rows[cut - 1]["id"] if cut > 0 else 0
-        self.history = rows[:cut]
-        self.polled_at = time.time()
-        self.status = reading_done()
-        if replay:
-            await self._take(rows[cut:])
-        else:
-            self._later(self._opened(chat, generation))
+        self.status, self.error = "idle", ""  # A running job keeps its own status and stop button, in its own conversation.
+
+    async def _said_since(self, chat, fresh=False):
+        """What a WeChat conversation has said that the model hasn't seen, read now because the owner spoke. Empty when there is nothing new, None when it can't be read. A thread of its own (fresh) has seen none of it."""
+        if not HAS_WECHAT or not chat or chat.get("kind") == "window":
+            return []
+        after = 0 if fresh else self.read_up_to.get(chat["username"], 0)
+        for wait in (0, 1, 2):  # WeChat may be mid-write.
+            await asyncio.sleep(wait)
+            with contextlib.suppress(Exception):
+                return await asyncio.to_thread(self._read, chat, after, CONTEXT_MESSAGES * 2 if after else CONTEXT_MESSAGES)
+        return None
 
     async def poll_forever(self):
+        """Only for learning: after a draft, whether the owner sent it. File stats until something moves, and no model call to look. No draft, no reading."""
         while True:
             await asyncio.sleep(POLL_SECONDS)
             self._settle_drafts()
-            if not self.chat or self.chat.get("kind") == "window":
-                continue
-            if not self.watching:
-                self.missed = True
+            chat = self.chat
+            draft = self.drafts.get(chat["username"]) if chat else None
+            if not draft or not self.watching:
                 continue
             try:
-                changed = await asyncio.to_thread(self._chat_changed, self.chat["username"])
-                self.polled_at = time.time()
-                if not changed:
-                    continue
-                generation = self.generation
-                rows = await asyncio.to_thread(self._read, self.chat, self.last_id, 200)
-                if rows and generation == self.generation:
-                    if self.missed:
-                        # What came in while it was off the window is context, not news.
-                        self.last_id = rows[-1]["id"]
-                        self.unsent = (self.unsent + rows)[-CONTEXT_MESSAGES:]
-                        self.history = (self.history + rows)[-CONTEXT_MESSAGES:]
-                    else:
-                        await self._take(rows)
-                self.missed = False
-                self.error = ""
-            except Exception as exc:
+                if await asyncio.to_thread(self._chat_changed, chat["username"]):
+                    rows = await asyncio.to_thread(self._read, chat, draft["after"], 200)
+                    if rows:
+                        draft["after"] = rows[-1]["id"]
+                        self._saw_sent(draft, rows)
+            except Exception:
                 self.shard_signature = None  # The session list won't say it again; the next full read picks these up.
-                self.error = f"读取失败：{type(exc).__name__}"
-
-    def _worth_judging(self, rows):
-        if rows[-1]["is_me"] or all(row["is_me"] for row in rows):
-            return False  # They have already answered.
-        if not str(self.chat["username"]).endswith("@chatroom"):
-            return True
-        return addressed(rows, (*GROUP_CALLS, reader.my_name()))
-
-    async def _take(self, rows):
-        self.last_id = rows[-1]["id"]
-        self.unsent.extend(rows)
-        self.history = (self.history + rows)[-CONTEXT_MESSAGES:]
-        self._saw_sent(rows)
-        for row in rows:
-            if not row["is_me"]:
-                self.add("wechat", f"{row['who']}: {row['text'][:200]}")
-        if self._worth_judging(rows):
-            # A turn the owner started may hold this up, and they may have moved on by then: it judges the chat the message came to.
-            await self.turn("这段对话有新消息，判断是否需要开口。", origin="message", where=(self.chat, self.events, self.window), history=self.history)
 
     # ---- learning from what the owner actually sends ----
     def _remember_draft(self, draft, chat, filled=False):
         if draft and chat and chat.get("kind") != "window":
-            self.drafts[chat["username"]] = {"text": draft, "time": time.time(), "filled": filled, "sent": [], "last": 0.0}
+            self.drafts[chat["username"]] = {"text": draft, "time": time.time(), "filled": filled, "sent": [], "last": 0.0, "after": self.read_up_to.get(chat["username"], 0)}
 
-    def _saw_sent(self, rows):
-        draft = self.drafts.get(self.chat["username"]) if self.chat else None
-        if not draft:
-            return
+    def _saw_sent(self, draft, rows):
         for row in rows:
             if row["is_me"] and row["time"] >= draft["time"] - 5 and not re.fullmatch(r"\[[^\]]{1,10}\]", str(row["text"]).strip()):
                 draft["sent"].append(str(row["text"]))
@@ -293,22 +243,3 @@ class Chats:
                     temporary = VOICE.with_suffix(".tmp")
                     temporary.write_text(notes + "\n")
                     temporary.replace(VOICE)
-
-    # ---- speaking up unasked ----
-    async def _opened(self, chat, generation):
-        """The owner opened a conversation. Almost always this says nothing. It runs beside their turns, so it can't hold up what they ask."""
-        await asyncio.sleep(OPENED_DWELL_SECONDS)
-        username = str(chat["username"])
-        if generation != self.generation or not self.watching or not self.history or username.endswith("@chatroom") or username == "filehelper":
-            return
-        newest = self.history[-1].get("id")
-        # Service accounts and chats where the owner never spoke hold no promise of their to remember.
-        if self.turns.locked() or self.nudged.get(username) == newest or not any(row.get("is_me") for row in self.history):
-            return
-        self.nudged[username] = newest
-        events = self.events
-        with contextlib.suppress(Exception):
-            answer = await self._reader(self._reader_instructions(), "\n\n".join([*self._reader_context(chat, self.history, events), OPENED]), kind="opened")
-            if answer and SILENT not in answer and generation == self.generation:
-                self.add("tako", answer, events)
-                self._remember_draft(last_draft(answer), chat)

@@ -174,7 +174,7 @@ extension Controller {
         guard CGPreflightScreenCaptureAccess() else { return ["ok": false, "error": "没有屏幕录制权限，看不到窗口"] }
         // The owner is working in this app, so the window can't be raised past them, and what Chrome last drew would pass for now.
         if isFront(win), coveredByItsOwn(win), drawsLikeChrome(win.pid) {
-            return ["ok": false, "needsFront": true, "id": win.id, "app": win.app, "error": "\(win.app) 的另一个窗口正盖在这个窗口上，它不更新被盖住的窗口，也不给里面的控件，现在看不到真实内容"]
+            return ["ok": false, "needsFront": true, "why": "covered", "id": win.id, "app": win.app, "error": "\(win.app) 的另一个窗口正盖在这个窗口上，它不更新被盖住的窗口，也不给里面的控件，现在看不到真实内容"]
         }
         if win.id == target?.id { goo.state = "reading"; enchant.setMood("reading") } else if isFront(win) { flash(win) }
         await askForAccessibleContent(win)
@@ -196,7 +196,7 @@ extension Controller {
         result["lines"] = read.0.prefix(220).map { "(\(Int($0.box.minX)),\(Int($0.box.minY)),\(Int($0.box.width)),\(Int($0.box.height))) \($0.text)" }.joined(separator: "\n")
         result["elements"] = surveyed.elements.enumerated().map { "[\($0.offset)] \($0.element.role.dropFirst(2)) \"\($0.element.label)\"\($0.element.value.isEmpty || $0.element.value == $0.element.label ? "" : " = \"\($0.element.value)\"") (\(Int($0.element.frame.minX)),\(Int($0.element.frame.minY)),\(Int($0.element.frame.width)),\(Int($0.element.frame.height)))" }.joined(separator: "\n")
         // Accessibility only knows the windows on this desktop.
-        if surveyed.elements.isEmpty, !openWindows().contains(where: { $0.id == win.id }) { result["note"] = "这个窗口不在当前桌面：只看得到画面，里面的东西按不了，要操作得等 用户 切到那个桌面。" }
+        if surveyed.elements.isEmpty, !openWindows().contains(where: { $0.id == win.id }) { result["note"] = "这个窗口不在当前桌面：只看得到画面，里面的东西按不了，换条路或先做别的。" }
         if let document = await documentPath(win) { result["document"] = document }
         if let picture = read.1 { result["image"] = picture }
         return result
@@ -251,8 +251,24 @@ extension Controller {
         }
     }
 
+    /// The window may well be in front with only their hand moving: that is a moment, not a reason to go back to the model.
+    @MainActor
+    func ownerSettles(on win: Win) async -> Bool {
+        for _ in 0..<30 {
+            if ownerIsAway(from: win) { return true }
+            guard isFront(win), !coveredByItsOwn(win) else { return false }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return false
+    }
+
+    /// Three different things: saying "not in front" for all of them told the owner something false.
     func waitForFront(_ win: Win) -> [String: Any] {
-        ["ok": false, "needsFront": true, "id": win.id, "app": win.app, "error": "这一步要 \(win.app) 在前台才能做"]
+        let why = !isFront(win) ? "not_front" : coveredByItsOwn(win) ? "covered" : "hand_moving"
+        let said = ["not_front": "这一步后台做不了：要真键鼠，\(win.app) 不在前台",
+                    "covered": "这一步后台做不了：\(win.app) 自己的另一个窗口盖着它",
+                    "hand_moving": "这一步后台做不了：要真键鼠，\(win.app) 在前台但用户的手一直在动"][why] ?? ""
+        return ["ok": false, "needsFront": true, "why": why, "id": win.id, "app": win.app, "error": said]
     }
 
     /// What sits at a point of this window, asked of its own app, which knows whatever else covers that spot on the screen.
@@ -648,8 +664,6 @@ extension Controller {
     func step(_ step: [String: Any], in win: Win, confirmed: Bool) async -> [String: Any] {
         lastStep = CACurrentMediaTime()
         let action = step["action"] as? String ?? ""
-        // The model saw nothing happen behind the owner's back and asks for the real thing.
-        let realOnly = step["front"] as? Bool ?? false
         await surface(win)
         if win.id == target?.id { goo.state = "working"; enchant.setMood("working") }
         switch action {
@@ -682,13 +696,13 @@ extension Controller {
                 }
                 tapMark(screen, in: win)
             }
-            if !realOnly, action == "click", pressBehindTheOwner(element?.ax, at: screen, in: win) {
+            if action == "click", pressBehindTheOwner(element?.ax, at: screen, in: win) {
                 // pressed without moving the pointer at all
-            } else if !realOnly, action == "right_click", let found = element?.ax ?? self.element(at: screen, in: win),
+            } else if action == "right_click", let found = element?.ax ?? self.element(at: screen, in: win),
                       AXUIElementPerformAction(found, kAXShowMenuAction as CFString) == .success {
                 // the same menu, also without the pointer
             } else {
-                guard ownerIsAway(from: win) else { return waitForFront(win) }
+                guard await ownerSettles(on: win) else { return waitForFront(win) }
                 await withRealPointer {
                     if action == "right_click" {
                         mouse(.rightMouseDown, at: screen, button: .right)
@@ -715,10 +729,7 @@ extension Controller {
             // A control character typed key by key can act as Return; pasted it is only text.
             let plain = !text.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) || $0 == "\u{2028}" || $0 == "\u{2029}" }
             await letTheOwnerFinishTyping(in: win)
-            if realOnly {
-                guard ownerIsAway(from: win) else { return waitForFront(win) }
-                await withRealPointer { await paste(text, files: []) }
-            } else if await !insertBehindTheOwner(text, in: win) {
+            if await !insertBehindTheOwner(text, in: win) {
                 if !plain { return await realPaste(text, in: win) }
                 if await !typeBehindTheOwner(text, in: win) { return await realPaste(text, in: win) }
             }
@@ -730,10 +741,10 @@ extension Controller {
             let (flags, key) = chord(keys)
             guard let code = keyCodes[key] else { return ["ok": false, "error": "不认识这个键：\(keys)"] }
             await letTheOwnerFinishTyping(in: win)
-            if !realOnly, keysLandIn(win) {
+            if keysLandIn(win) {
                 press(code, flags: flags, to: win.pid)
             } else {
-                guard ownerIsAway(from: win) else { return waitForFront(win) }
+                guard await ownerSettles(on: win) else { return waitForFront(win) }
                 await withRealPointer { press(code, flags: flags) }
             }
             try? await Task.sleep(nanoseconds: 220_000_000)
@@ -743,14 +754,13 @@ extension Controller {
             guard CGRect(origin: .zero, size: win.frame.size).contains(CGPoint(x: x, y: y)) else { return ["ok": false, "error": "这个位置在窗口外面"] }
             let screen = CGPoint(x: win.frame.minX + x, y: win.frame.minY + y)
             let amount = Int32(max(-100, min(100, step["amount"] as? Double ?? -5)))
-            if realOnly {
-                guard ownerIsAway(from: win) else { return waitForFront(win) }
+            if await !scrollBehindTheOwner(at: screen, lines: Int(amount), in: win) {
+                // Sending the wheel to that window alone doesn't move WeChat or WPS (tried 2026-11-03): only with the owner already here and idle.
+                guard await ownerSettles(on: win) else { return waitForFront(win) }
                 await withRealPointer {
                     mouse(.mouseMoved, at: screen)
                     CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: amount, wheel2: 0, wheel3: 0)?.post(tap: .cghidEventTap)
                 }
-            } else if await !scrollBehindTheOwner(at: screen, lines: Int(amount), in: win) {
-                return ["ok": false, "error": "这里在后台滚不动，可以给这一步加 front:true，等窗口回到前台再滚"]
             }
             try? await Task.sleep(nanoseconds: 260_000_000)
             return ["ok": true, "did": "滚动了"]
@@ -762,7 +772,7 @@ extension Controller {
             for point in [CGPoint(x: x1, y: y1), CGPoint(x: x2, y: y2)] {
                 if let stop = gateClick(label: await labelAt(point, in: win), at: point, in: win, confirmed: confirmed) { return stop }
             }
-            guard ownerIsAway(from: win) else { return waitForFront(win) }
+            guard await ownerSettles(on: win) else { return waitForFront(win) }
             let from = CGPoint(x: win.frame.minX + x1, y: win.frame.minY + y1), to = CGPoint(x: win.frame.minX + x2, y: win.frame.minY + y2)
             await withRealPointer {
                 mouse(.leftMouseDown, at: from)
@@ -780,14 +790,14 @@ extension Controller {
             guard let ref = step["ref"] as? Int, !wanted.isEmpty else { return ["ok": false, "error": "choose 要给下拉框的 ref 和选项文字 text"] }
             guard let known = elements[win.id], known.indices.contains(ref) else { return ["ok": false, "error": "编号 \(ref) 已过期，重新看一下窗口"] }
             if let stop = gateClick(label: wanted, at: CGPoint(x: known[ref].frame.midX, y: known[ref].frame.midY), in: win, confirmed: confirmed) { return stop }
-            guard AXUIElementPerformAction(known[ref].ax, kAXPressAction as CFString) == .success else { return ["ok": false, "error": "这个下拉框打不开，可以给 click 加 front:true，等窗口回到前台再选"] }
+            guard AXUIElementPerformAction(known[ref].ax, kAXPressAction as CFString) == .success else { return ["ok": false, "error": "这个下拉框在后台打不开，换条路或先做别的"] }
             try? await Task.sleep(nanoseconds: 300_000_000)
             let options = menuItems(under: known[ref].ax)
             guard let option = options.first(where: { $0.label == wanted }) ?? options.first(where: { $0.label.contains(wanted) }) else {
                 AXUIElementPerformAction(known[ref].ax, kAXCancelAction as CFString)
                 return ["ok": false, "error": "下拉框里没有“\(wanted)”。选项有：\(options.map(\.label).joined(separator: "、"))"]
             }
-            guard AXUIElementPerformAction(option.ax, kAXPressAction as CFString) == .success else { return ["ok": false, "error": "“\(wanted)”按不下去，可以给 click 加 front:true，等窗口回到前台再选"] }
+            guard AXUIElementPerformAction(option.ax, kAXPressAction as CFString) == .success else { return ["ok": false, "error": "“\(wanted)”在后台按不下去，换条路或先做别的"] }
             return ["ok": true, "did": "选了 \(option.label)"]
         case "wait":
             try? await Task.sleep(nanoseconds: UInt64(max(0, min(step["seconds"] as? Double ?? 1, 8)) * 1e9))
@@ -799,7 +809,7 @@ extension Controller {
 
     @MainActor
     func realPaste(_ text: String, in win: Win) async -> [String: Any] {
-        guard ownerIsAway(from: win) else { return waitForFront(win) }
+        guard await ownerSettles(on: win) else { return waitForFront(win) }
         await withRealPointer { await paste(text, files: []) }
         return ["ok": true, "did": "输入了 \(text.prefix(30))"]
     }
@@ -831,7 +841,7 @@ extension Controller {
     func openChat(_ name: String, in win: Win) async -> [String: Any] {
         guard trusted else { return ["ok": false, "error": "没有辅助功能权限"] }
         // WeChat shows little to Accessibility, so this takes the real pointer, and waits for it.
-        guard ownerIsAway(from: win) else { return waitForFront(win) }
+        guard await ownerSettles(on: win) else { return waitForFront(win) }
         if side.isKeyWindow { side.resignKey() }
         let home = cursor()
         var left = home
