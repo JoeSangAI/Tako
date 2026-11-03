@@ -13,6 +13,7 @@ What a turn does is written in its own text as @@[...steps...]@@; with no steps 
   {"usage": n}                  reports n input tokens
 Everything received is written to $FAKE_CODEX_LOG, one JSON object per line.
 """
+import itertools
 import json
 import os
 import re
@@ -169,8 +170,12 @@ def main():
         sys.exit(0)
     if sys.argv[1:2] != ["app-server"]:
         sys.exit(0)
+    # Tako first starts one with nothing to say, only to build its databases: that is not a server starting.
+    first = sys.stdin.readline()
+    if not first:
+        sys.exit(0)
     note("started")
-    for line in sys.stdin:
+    for line in itertools.chain([first], sys.stdin):
         message = json.loads(line)
         if "method" in message:
             threading.Thread(target=handle, args=(message,), daemon=True).start()

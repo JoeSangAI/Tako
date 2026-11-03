@@ -30,6 +30,7 @@ Tako 不需要任何设置就能用。想让它更懂你，在 `~/Library/Applic
 | `output_root` | 做好的文件放哪 | `~/Desktop/Tako` |
 | `background_file` | 背景文件的位置 | `about-me.md` |
 | `extra_instructions` | 追加给模型的说明 | 无 |
+| `keep_codex_log` | 排查问题时设成 `true`：Codex 的完整日志（含窗口截图和文字）留在 `codex-state/`，下次启动清空。查完记得关 | 不留 |
 
 ## 可选的本地接入
 

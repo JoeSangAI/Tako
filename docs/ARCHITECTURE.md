@@ -93,7 +93,7 @@ Chrome 要先打开它的辅助功能才看得到网页里的东西（`askForAcc
 | `feedback.py` | 回传给作者的数字和固定词 | 改了就要同步改 `docs/PRIVACY.md` |
 | `greetings.py` | 开场白 | 彩蛋 |
 | `wechat_reader.py` | 可选的本机微信读取 | 微信数据库 |
-| `codex_runtime.py` | 和 Codex 的连接 | 协议 |
+| `codex_runtime.py` | 和 Codex 的连接；给它单独建状态库，日志不留行（`fresh_codex_state`） | 协议 |
 | `settings.py` | 这台 Mac 的配置和路径，其他文件都从这里取 | 新增一项配置 |
 | `side.html` | 面板网页，每隔一会儿拉 `/state` 并画出来 | 面板界面 |
 

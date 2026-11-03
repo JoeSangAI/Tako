@@ -8,14 +8,39 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
+import shutil
+import sqlite3
+import subprocess
+import tempfile
 from collections import defaultdict, deque
 from typing import Awaitable, Callable
+
+from settings import CONFIG, RUNTIME
+
+CODEX_STATE = RUNTIME / "codex-state"
 
 
 class RuntimeErrorCode(Exception):
     def __init__(self, code: str):
         super().__init__(code)
         self.code = code
+
+
+def fresh_codex_state(executable: str):
+    """Codex logs every tool result, whole screenshots included, to a database beside its state, whatever RUST_LOG says.
+    Threads here are ephemeral and need none of that state, so this server gets a new one of its own whose log keeps no rows.
+    An empty Codex home builds it, or Codex would first copy the first words of every past session into it, for minutes."""
+    shutil.rmtree(CODEX_STATE, ignore_errors=True)
+    CODEX_STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with tempfile.TemporaryDirectory() as empty, contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run([executable, "app-server", "--listen", "stdio://"], input=b"", capture_output=True, timeout=30,
+                       env={**os.environ, "CODEX_HOME": empty, "CODEX_SQLITE_HOME": str(CODEX_STATE)})
+    for log in CODEX_STATE.glob("logs_*.sqlite"):
+        with contextlib.suppress(sqlite3.Error), contextlib.closing(sqlite3.connect(log)) as db, db:
+            db.execute("DELETE FROM logs")
+            if not CONFIG.get("keep_codex_log"):
+                db.execute("CREATE TRIGGER keep_nothing BEFORE INSERT ON logs BEGIN SELECT RAISE(IGNORE); END")
 
 
 class CodexRuntime:
@@ -39,10 +64,12 @@ class CodexRuntime:
     async def start(self):
         if self.process is not None:
             raise RuntimeErrorCode("already_started")
+        await asyncio.to_thread(fresh_codex_state, self.executable)
         self.process = await asyncio.create_subprocess_exec(
             self.executable, "app-server", "--listen", "stdio://",
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE, limit=8 * 1024 * 1024)
+            stderr=asyncio.subprocess.PIPE, limit=8 * 1024 * 1024,
+            env={**os.environ, "CODEX_SQLITE_HOME": str(CODEX_STATE)})
         self.closed = False
         self._reader = asyncio.create_task(self._read())
         self._stderr = asyncio.create_task(self._drain_stderr())

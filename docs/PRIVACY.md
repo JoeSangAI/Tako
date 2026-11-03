@@ -50,8 +50,15 @@ Tako 测试版会回传匿名的错误和使用统计，帮作者找到大家共
 - `greetings.json`：每个软件备用的开场白和黏过的次数。
 - `backups/`：替换文件前的备份。
 - `config.json`、`about-me.md`：你自己写的设置和背景（可选）。
+- `inbox/`：你粘贴进面板的图片，下次启动时清空。
+- `panel.log`、`server.err`：这次运行的诊断记录（动作、软件的 bundle id、报错位置），不含窗口内容和你说的话；`panel.log` 每次启动清空。
+- `codex-state/`：Tako 专用的 Codex 状态库，每次启动重建。
 
-听课的声音每段转完文字就删除，不上传。窗口截图不写到磁盘。
+听课的声音每段转完文字就删除，不上传。窗口截图和窗口里的文字只在内存里，发给模型后不写到磁盘。
+
+**Codex 自己的日志：** Codex 默认把工具结果连同完整截图记进 `~/.codex/logs_2.sqlite`，最长保留 10 天，日志级别关不掉。这个文件这台电脑上的其他程序都能读。Tako 给自己的 Codex 单独建库，日志一行不留，所以 Tako 这一轮的内容不会进这个文件。排查问题时可以在 `config.json` 里打开 `keep_codex_log`，这时日志（含截图）留在 `codex-state/`，下次启动清空。
+
+**0.2.14 之前的 Tako 没有这样做：** 旧记录还在 `~/.codex/logs_2.sqlite`，Codex 最长 10 天后删掉，文件里被删的部分要等新内容覆盖才真正消失。想马上清掉，退出 Tako、Codex 和 ChatGPT 后删除 `~/.codex/logs_2.sqlite*`，Codex 下次启动会重建。你直接用 Codex 或 ChatGPT 时的日志由它们自己管，Tako 关不掉。
 
 ## 权限和用途
 

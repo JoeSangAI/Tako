@@ -19,7 +19,7 @@ case "${1:-}" in
     [ -n "$(notes)" ] || { echo "CHANGELOG.md has no section for $VERSION" >&2; exit 1; }
     "$ROOT/scripts/fetch_python.sh"
     mkdir -p "$ROOT/.local/release-tests"
-    for suite in test_guards test_first_run test_turns; do
+    for suite in test_guards test_first_run test_turns test_codex_log; do
       log="$ROOT/.local/release-tests/$suite.log"
       if ! "$ROOT/.build/python/bin/python3" -B -W ignore "$ROOT/tests/$suite.py" > "$log" 2>&1 || ! tail -1 "$log" | grep -q '^OK'; then
         echo "$suite failed: nothing goes out. Whole output: $log" >&2
