@@ -92,7 +92,15 @@ class Tako:
         return self.call("/state")
 
     def ask(self, text):
+        """Back once the server has taken the words. Until then the panel can still read not busy, and a test would take that for done."""
+        gen, before = self.owner_said(text)
         self.call("/ask", {"text": text})
+        # A window stuck to a moment ago may only now become the conversation shown: count again there.
+        self.until(lambda s: self.owner_said(text, s)[1] > (before if s["gen"] == gen else 0), "the words to be taken")
+
+    def owner_said(self, text, seen=None):
+        seen = seen or self.state()
+        return seen["gen"], sum(event["role"] == "owner" and event["text"].startswith(text) for event in seen["events"])
 
     def until(self, wanted, what="", timeout=8):
         deadline = time.time() + timeout
