@@ -504,7 +504,8 @@ class TheModelCantBeReached(Base):
     def test_a_heavy_thread_stops_retrying_and_the_next_sentence_goes_on_a_light_one(self):
         self.tako.native["look"] = lambda c: {"ok": True, "title": "稿子", "elements": "", "image": "x" * 1_600_000}
         self.tako.ask(steps({"call": "look_at_window", "args": {}}, {"retry": 2}, {"hang": True}))
-        seen = self.tako.until(lambda s: not s["busy"], "giving up")
+        # Not busy alone is also the moment before the job exists: the giving up is the error it leaves.
+        seen = self.tako.until(lambda s: not s["busy"] and s["error"], "giving up")
         self.assertIn("继续", seen["error"])
         first = self.tako.owner_turns()[-1]["threadId"]
         self.assertTrue(self.tako.requests("turn/interrupt"), "the old turn must not keep uploading")
