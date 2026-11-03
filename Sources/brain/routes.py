@@ -144,7 +144,7 @@ def serve(companion, token, port):
             if url.path == "/current" and isinstance(body.get("titles"), list):
                 if not HAS_WECHAT:
                     return self.reply({"ok": True})
-                companion.submit(companion.follow_header([str(t) for t in body["titles"]][:6]))
+                companion.submit(companion.follow_header([str(t) for t in body["titles"]][:12]))
                 return self.reply({"ok": True})
             if url.path == "/attach" and body.get("username") and HAS_WECHAT:
                 chat = {"username": str(body["username"]), "name": str(body.get("name", ""))}

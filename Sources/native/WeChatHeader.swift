@@ -20,22 +20,23 @@ extension Controller {
               lastBand == 0 || NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
         guard canCapture else { return }
         headerBusy = true
-        let id = current.id, width = current.frame.width
+        let id = current.id, width = current.frame.width, listEnd = listEnd
         Task.detached { [weak self] in
-            let titles = await Controller.headerTitles(windowID: id, width: width, previous: self?.lastBand ?? 0)
+            let titles = await Controller.headerTitles(windowID: id, width: width, previous: self?.lastBand ?? 0, listEnd: listEnd)
             await MainActor.run {
                 guard let self else { return }
                 self.headerBusy = false
                 if let titles {
                     self.lastBand = titles.band
+                    if titles.listEnd > 0 { self.listEnd = titles.listEnd }
                     self.log("header changed, \(titles.lines.count) lines")
-                    if !titles.lines.isEmpty { self.sendHeader(titles.lines) }
+                    if !titles.lines.isEmpty { self.sendHeader(titles.lines + titles.others) }
                 }
             }
         }
     }
 
-    static func headerTitles(windowID: Int, width: CGFloat, previous: Int) async -> (band: Int, lines: [String])? {
+    static func headerTitles(windowID: Int, width: CGFloat, previous: Int, listEnd known: CGFloat) async -> (band: Int, lines: [String], others: [String], listEnd: CGFloat)? {
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
             guard let window = content.windows.first(where: { Int($0.windowID) == windowID }) else { return nil }
@@ -60,14 +61,17 @@ extension Controller {
             request.recognitionLevel = .accurate
             request.usesLanguageCorrection = false
             try VNImageRequestHandler(cgImage: image).perform([request])
-            let found = (request.results ?? []).compactMap { o in
-                o.topCandidates(1).first.map { (x: o.boundingBox.minX, right: o.boundingBox.maxX, text: $0.string) }
+            let found = (request.results ?? []).compactMap { o -> (x: CGFloat, right: CGFloat, text: String, others: [String])? in
+                let guesses = o.topCandidates(3).map(\.string)
+                return guesses.first.map { (o.boundingBox.minX * width, o.boundingBox.maxX * width, $0, Array(guesses.dropFirst())) }
             }
-            // Everything left of the end of the search box is the chat list, not the title.
-            let listEnd = found.first(where: { $0.text.contains("搜索") })?.right ?? 0
-            let lines = found.filter { $0.x > listEnd && !$0.text.contains("搜索") }
-                .sorted { $0.text.count > $1.text.count }.map(\.text)
-            return (band, lines)
+            // Everything left of the end of the search box is the chat list, not the title. While the owner types a search the box
+            // shows their words instead of 搜索, and those would be read as the title: the list keeps its width, so the last edge seen holds.
+            let searchEnd = found.first(where: { $0.text.contains("搜索") })?.right ?? 0
+            let edge = searchEnd > 0 ? searchEnd : known
+            let title = found.filter { $0.x > edge && !$0.text.contains("搜索") }.sorted { $0.text.count > $1.text.count }
+            // A misread character is often right in the reader's second guess, kept apart: only following the chat may lean on it.
+            return (band, title.map(\.text), title.flatMap(\.others), searchEnd)
         } catch {
             return nil
         }

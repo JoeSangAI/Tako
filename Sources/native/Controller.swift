@@ -59,6 +59,9 @@ final class Controller: NSObject, NSApplicationDelegate {
     var spill: CGFloat = 0
     var stopSource: DispatchSourceSignal?, collapseSource: DispatchSourceSignal?, reportSource: DispatchSourceSignal?
     var headerBusy = false, lastBand = 0, canCapture = false, captureAsked = false
+    var listEnd: CGFloat = 0                  // where WeChat's chat list ends, in points, as of the last time its search box showed
+    var headerAt: CFTimeInterval = 0          // a click in WeChat may have opened another chat: read the title then, not on the next round
+    var stackUntil: CFTimeInterval = 0, wasPressed = false   // windows may be reordering until then: check every frame
     var lastWindowSign: CGFloat = 0, windowShakes: [CFTimeInterval] = []
     // self-test
     var testWindow: NSWindow?
@@ -191,6 +194,7 @@ final class Controller: NSObject, NSApplicationDelegate {
         // Switching apps reorders every window: catch up at once rather than on the next scan.
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] note in
             if let other = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication, other != NSRunningApplication.current { self?.lastApp = other }
+            self?.stackUntil = CACurrentMediaTime() + 0.8
             // The new app's windows come forward a moment after the notification.
             for delay in [0.0, 0.1, 0.3] { DispatchQueue.main.asyncAfter(deadline: .now() + delay) { self?.scan() } }
         }
@@ -249,8 +253,15 @@ final class Controller: NSObject, NSApplicationDelegate {
         if targetRefreshDue() { refresh() }
         refreshStanding()
         ticks += 1
-        if ticks % 30 == 0 { scan() }
-        if ticks % 30 == 0 { readHeaderIfDue() }
+        let pressed = NSEvent.pressedMouseButtons != 0
+        if pressed != wasPressed {
+            wasPressed = pressed
+            stackUntil = CACurrentMediaTime() + 0.5
+            if !pressed, isWeChat, NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { headerAt = CACurrentMediaTime() + 0.12 }
+        }
+        if ticks % 30 == 0 { scan() } else if pressed || CACurrentMediaTime() < stackUntil { keepStacked() }
+        if headerAt > 0, CACurrentMediaTime() >= headerAt, !headerBusy { headerAt = 0; readHeaderIfDue() }
+        else if ticks % 30 == 0 { readHeaderIfDue() }
         stepGlide()
         followScreen()
 

@@ -63,7 +63,7 @@ class Companion(Chats, Turns, Hands, Lectures):
         self.last_header = ""
         self.wanted_titles = None
         self.following = False
-        self.index = None
+        self.index, self.index_stamp = None, None
         self.window = None     # the window it is stuck to: app, bundle, title, id
         self.active = []       # every job under way, in the order they started
         self.on_thread = {}    # thread -> the owner's job on it; only these may use tools or ask for anything

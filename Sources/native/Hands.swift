@@ -429,7 +429,7 @@ extension Controller {
     /// Reads what conversation WeChat shows right now, off a picture of its window.
     @MainActor
     func titles(_ win: Win) async -> [String: Any] {
-        let found = await Controller.headerTitles(windowID: win.id, width: win.frame.width, previous: 0)
+        let found = await Controller.headerTitles(windowID: win.id, width: win.frame.width, previous: 0, listEnd: listEnd)
         return ["ok": found != nil, "lines": found?.lines ?? []]
     }
 

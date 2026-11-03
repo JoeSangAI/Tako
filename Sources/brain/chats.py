@@ -65,20 +65,24 @@ class Chats:
 
     # ---- which conversation is open ----
     def _candidates(self, titles):
-        """Usernames whose name matches what was read off the window header."""
-        if self.index is None:
-            names = json.loads((reader.WXEXPORT / "work/namemap.json").read_text())["names"]
-            self.index = {}
+        """Usernames whose name matches what was read off the window header. Every exact match before any near one: a second guess read right beats a first guess read nearly."""
+        path = reader.WXEXPORT / "work/namemap.json"
+        stamp = os.stat(path).st_mtime_ns
+        # The name list is refreshed as people are added and renamed: a chat with someone new has to be found without a restart.
+        if self.index is None or stamp != self.index_stamp:
+            names = json.loads(path.read_text())["names"]
+            self.index, self.index_stamp = {}, stamp
             for username, name in names.items():
                 if isinstance(name, str) and (key := normalized(name)):
                     self.index.setdefault(key, []).append({"username": username, "name": name})
-        for title in titles:
-            key = normalized(title)
-            # One letter or digit is OCR noise; one Chinese character can be a whole name, like the group "家", and only ever matches exactly.
-            if len(key) < 2 and not "一" <= key <= "鿿":
-                continue
+        # One letter or digit is OCR noise; one Chinese character can be a whole name, like the group "家", and only ever matches exactly.
+        keys = [key for key in map(normalized, titles) if len(key) >= 2 or "一" <= key <= "鿿"]
+        for key in keys:
             if key in self.index:
                 return key, self.index[key]
+        for key in keys:
+            if len(key) < 2:
+                continue
             near = [k for k in self.index if abs(len(k) - len(key)) <= 2 and (k[0] == key[0] or k[-1] == key[-1])]
             match = difflib.get_close_matches(key, near, n=1, cutoff=0.82)
             if match:

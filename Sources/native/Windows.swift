@@ -7,7 +7,8 @@ let weChatBundle = "com.tencent.xinWeChat"
 
 extension Controller {
     func keepAbove(_ found: (id: Int, frame: CGRect), in ids: [Int]) {
-        guard NSEvent.pressedMouseButtons == 0 else { return }
+        // A click on the window brings it forward on the press, not the release: catching up only after it let the goo blink behind it.
+        guard !dragging else { return }
         var below = found.id
         if sideOpen {
             let s = ids.firstIndex(of: side.windowNumber), t = ids.firstIndex(of: found.id)
@@ -19,10 +20,20 @@ extension Controller {
         guard goo.mode != .free && goo.mode != .grabbed else { return }
         // from the back: the window, the side window, its ink, the goo
         let ink = ids.firstIndex(of: enchant.panel.windowNumber), under = ids.firstIndex(of: below)
-        if enchant.panel.isVisible && !(ink != nil && under != nil && ink! < under!) { enchant.panel.order(.above, relativeTo: below) }
+        let inkMoved = enchant.panel.isVisible && !(ink != nil && under != nil && ink! < under!)
+        if inkMoved { enchant.panel.order(.above, relativeTo: below) }
         let top = enchant.panel.isVisible ? enchant.panel.windowNumber : below
         let g = ids.firstIndex(of: gooPanel.windowNumber), t = ids.firstIndex(of: top)
-        if !(g != nil && t != nil && g! < t!) { gooPanel.order(.above, relativeTo: top) }
+        // The ink just moved: the order read before that says nothing about the goo any more.
+        if inkMoved || !(g != nil && t != nil && g! < t!) { gooPanel.order(.above, relativeTo: top) }
+    }
+
+    /// Only the windows above its own, which is cheap enough to ask every frame while a click or an app switch may be reordering them.
+    func keepStacked() {
+        guard let current = target, goo.mode == .attached || goo.mode == .open,
+              let above = CGWindowListCopyWindowInfo(.optionOnScreenAboveWindow, CGWindowID(current.id)) as? [[String: Any]] else { return }
+        let ids = above.filter { ($0[kCGWindowLayer as String] as? Int) == 0 }.compactMap { $0[kCGWindowNumber as String] as? Int }
+        keepAbove(current, in: ids + [current.id])
     }
 
     // MARK: the window it is on
@@ -61,6 +72,7 @@ extension Controller {
 
     func windowGone() {
         let gone = target?.id
+        log("window gone")
         lostID = gone
         lostBundle = bundle
         target = nil
@@ -147,6 +159,7 @@ extension Controller {
             }
         }
         guard let found = best, let info = bestInfo else { return }
+        log(found.id == lostID ? "window back" : "found a window")
         target = found
         pid = pid_t(info[kCGWindowOwnerPID as String] as? Int ?? 0)
         appName = info[kCGWindowOwnerName as String] as? String ?? ""

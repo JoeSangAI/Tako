@@ -859,7 +859,7 @@ extension Controller {
         guard stillOurs() else { return takenOver }
         let want = Hands.normalize(name)
         // Already showing it: nothing to do.
-        if let shown = await Controller.headerTitles(windowID: win.id, width: win.frame.width, previous: 0), shown.lines.contains(where: { Hands.sameChat(name, $0) }) {
+        if let shown = await Controller.headerTitles(windowID: win.id, width: win.frame.width, previous: 0, listEnd: listEnd), shown.lines.contains(where: { Hands.sameChat(name, $0) }) {
             return ["ok": true]
         }
         // The search box sits at the top of the chat list; results open on a click, so Enter is never needed.
