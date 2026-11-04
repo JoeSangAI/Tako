@@ -28,6 +28,12 @@ Tako 是两个进程：**原生 app**（Swift）有系统权限，管小章鱼�
 
 工具调用只认登记在 `on_thread` 里的线程，也就是主人的任务所在的线程（`Hands.on_server_request`）。给一次性线程加工具，就是拆掉这条防线。
 
+## 主人的其他 Agent
+
+Claude Code、Codex 这类 Agent 替主人派活，走 `agents.py`：大脑启动时写 `agent.json`（端口和一个只给 agent 的令牌，权限 600），`tako_cli.py`（装好后是 `tako` 命令）读它，调 `/agent/ask`、`/agent/job`、`/agent/stop`、`/agent/windows`。这个令牌只开这几扇门，面板的令牌也开不了它们：审批卡片（`/decide`）永远只等主人自己点。
+
+一件转来的事就是一个普通的 `Job`：落在那个窗口自己的对话里（`_conversation_of`，面板上显示「〔Claude 转来〕…」），和主人亲口说的走同一条 `turn`，工具、写权限、发送防线、卡片都一样。不同的只有两处：它的话不进 `said`，所以写工作台仍只认主人在面板里的原话；它不 steer 正在跑的一轮，总是新开一件。结局记在 `Job.answer`、`Job.failed`，结束后保留一小时供 agent 来问。
+
 ## 末梢和中枢同权
 
 主人线程的权限和主人平时用的 Codex 一样，这是智能的前提：中枢能读到的，末梢也读得到。沙箱只限制写：
@@ -83,6 +89,8 @@ Chrome 要先打开它的辅助功能才看得到网页里的东西（`askForAcc
 |---|---|---|
 | `tako_server.py` | 共享状态 `Companion`、发给面板的快照、启动 | 加一项全局状态 |
 | `routes.py` | 本机 HTTP 路由，都要带令牌 | 面板或 app 要一个新接口 |
+| `agents.py` | 主人的其他 Agent 派活：门牌、转来的事、问结局、停 | agent 能做什么 |
+| `tako_cli.py` | `tako` 命令，给 agent 用，只用标准库 | agent 那头怎么调 |
 | `chats.py` | 粘窗口、认微信对话、主人开口时读对话、学写法 | 什么时候读 |
 | `turns.py` | 跑一轮、一次性线程、压缩、掉线恢复、停止、失败说明 | 模型交互和报错文案 |
 | `hands.py` | 工具实现、审批卡片、发命令给原生 app | 新增或修改工具 |

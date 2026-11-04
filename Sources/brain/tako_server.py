@@ -27,6 +27,7 @@ from urllib.parse import unquote
 import feedback as fb
 import greetings as greet
 import wechat_reader as reader
+from agents import Agents, open_door
 from chats import Chats
 from codex_runtime import CodexRuntime, RuntimeErrorCode
 from first_run import Setup, codex_on_path, find_codex
@@ -39,7 +40,7 @@ SAME_THING_SECONDS = 600
 from turns import Turns
 
 
-class Companion(Chats, Turns, Hands, Lectures):
+class Companion(Chats, Turns, Hands, Lectures, Agents):
     def __init__(self, chat):
         self.loop = None
         self.runtime = CodexRuntime(find_codex() or "codex", on_request=self.on_server_request)
@@ -94,6 +95,7 @@ class Companion(Chats, Turns, Hands, Lectures):
         self.learning = asyncio.Lock()
         self.compacted = (None, 0)  # thread, and its size when it was last summarized
         self.pictures = 0      # bytes of images on the brain thread since it was last summarized
+        self.agent_jobs = {}   # id -> a job one of the owner's other agents handed over, kept an hour after it ends so they can hear how
         self.tasks = set()
 
     def _later(self, work):
@@ -188,8 +190,9 @@ async def main():
     companion._later(companion.feedback_forever())
     if HAS_WORKBENCH:
         companion._later(companion.desk_forever())
-    token = secrets.token_urlsafe(18)
-    port = serve(companion, token, args.port)
+    token, agent_token = secrets.token_urlsafe(18), secrets.token_urlsafe(18)
+    port = serve(companion, token, args.port, agent_token)
+    open_door(port, agent_token)
     print(f"http://127.0.0.1:{port}/?t={token}", flush=True)
 
     if args.chat and HAS_WECHAT:

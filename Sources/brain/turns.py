@@ -50,6 +50,7 @@ class Job:
         self.left_for_owner = None  # a step needs a window in front, which and whose: when the owner is there, it goes on
         self.trail, self.blocked = [], []  # tools as they went and why a step couldn't go on behind the owner: fixed words only, for the record of how it ended
         self.changing = {}  # file changes under way: item id -> paths, so a card can say what would change
+        self.answer, self.failed = "", ""  # how it ended, for an agent that handed it over and is waiting to hear
         self.ended = asyncio.Event()
 
     @property
@@ -150,10 +151,10 @@ class Turns:
         picked = [str(name) for name in about.get("selected") or []]
         return f"｜这个文件夹：{folder}" + (f"｜选中的：{'、'.join(picked[:20])}" if picked else "")
 
-    async def turn(self, instruction, attachments=(), where=None):
+    async def turn(self, instruction, attachments=(), where=None, job=None):
         # The owner may switch chats while this waits or runs: the job belongs to where it was asked.
         chat, events, window = where or (self.chat, self.events, self.window)
-        job = Job(chat, events, window)
+        job = job or Job(chat, events, window)
         self.active.append(job)
         if events is self.events:
             self.error = ""
@@ -239,6 +240,7 @@ class Turns:
             job.running = None
             ended = "停了" if job.stopping else "差一步" if job.left_for_owner else "答完了" if answer else "没回答"
             if answer:
+                job.answer = answer
                 self.add("tako", answer, events, steps=job.steps)
                 self._remember_draft(last_draft(answer), chat)
                 self._tell_owner_elsewhere(job)
@@ -282,6 +284,7 @@ class Turns:
 
     def _say_failed(self, job, text):
         """On the panel if the owner is here; if they have moved on, it waits in that conversation with the rest."""
+        job.failed = text
         if job.events is self.events:
             self.error = text
         else:
@@ -571,8 +574,10 @@ class Turns:
         """Stops what the panel is showing. A job in another window goes on."""
         job = self._here()
         self.held.pop(("fill", (self.chat or {}).get("username") or id(self.events)), None)
-        if not job:
-            return
+        if job:
+            await self._stop(job)
+
+    async def _stop(self, job):
         self._dismiss_cards(job)  # a tool waiting on a card holds the turn open, so "stop" has to answer the card first
         job.stopping = True
         if job.running:

@@ -1,4 +1,6 @@
-"""The local HTTP doors: the panel and the app talk to the Python side through these, and every one needs the token."""
+"""The local HTTP doors: the panel and the app talk to the Python side through these, and every one needs the token.
+
+The owner's other agents have doors of their own under /agent/, with a token of their own that opens nothing else (`agents.py`)."""
 from __future__ import annotations
 
 import base64
@@ -21,7 +23,7 @@ for _kind, _suffix in (("image/heic", ".heic"), ("image/heif", ".heif"), ("image
     mimetypes.add_type(_kind, _suffix)
 
 
-def serve(companion, token, port):
+def serve(companion, token, port, agent_token=None):
     page = (HERE / "side.html").read_bytes().replace(b"TOKEN", token.encode())
     renderer = (HERE / "vendor" / "markdown-it.min.js").read_bytes()
 
@@ -42,9 +44,31 @@ def serve(companion, token, port):
         def allowed(self, query):
             return secrets.compare_digest(query.get("t", [""])[0], token)
 
+        def agent(self, url, body):
+            """An agent hands over a job, asks how it is going, or stops it. Never a card: those wait for the owner."""
+            if not agent_token or not secrets.compare_digest(self.headers.get("Authorization", ""), f"Bearer {agent_token}"):
+                return self.reply({"error": "forbidden"}, code=403)
+            query = parse_qs(url.query)
+            try:
+                if url.path == "/agent/ask" and body is not None and str(body.get("text", "")).strip():
+                    work = companion.agent_ask(str(body["text"]).strip(), str(body.get("window") or "") or None,
+                                               [str(f) for f in body.get("files") or []], str(body.get("from") or "Agent")[:40])
+                    return self.reply(companion.submit(work).result(timeout=15))
+                if url.path == "/agent/job" and query.get("id"):
+                    return self.reply(companion.agent_job(query["id"][0]))
+                if url.path == "/agent/stop" and body is not None and body.get("id"):
+                    return self.reply(companion.submit(companion.agent_stop(str(body["id"]))).result(timeout=15))
+                if url.path == "/agent/windows":
+                    return self.reply(companion.submit(companion.native("windows", timeout=8)).result(timeout=10))
+            except TimeoutError:
+                return self.reply({"ok": False, "error": "Tako 那边没有回应，过一会儿再试"}, code=504)
+            self.reply({"error": "bad_request"}, code=400)
+
         def do_GET(self):
             url = urlparse(self.path)
             query = parse_qs(url.query)
+            if url.path.startswith("/agent/"):
+                return self.agent(url, None)
             if not self.allowed(query):
                 return self.reply({"error": "forbidden"}, code=403)
             if url.path == "/":
@@ -76,6 +100,12 @@ def serve(companion, token, port):
 
         def do_POST(self):
             url = urlparse(self.path)
+            if url.path.startswith("/agent/"):
+                try:
+                    body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                except ValueError:
+                    body = {}
+                return self.agent(url, body if isinstance(body, dict) else {})
             if not self.allowed(parse_qs(url.query)):
                 return self.reply({"error": "forbidden"}, code=403)
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")

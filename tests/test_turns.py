@@ -66,6 +66,26 @@ class Tako:
         with urllib.request.urlopen(request, timeout=timeout) as reply:
             return json.load(reply)
 
+    def agent(self, path, body=None, token=None):
+        """What one of the owner's other agents does: the door Tako wrote, and the token in it."""
+        door = json.loads((self.home / "agent.json").read_text())
+        request = urllib.request.Request(door["url"] + path, data=None if body is None else json.dumps(body).encode(), method="GET" if body is None else "POST",
+                                         headers={"Authorization": f"Bearer {token or door['token']}"})
+        try:
+            with urllib.request.urlopen(request, timeout=20) as reply:
+                return json.load(reply)
+        except urllib.error.HTTPError as exc:
+            return {"code": exc.code, **json.load(exc)}
+
+    def agent_until(self, job, wanted, what, timeout=8):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            seen = self.agent(f"/agent/job?id={job}")
+            if wanted(seen):
+                return seen
+            time.sleep(0.05)
+        raise AssertionError(f"never happened: {what}\nlast: {seen}\nserver: {(self.home / 'server.err').read_text()[-800:]}")
+
     def _play_the_app(self):
         while self.alive:
             try:
@@ -361,6 +381,68 @@ class Stop(Base):
         self.tako.call("/stop", {})
         seen = self.tako.idle(3)
         self.assertEqual(seen["pending"], [])
+
+
+class AnotherAgent(Base):
+    """Claude, Codex or a script of the owner's handing Tako a job, through `tako ask`."""
+
+    def test_hands_over_a_job_and_hears_the_answer(self):
+        started = self.tako.agent("/agent/ask", {"text": "把这页的标题改短", "from": "Claude"})
+        self.assertTrue(started["ok"], started)
+        done = self.tako.agent_until(started["id"], lambda s: s["state"] == "done", "the job done")
+        self.assertEqual(done["answer"], "好的")
+        seen = self.tako.state()
+        self.assertEqual([e["text"] for e in seen["events"] if e["role"] == "owner"], ["〔Claude 转来〕把这页的标题改短"], "the owner sees who handed it over")
+        told = self.tako.owner_turns()[-1]["input"][0]["text"]
+        self.assertIn("通过 Claude 交给你", told)
+        self.assertIn("把这页的标题改短", told)
+
+    def test_its_door_is_the_owners_alone(self):
+        door = self.tako.home / "agent.json"
+        self.assertEqual(stat.S_IMODE(door.stat().st_mode), 0o600)
+        self.assertEqual(self.tako.agent("/agent/ask", {"text": "你好"}, token="guess")["code"], 403)
+        self.assertEqual(self.tako.agent("/agent/ask", {"text": "你好"}, token=self.tako.token)["code"], 403, "the panel's token is not an agent's")
+
+    def test_its_token_answers_no_card(self):
+        door = json.loads((self.tako.home / "agent.json").read_text())
+        for path in ("/decide", "/stop", "/ask"):
+            request = urllib.request.Request(f"{self.tako.base}{path}?t={door['token']}", data=b'{"id": "x", "accepted": true, "text": "x"}', method="POST")
+            with self.assertRaises(urllib.error.HTTPError) as refused:
+                urllib.request.urlopen(request, timeout=5)
+            self.assertEqual(refused.exception.code, 403)
+
+    def test_a_card_waits_for_the_owners_own_tap(self):
+        started = self.tako.agent("/agent/ask", {"text": steps({"call": "run_in_app", "args": {"script": 'tell application "Keynote" to delete slide 1', "app": "Keynote"}}, {"say": "删了"})})
+        waiting = self.tako.agent_until(started["id"], lambda s: s["state"] == "needs_owner", "the card")
+        self.assertIn("delete slide 1", waiting["cards"][0])
+        card = self.tako.state()["pending"][0]
+        self.tako.call("/decide", {"id": card["id"], "accepted": True})
+        self.assertEqual(self.tako.agent_until(started["id"], lambda s: s["state"] == "done", "done")["answer"], "删了")
+
+    def test_a_named_window_keeps_the_job_and_the_panel_here_free(self):
+        self.tako.native["resolve"] = lambda c: {"ok": True, "id": 2, "app": "Safari", "bundle": "com.apple.Safari", "title": "另一个页面", "stuck": False} if c.get("window") == "Safari" else {"ok": False, "error": "没找到"}
+        started = self.tako.agent("/agent/ask", {"text": steps({"call": "look_at_window", "args": {}}, {"say": "那边看完了"}), "window": "Safari"})
+        self.assertEqual(started["window"], "另一个页面")
+        done = self.tako.agent_until(started["id"], lambda s: s["state"] == "done", "done")
+        self.assertEqual(done["answer"], "那边看完了")
+        self.assertEqual([c.get("window") for c in self.tako.commands if c["command"] == "look"], ["2"])
+        seen = self.tako.until(lambda s: s["others"], "told it's done over there", 3)
+        self.assertEqual(seen["others"][0]["state"], "done")
+        self.assertEqual(self.tako.said(seen), [], "nothing landed in the panel here")
+        self.tako.stick("Safari", "com.apple.Safari", "另一个页面", "2")
+        self.tako.until(lambda s: "那边看完了" in self.tako.said(s), "the result in that window's conversation", 3)
+
+    def test_a_window_that_isnt_there_says_so(self):
+        self.tako.native["resolve"] = lambda c: {"ok": False, "error": "没找到窗口“Pages”，它可能没打开"}
+        refused = self.tako.agent("/agent/ask", {"text": "你好", "window": "Pages"})
+        self.assertFalse(refused["ok"])
+        self.assertIn("Pages", refused["error"])
+        self.assertEqual(self.tako.owner_turns(), [])
+
+    def test_can_be_stopped(self):
+        started = self.tako.agent("/agent/ask", {"text": steps({"hang": True})})
+        self.tako.agent_until(started["id"], lambda s: s["state"] == "working" and self.tako.owner_turns(), "running")
+        self.assertEqual(self.tako.agent("/agent/stop", {"id": started["id"]})["state"], "stopped")
 
 
 class ATool(Base):
