@@ -54,6 +54,7 @@ extension Controller: WKScriptMessageHandler, WKNavigationDelegate {
             NSPasteboard.general.setString(text, forType: .string)
         }
         if let value = body["goo"] as? String { goo.state = value; enchant.setMood(value) }
+        if let value = body["act"] as? String { goo.act = value }
         if body["done"] != nil { goo.celebrate() }
         if body["oops"] != nil { goo.fumble() }
         if let value = body["cardWidth"] as? Double { cardWidth = CGFloat(value); enchant.sync() }

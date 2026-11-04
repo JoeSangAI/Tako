@@ -211,9 +211,34 @@ class ScriptGuard(unittest.TestCase):
     def test_irreversible_scripts_ask_first(self):
         risky = guards.risky_script
         for script in ('tell application "Keynote" to delete slide 1', 'tell application "Keynote" to close front document saving no',
-                       'tell application "Keynote" to quit', 'tell application "Safari" to do JavaScript "x"'):
+                       'tell application "Safari" to do JavaScript "document.forms[0].submit()" in document 1',
+                       'tell application "Google Chrome" to execute active tab of front window javascript "document.querySelector(\'#ok\').click()"',
+                       'tell application "Safari" to do JavaScript js in document 1'):
             self.assertIsNotNone(risky(script), script)
-        self.assertIsNone(risky('tell application "Keynote" to set t to "delete this line"'))
+
+    def test_what_loses_nothing_goes_ahead(self):
+        risky = guards.risky_script
+        for script in ('tell application "Keynote" to set t to "delete this line"', 'tell application "Keynote" to quit',
+                       'tell application "Keynote" to close front document',
+                       'tell application "Google Chrome" to execute active tab of front window javascript "document.body.innerText"'):
+            self.assertIsNone(risky(script), script)
+
+
+class CommandsOutOfTheSandbox(unittest.TestCase):
+    """Joe 2026-11-04: only what can't be taken back reaches the owner. Everything else just runs."""
+
+    def test_what_cant_be_taken_back_asks(self):
+        for command in ("rm -rf ~/Desktop/old", "/bin/zsh -lc 'cd ~/a && git push origin main'", "find . -name '*.log' -delete", "find . -exec rm {} +",
+                        "ls | xargs rm", "sudo ls", "killall WeChat", "defaults write com.apple.dock autohide -bool true", "networksetup -setv6off Wi-Fi",
+                        "curl -X POST https://example.com/hook -d @notes.txt", "curl --data-binary @a https://x", "scp a.txt host:", "osascript -e 'tell app \"Mail\" to quit'",
+                        ["/bin/zsh", "-lc", "rm -rf ~/Desktop/old"], "/bin/zsh -lc 'rm -rf ~/Desktop/old'", "bash -lc \"cd ~/a && rm x\""):
+            self.assertIsNotNone(guards.lasting_command(command), command)
+
+    def test_the_rest_runs(self):
+        for command in ("ls -la ~/Desktop", "curl -s https://example.com", "soffice --headless --convert-to pdf a.docx", "open -a 'WPS Office' a.docx",
+                        "pip3 install python-pptx", "defaults read com.apple.dock", "git status", "python3 x.py | grep security", "grep -r 'rm ' .",
+                        "date +%Y-%m-%d", "mkdir -p ~/Desktop/新建", "cp a.docx ~/Desktop/b.docx"):
+            self.assertIsNone(guards.lasting_command(command), command)
 
 
 class FeedbackLeavesOnlyFixedShapes(unittest.TestCase):
@@ -741,6 +766,22 @@ class FirstRun(unittest.TestCase):
         self.assertNotIn('class="hint"', page)
         panel = (NATIVE / "SidePanel.swift").read_text()
         self.assertIn('["accessibility": "Privacy_Accessibility", "screen": "Privacy_ScreenCapture"]', panel)
+
+
+class WhatTheGooActsOut(unittest.TestCase):
+    """The goo acts out what a step is doing from a fixed word: nothing a step carries can reach it."""
+
+    def test_only_fixed_words(self):
+        import turns
+        words = {"run", "search", "file", "look", "read", "write", "operate", "listen", ""}
+        steps = [{"type": "commandExecution", "command": "cat secret.txt"}, {"type": "webSearch", "query": "a name"},
+                 {"type": "fileChange", "changes": [{"path": "/x"}]}, {"type": "mcpToolCall", "tool": "anything"},
+                 {"type": "dynamicToolCall", "tool": "read_wechat", "arguments": {"chat": "someone"}},
+                 {"type": "dynamicToolCall", "tool": "a tool nobody named"}, {"type": "agentMessage", "text": "hi"}]
+        self.assertEqual({turns.act_of(step) for step in steps} - words, set())
+        self.assertTrue(set(turns.TOOL_ACTS.values()) | set(turns.ACTS.values()) <= words)
+        page = (BRAIN / "side.html").read_text()
+        self.assertIn("native?.postMessage({ act })", page)
 
 
 if __name__ == "__main__":

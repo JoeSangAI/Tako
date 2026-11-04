@@ -13,8 +13,11 @@ extension Goo {
         drawBody()
         for i in 0..<3 { strands[i].path = strandPath(i) }
         drawFace()
+        drawCostume()
+        drawAct()
         drawBits()
         drawArms()
+        fitShade()
         fitLiquid()
         CATransaction.commit()
     }
@@ -66,13 +69,49 @@ extension Goo {
             }
             return streak
         }
-        gloss.lineWidth = max(1.3, radius * 0.09)
-        gloss.path = arc(from: 0.56, to: 0.68, inset: 0.8)
+        _ = arc
+        gloss.path = highlight(skin)
+
 
         if mode == .free && settled {
-            let w = radius * 1.25, floor = screenRect.maxY - surface
-            ground.path = CGPath(ellipseIn: CGRect(x: c.x - screenRect.minX - w, y: floor - 2, width: w * 2, height: 4), transform: nil)
-        } else { ground.path = nil }
+            let w = radius * 1.2, floor = screenRect.maxY - surface
+            ground.shadowRadius = max(1.6, radius * 0.16)
+            ground.shadowPath = CGPath(ellipseIn: CGRect(x: c.x - screenRect.minX - w, y: floor - 1.5, width: w * 2, height: 3), transform: nil)
+        } else { ground.shadowPath = nil }
+    }
+
+    /// One light over the body and every limb together, so legs and arms read as the same goo, not parts stuck on.
+    func fitShade() {
+        guard let skin = body.path else { return }
+        let whole = arms.path.map { skin.union($0) } ?? skin
+        let box = whole.boundingBoxOfPath.insetBy(dx: -1, dy: -1), own = skin.boundingBoxOfPath
+        guard box.width > 1, box.height > 1 else { return }
+        shade.frame = box
+        // the light sits on the body's upper left whatever the limbs are doing
+        let light = CGPoint(x: (own.minX + own.width * 0.34 - box.minX) / box.width, y: (own.minY + own.height * 0.72 - box.minY) / box.height)
+        shade.startPoint = light
+        shade.endPoint = CGPoint(x: light.x + own.width * 0.78 / box.width, y: light.y + own.height * 0.78 / box.height)
+        var home = CGAffineTransform(translationX: -box.minX, y: -box.minY)
+        shadeMask.path = whole.copy(using: &home)
+    }
+
+    /// The wet highlight: a thin crescent just inside the upper-left skin, swelling in the middle and fading to points.
+    func highlight(_ skin: [V]) -> CGPath {
+        let n = CGFloat(Goo.count)
+        func at(_ f: CGFloat, _ inset: CGFloat) -> V {
+            let x = (f * n).truncatingRemainder(dividingBy: n), i = Int(x), t = x - CGFloat(i)
+            return mix(c, mix(skin[i % Goo.count], skin[(i + 1) % Goo.count], t), inset)
+        }
+        let path = CGMutablePath(), steps = 14, a: CGFloat = 0.55, b: CGFloat = 0.69
+        var outer: [CGPoint] = [], inner: [CGPoint] = []
+        for k in 0...steps {
+            let s = CGFloat(k) / CGFloat(steps), f = mix(a, b, s)
+            outer.append(L(at(f, 0.86)))
+            inner.append(L(at(f, 0.86 - 0.11 * sin(s * .pi))))
+        }
+        path.addLines(between: outer + inner.reversed())
+        path.closeSubpath()
+        return path
     }
 
     func strandPath(_ i: Int) -> CGPath? {
@@ -114,7 +153,10 @@ extension Goo {
     func drawFace() {
         let r = radius
         let wide = 1 + pop * 0.22 + (mode == .grabbed ? 0.12 : 0)
-        let left = eye + V(-r * 0.33, -r * 0.02), right = eye + V(r * 0.33, r * 0.05)
+        // the whole face turns with the head when it tips it over
+        let tilt = actTilt()
+        func tipped(_ p: V) -> V { V(p.x * cos(tilt) - p.y * sin(tilt), p.x * sin(tilt) + p.y * cos(tilt)) }
+        let left = eye + tipped(V(-r * 0.33, -r * 0.02)), right = eye + tipped(V(r * 0.33, r * 0.05))
         let lRX = r * 0.3 * wide, lRY = r * 0.37 * wide, rRX = r * 0.25 * wide, rRY = r * 0.32 * wide
         if happy && !dizzy {
             // pleased: eyes squeezed into two upward arcs
@@ -145,8 +187,11 @@ extension Goo {
             eyeR.path = ellipse(right, rRX, max(0.7, rRY * lid))
         }
         let showing = lid > 0.3 && !sleeping && !dizzy && !happy
+        let open = !(happy && !dizzy) && !sleeping
+        eyeShadeL.path = open ? ellipse(left, lRX, max(0.7, lRY * lid)).subtracting(ellipse(left + V(0, r * 0.07), lRX * 1.04, max(0.7, lRY * lid))) : nil
+        eyeShadeR.path = open ? ellipse(right, rRX, max(0.7, rRY * lid)).subtracting(ellipse(right + V(0, r * 0.07), rRX * 1.04, max(0.7, rRY * lid))) : nil
         let pL = left + gaze * (lRX * 0.43), pR = right + gaze * (rRX * 0.43)
-        let prL = lRX * 0.5, prR = rRX * 0.5
+        let prL = lRX * 0.5 * pupilBoost, prR = rRX * 0.5 * pupilBoost
         pupilL.path = showing ? ellipse(pL, prL, prL) : nil
         pupilR.path = showing ? ellipse(pR, prR, prR) : nil
         // a catch of light in each eye, so they look wet too
@@ -171,7 +216,7 @@ extension Goo {
 
         // heavy upper lids: what makes it look like it is up to something
         let lidShape = { (p: V, rx: CGFloat, ry: CGFloat) -> CGPath? in
-            guard self.heavy > 0.03, !self.sleeping else { return nil }
+            guard self.heavy > 0.03, !self.sleeping, !(self.happy && !self.dizzy) else { return nil }
             let top = p.y - ry - 1.5, bottom = p.y - ry + ry * 2 * self.heavy
             let q = CGMutablePath()
             q.move(to: self.L(V(p.x - rx - 1.5, top)))
@@ -181,11 +226,13 @@ extension Goo {
             q.closeSubpath()
             return q
         }
-        lidL.path = lidShape(left, lRX, lRY)
-        lidR.path = lidShape(right, rRX, rRY)
+        // only where it covers the white: anywhere else it would be a flat patch on the shaded body
+        lidL.path = lidShape(left, lRX, lRY)?.intersection(ellipse(left, lRX + 0.8, max(0.7, lRY * lid) + 0.8))
+        lidR.path = lidShape(right, rRX, rRY)?.intersection(ellipse(right, rRX + 0.8, max(0.7, rRY * lid) + 0.8))
 
         // A small smile; surprised while dragged; the venom teeth when it has something to say.
-        let m = eye + V(0, r * 0.5)
+        let m = eye + tipped(V(0, r * 0.5))
+        mouthAt = m
         let path = CGMutablePath()
         // Left resting on it for a moment, it starts nibbling the cursor.
         let chomp = hoverTime > 1 ? abs(sin(CGFloat(clock) * 11)) * 0.75 + 0.15 : pop
@@ -204,7 +251,7 @@ extension Goo {
         } else if guilty {
             // whistling innocently, off to one side
             path.addPath(ellipse(m + V(r * 0.2, r * 0.04), r * 0.07, r * 0.08))
-        } else if (armOut > 6 || clock < smirkUntil) && chomp <= 0.14 {
+        } else if ((armOut > 6 && acting == nil) || clock < smirkUntil) && chomp <= 0.14 {
             // the smirk
             path.move(to: L(m + V(-r * 0.2, r * 0.05)))
             path.addQuadCurve(to: L(m + V(r * 0.27, -r * 0.09)), control: L(m + V(r * 0.08, r * 0.1)))
@@ -236,15 +283,16 @@ extension Goo {
             }
             path.addQuadCurve(to: L(m + V(-w, 0)), control: L(m + V(0, h * 2)))
             path.closeSubpath()
-        } else if mode == .grabbed || (mode == .free && !settled) {
+        } else if mode == .grabbed || (mode == .free && !settled && !trotting) {
             let s = clamp(max(mouseSpeed.length, v.length) / 900, 0.09, 0.2) * r
             path.addPath(ellipse(m + V(0, r * 0.05), s * 0.85, s))
         } else {
-            let w = r * (state == "thinking" ? 0.1 : 0.2), h = r * (state == "thinking" ? 0.02 : 0.13)
-            path.move(to: L(m + V(-w, 0)))
-            path.addQuadCurve(to: L(m + V(w, 0)), control: L(m + V(0, h)))
-            path.addQuadCurve(to: L(m + V(-w, 0)), control: L(m + V(0, h + r * 0.08)))
-            path.closeSubpath()
+            // a smile drawn as one soft stroke with round ends, so its tips never break up into specks
+            let w = r * (state == "thinking" ? 0.1 : 0.19), h = r * (state == "thinking" ? 0.03 : 0.16)
+            let arc = CGMutablePath()
+            arc.move(to: L(m + V(-w, 0)))
+            arc.addQuadCurve(to: L(m + V(w, 0)), control: L(m + V(0, h)))
+            path.addPath(arc.copy(strokingWithWidth: max(1.1, r * 0.075), lineCap: .round, lineJoin: .round, miterLimit: 1))
         }
         mouth.path = path
     }

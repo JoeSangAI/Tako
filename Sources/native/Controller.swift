@@ -96,7 +96,7 @@ final class Controller: NSObject, NSApplicationDelegate {
             self.url = address
             if restarted { self.web.load(URLRequest(url: address)) } else { self.launch() }
         }
-        backend.start(arguments: CommandLine.arguments.dropFirst().filter { $0 != "--selftest" })
+        backend.start(arguments: CommandLine.arguments.dropFirst().filter { $0 != "--selftest" && !$0.hasPrefix("--showcase") })
     }
 
     func giveUp(_ reason: String) {
@@ -201,7 +201,7 @@ final class Controller: NSObject, NSApplicationDelegate {
         pollCommands()
         installHotKey()
         installMenus()
-        if selfTest { runSelfTest() }
+        if selfTest { CommandLine.arguments.contains { $0.hasPrefix("--showcase") } ? runShowcase() : runSelfTest() }
         // Opening an app puts it in front; Tako goes to the window it sits on, not in the way of it.
         if lastApp == nil || lastApp == NSRunningApplication.current {
             lastApp = openWindows().first.flatMap { NSRunningApplication(processIdentifier: $0.pid) }  // By now macOS has already put Tako in front.
@@ -355,6 +355,7 @@ final class Controller: NSObject, NSApplicationDelegate {
         let shortcut = NSMenuItem(title: "随时叫它：⌃⌥T", action: nil, keyEquivalent: "")
         shortcut.isEnabled = false
         menu.addItem(shortcut)
+        menu.addItem(outfitMenu())
         menu.addItem(.separator())
         if let statistics {
             let item = NSMenuItem(title: "帮助作者优化", action: #selector(toggleStatistics), keyEquivalent: "")
@@ -373,6 +374,34 @@ final class Controller: NSObject, NSApplicationDelegate {
         quit.target = self
         menu.addItem(quit)
         NSMenu.popUpContextMenu(menu, with: event, for: view)
+    }
+
+    /// 装扮: follow the occasions (nothing chosen means this), wear one hat from the wardrobe, or none at all.
+    func outfitMenu() -> NSMenuItem {
+        let today = Outfit.today(), choice = Outfit.choice
+        let sub = NSMenu()
+        func add(_ title: String, _ value: String) {
+            let item = NSMenuItem(title: title, action: #selector(chooseOutfit(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = value
+            item.state = choice == value ? .on : .off
+            sub.addItem(item)
+        }
+        let now = Outfit.wardrobe(on: today).first { $0.wornOn(today) }
+        add(now.map { "跟着节日换（这几天：\($0.name)）" } ?? "跟着节日换", "occasions")
+        sub.addItem(.separator())
+        for outfit in Outfit.wardrobe(on: today) { add(outfit.name, outfit.id) }
+        sub.addItem(.separator())
+        add("不戴", "none")
+        let item = NSMenuItem(title: "装扮", action: nil, keyEquivalent: "")
+        item.submenu = sub
+        return item
+    }
+
+    @objc func chooseOutfit(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? String else { return }
+        Outfit.choice = value
+        goo.costume.checkedAt = -100   // put it on (or take it off) now, not at the next minute
     }
 
     @objc func toggleStick() {

@@ -118,6 +118,7 @@ class Companion(Chats, Turns, Hands, Lectures, Agents):
                 "greeting": (self.chat or {}).get("greeting", ""),
                 "bundle": (self.window or {}).get("bundle", ""),
                 "partial": partial, "steps": job.steps if job else [], "busy": status == "thinking" or status == "working",
+                "act": job.act if job else "",
                 "trouble": self._trouble_here(job), "queued": any(other.waiting for other in self.active if other.events is self.events),
                 "others": self._others(),
                 "pending": [{k: v for k, v in card.items() if k not in ("future", "job")} for card in list(self.pending.values())],

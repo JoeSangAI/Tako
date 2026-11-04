@@ -459,8 +459,10 @@ class ATool(Base):
         self.assertEqual(self.tako.idle()["status"], "idle", seen)
 
 
-class ACard(Base):
-    def propose(self):
+class AReplacement(Base):
+    """Joe 2026-11-04: the original is backed up first, so replacing it asks nothing."""
+
+    def replace(self, wait=True):
         folder = self.tako.output / "稿"
         folder.mkdir(parents=True)
         original = self.tako.home / "方案.pptx"
@@ -468,16 +470,15 @@ class ACard(Base):
         original.write_text("原来的")
         time.sleep(0.02)
         edited.write_text("改过的")
-        self.tako.native["closeDocument"] = lambda c: {"ok": True, "app": "/Applications/wps.app"}
+        self.tako.native.setdefault("closeDocument", lambda c: {"ok": True, "app": "/Applications/wps.app"})
         self.tako.native["openDocument"] = lambda c: {"ok": True}
         self.tako.ask(steps({"call": "propose_file_change", "args": {"original": str(original), "edited": str(edited), "summary": "改了标题"}}, {"say": "好了"}))
-        return self.tako.until(lambda s: s["pending"], "the card")["pending"][0], original
+        seen = self.tako.until(lambda s: "好了" in self.tako.said(s) or s["pending"], "the turn to finish")
+        self.assertEqual(seen["pending"], [], "no card for what a backup can bring back")
+        return original
 
-    def test_apply_backs_up_replaces_and_reopens(self):
-        card, original = self.propose()
-        self.assertEqual(card["kind"], "change")
-        self.tako.call("/decide", {"id": card["id"], "accepted": True})
-        self.tako.until(lambda s: "好了" in self.tako.said(s), "the turn to finish")
+    def test_backs_up_replaces_and_reopens(self):
+        original = self.replace()
         self.assertEqual(original.read_text(), "改过的")
         self.assertEqual([path.read_text() for path in (self.tako.home / "backups").iterdir()], ["原来的"])
         self.assertEqual([c["command"] for c in self.tako.commands if "Document" in c["command"]], ["closeDocument", "closeDocument", "openDocument"])
@@ -485,26 +486,17 @@ class ACard(Base):
         self.assertTrue(closes[0].get("held"))  # The copy: only if it was looked at.
         self.assertFalse(closes[1].get("held"))
         self.assertEqual(closes[1]["document"], str(original))
+        self.assertIn("备份", self.tako.codex("tool_reply")[-1]["reply"]["contentItems"][0]["text"])
 
     def test_a_document_that_closes_too_late_comes_back(self):
-        card, original = self.propose()
         self.tako.native["closeDocument"] = lambda c: {"ok": True} if c.get("held") else {"ok": False, "closing": True, "app": "/Applications/wps.app", "error": "没能关上"}
-        self.tako.call("/decide", {"id": card["id"], "accepted": True})
-        self.tako.until(lambda s: "好了" in self.tako.said(s), "the turn to finish")
+        original = self.replace()
         self.assertEqual(original.read_text(), "原来的")
         self.assertEqual([c["document"] for c in self.tako.commands if c["command"] == "openDocument"], [str(original)])
 
-    def test_refusing_changes_nothing(self):
-        card, original = self.propose()
-        self.tako.call("/decide", {"id": card["id"], "accepted": False})
-        self.tako.until(lambda s: "好了" in self.tako.said(s), "the turn to finish")
-        self.assertEqual(original.read_text(), "原来的")
-
     def test_a_document_that_wont_close_is_left_alone(self):
-        card, original = self.propose()
         self.tako.native["closeDocument"] = lambda c: {"ok": False, "error": "有没保存的改动"}
-        self.tako.call("/decide", {"id": card["id"], "accepted": True})
-        self.tako.until(lambda s: "好了" in self.tako.said(s), "the turn to finish")
+        original = self.replace()
         self.assertEqual(original.read_text(), "原来的")
         self.assertIn("没保存", self.tako.codex("tool_reply")[-1]["reply"]["contentItems"][0]["text"])
 
@@ -1246,6 +1238,57 @@ class Inside(unittest.IsolatedAsyncioTestCase):
         done = await self.tako.on_server_request("item/tool/call", {"threadId": "the-brain", "tool": "fill_input", "arguments": {}})
         self.assertIs(done["success"], True)
 
+    async def owners_request(self, method, **params):
+        """Codex asking on the owner's job to leave the sandbox: how it is answered, and whether a card went up meanwhile."""
+        job = self.turns.Job(None, [], None)
+        self.tako.on_thread["the-brain"] = job
+        asked = asyncio.create_task(self.tako.on_server_request(method, {"threadId": "the-brain", **params}))
+        for _ in range(100):
+            if asked.done() or self.tako.pending:
+                break
+            await asyncio.sleep(0.01)
+        return asked, job
+
+    async def test_an_ordinary_command_out_of_the_sandbox_just_runs(self):
+        asked, _ = await self.owners_request("item/commandExecution/requestApproval", command="/bin/zsh -lc 'soffice --headless --convert-to pdf 方案.docx'")
+        self.assertEqual(self.tako.pending, {})
+        self.assertEqual(await asked, {"decision": "acceptForSession"})
+
+    async def test_a_file_a_command_writes_over_is_backed_up_first(self):
+        target = self.home / "别处" / "旧.txt"
+        target.parent.mkdir(exist_ok=True)
+        target.write_text("旧内容")
+        asked, _ = await self.owners_request("item/commandExecution/requestApproval", command=f"/bin/zsh -lc \"printf 'x' > '{target}'\"", cwd=str(self.home))
+        self.assertEqual(await asked, {"decision": "accept"}, "not for the session: the next write over it gets its own backup")
+        self.assertEqual(self.tako.pending, {})
+        self.assertIn("旧内容", [path.read_text() for path in (self.home / "backups").glob("*旧.txt")])
+
+    async def test_a_command_that_deletes_waits_for_the_owner(self):
+        asked, _ = await self.owners_request("item/commandExecution/requestApproval", command="rm -rf ~/Desktop/旧稿")
+        card = next(iter(self.tako.pending.values()))
+        self.assertEqual(card["reason"], "删除文件")
+        self.tako.decide(card["id"], False)
+        self.assertEqual(await asked, {"decision": "decline"})
+
+    async def test_a_file_elsewhere_is_backed_up_and_changed_without_asking(self):
+        target = self.home / "别处" / "笔记.md"
+        target.parent.mkdir(exist_ok=True)
+        target.write_text("原来的")
+        job = self.turns.Job(None, [], None)
+        job.changing["item-1"] = [str(target), str(target.parent / "新文件.md")]
+        self.tako.on_thread["the-brain"] = job
+        decision = await self.tako.on_server_request("item/fileChange/requestApproval", {"threadId": "the-brain", "itemId": "item-1"})
+        self.assertEqual(decision, {"decision": "accept"}, "each change gets its own backup, so not for the session")
+        self.assertEqual(self.tako.pending, {})
+        self.assertIn("原来的", [path.read_text() for path in (self.home / "backups").glob("*笔记.md")])
+
+    async def test_a_change_with_no_files_named_still_asks(self):
+        asked, _ = await self.owners_request("item/fileChange/requestApproval", itemId="unknown", grantRoot=str(self.home))
+        card = next(iter(self.tako.pending.values()))
+        self.assertIn(str(self.home), card["text"])
+        self.tako.decide(card["id"], True)
+        self.assertEqual(await asked, {"decision": "acceptForSession"})
+
     async def test_the_last_of_a_class_is_kept(self):
         folder = self.home / "listening"
         folder.mkdir(exist_ok=True)
@@ -1283,11 +1326,7 @@ class Inside(unittest.IsolatedAsyncioTestCase):
                 beats.append(time.time())
                 await asyncio.sleep(0.02)
         beating = asyncio.create_task(heart())
-        work = asyncio.create_task(self.tako._propose(str(source), str(copy), "改了", self.turns.Job(None, [], None)))
-        while not self.tako.pending:
-            await asyncio.sleep(0.01)
-        self.tako.decide(next(iter(self.tako.pending)), True)
-        await work
+        await self.tako._propose(str(source), str(copy), "改了", self.turns.Job(None, [], None))
         beating.cancel()
         self.assertLess(max(b - a for a, b in zip(beats, beats[1:])), 0.25)
         self.assertEqual(source.read_text(), "副")

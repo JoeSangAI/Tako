@@ -437,6 +437,12 @@ function bubble(event) {
 // ---- state from the server ----
 const setText = (el, text) => { if (el.textContent !== text) el.textContent = text; };
 function tellGoo(next) { if (next !== gooState) { gooState = next; native?.postMessage({ goo: next }); } }
+// What it is doing right now, in fixed words, so the goo can act it out.
+let gooAct = '';
+function tellAct(s) {
+  const act = (s.pending || []).length ? 'wait' : s.trouble ? 'trouble' : !s.busy ? '' : s.partial ? 'answer' : (s.act || 'think');
+  if (act !== gooAct) { gooAct = act; native?.postMessage({ act }); }
+}
 // An error from a click stays a few seconds; one from the server stays as long as the server says.
 let heldError = 0;
 function showError(text, hold) {
@@ -553,6 +559,7 @@ function show(s) {
   if (s.error && s.error !== lastError) native?.postMessage({ oops: true });
   lastError = s.error;
   tellGoo(next);
+  tellAct(s);
 }
 const empty = document.createElement('div');
 empty.className = 'empty'; empty.textContent = '告诉 Tako 你想做什么。';

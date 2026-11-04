@@ -36,6 +36,18 @@ def usage_fields(usage):
             "total": ((usage or {}).get("total") or {}).get("totalTokens")}
 
 
+# What the goo acts out while a step runs: a fixed word for each kind of step, never anything from the step itself.
+ACTS = {"commandExecution": "run", "webSearch": "search", "fileChange": "file", "mcpToolCall": "run"}
+TOOL_ACTS = {"list_windows": "look", "look_at_window": "look", "look_at_file": "look", "read_wechat": "read", "fill_input": "write",
+             "point_at": "operate", "operate_window": "operate", "run_in_app": "operate", "propose_file_change": "file",
+             "tell_workbench": "write", "report_feedback": "write", "listen": "listen"}
+
+
+def act_of(item):
+    kind = item.get("type")
+    return TOOL_ACTS.get(item.get("tool"), "run") if kind == "dynamicToolCall" else ACTS.get(kind, "")
+
+
 class Job:
     """One thing being done: who asked, in which conversation and window, on which thread. It goes on wherever the owner goes meanwhile."""
 
@@ -44,6 +56,7 @@ class Job:
         self.thread, self.brain, self.running = None, False, None  # its thread, whether that is the shared one, and (thread, turn) while a turn runs
         self.status, self.waiting = "thinking", False  # waiting: behind what comes first in this conversation, or the brain settling
         self.partial, self.steps, self.trouble = "", [], ""  # trouble: why it isn't moving, in the owner's words
+        self.act = ""  # what kind of thing the step under way is, in the fixed words of ACTS: what the goo acts out
         self.stopping, self.call_waiting, self.tools_running = False, None, 0
         self.first_text, self.usage, self.pictures = None, None, 0
         self.refused = {}  # (tool, what it said) -> times this turn
@@ -464,6 +477,7 @@ class Turns:
 
     def _note_step(self, job, item):
         kind = item.get("type")
+        job.act = act_of(item) or job.act
         if kind == "commandExecution":
             label = "跑了：" + plain_command(item.get("command"))[:80]
         elif kind == "webSearch":

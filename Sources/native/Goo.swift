@@ -56,7 +56,7 @@ final class Goo {
     static let count = 28
     var c = V(), v = V()
     var ring = [V](repeating: V(), count: Goo.count), ringV = [V](repeating: V(), count: Goo.count)
-    let radius: CGFloat = 15   // the same in every state: on a window, on the panel, on the floor
+    var radius: CGFloat = 15   // the same in every state: on a window, on the panel, on the floor (only the showcase draws it bigger)
     var mode = Mode.attached
     var home = V()
     var settled = false
@@ -89,9 +89,16 @@ final class Goo {
     // so body, strands, legs and arms flow into each other like one liquid.
     let liquid = CALayer()
     let sparkleL = CAShapeLayer(), sparkleR = CAShapeLayer(), lidL = CAShapeLayer(), lidR = CAShapeLayer(), swirl = CAShapeLayer()
+    let eyeShadeL = CAShapeLayer(), eyeShadeR = CAShapeLayer(), shade = CAGradientLayer(), shadeMask = CAShapeLayer()
     // mischief
     let arms = CAShapeLayer(), inkLayer = CAShapeLayer(), outline = CAShapeLayer()
-    var armTip = V(), armOut: CGFloat = 0, armArrived = false
+    let costume = Costume()
+    // the scene it acts out while it works (Acts.swift) and its props
+    var act = "", actBeat: CGFloat = 0, actLast = 0.0, mouthAt = V()
+    let propInk = CAShapeLayer(), propLight = CAShapeLayer(), propLine = CAShapeLayer()
+    var zoomUntil = 0.0, wiggle: CGFloat = 0, nextStep = 0.0, gait: CGFloat = 0, trot: CGFloat = 0
+    var zooming: Bool { clock < zoomUntil }
+    var armTip = V(), armOut: CGFloat = 0, armArrived = false, armTipV = V(), armThick: CGFloat = 1, armThickV: CGFloat = 0
     var armLeg = 3, armStrand = 2, armWanted = false  // it reaches with a limb it already has
     var heavy: CGFloat = 0  // how far the upper lids have come down
     var guiltyUntil = 0.0, smirkUntil = 0.0
@@ -99,7 +106,7 @@ final class Goo {
     var peekSide: CGFloat = 0, peekUntil = 0.0, ducking = false, lastNear = 0.0
     var puddle = false
     var pokes = 0
-    var stance: CGFloat { puddle ? 0.45 : 1.6 }  // how high it stands above whatever is under it
+    var stance: CGFloat { puddle ? 0.45 : 1.6 - trot * 0.3 }  // how high it stands above whatever is under it; a trotting corgi goes low
     var guilty: Bool { clock < guiltyUntil }
     var dizzy: Bool { clock < dizzyUntil }
     // bounds
@@ -127,7 +134,11 @@ final class Goo {
         let root = view.layer!
         root.isOpaque = false
         root.backgroundColor = NSColor.clear.cgColor
-        ground.fillColor = NSColor(white: 0, alpha: 0.13).cgColor
+        // a soft shadow where it sits, not a flat smear
+        ground.fillColor = nil
+        ground.shadowColor = NSColor.black.cgColor
+        ground.shadowOpacity = 0.32
+        ground.shadowOffset = .zero
         root.addSublayer(ground)
         let goo = NSColor(srgbRed: 0.055, green: 0.055, blue: 0.06, alpha: 1).cgColor
         let blur = CIFilter(name: "CIGaussianBlur", parameters: [kCIInputRadiusKey: 2.6])!
@@ -154,15 +165,22 @@ final class Goo {
         liquid.addSublayer(arms)
         body.fillColor = goo
         liquid.addSublayer(body)
+        // A faint light from the upper left, so it reads as a soft round thing and not a cut-out.
+        shade.type = .radial
+        shade.colors = [NSColor(white: 1, alpha: 0.14).cgColor, NSColor(white: 1, alpha: 0.04).cgColor, NSColor(white: 1, alpha: 0).cgColor]
+        shade.locations = [0, 0.45, 1]
+        shade.startPoint = CGPoint(x: 0.34, y: 0.72)
+        shade.endPoint = CGPoint(x: 1.12, y: 1.5)
+        shade.mask = shadeMask
+        root.addSublayer(shade)
         outline.fillColor = nil
         outline.strokeColor = NSColor(white: 1, alpha: 0.28).cgColor
         outline.lineWidth = 1
         root.addSublayer(outline)
-        // black and white only: a wet highlight along the upper edge, a faint bounce below
-        gloss.fillColor = nil
-        gloss.strokeColor = NSColor(white: 1, alpha: 0.6).cgColor
-        gloss.lineCap = .round
+        // black and white only: a wet highlight along the upper edge, thick in the middle and fading at both ends
+        gloss.fillColor = NSColor(white: 1, alpha: 0.62).cgColor
         for layer in [eyeL, eyeR] { layer.fillColor = NSColor.white.cgColor }
+        for layer in [eyeShadeL, eyeShadeR] { layer.fillColor = NSColor(white: 0.82, alpha: 1).cgColor }  // the lid's shadow in the eye
         for layer in [pupilL, pupilR] { layer.fillColor = goo }
         mouth.fillColor = NSColor.white.cgColor
         for layer in [sparkleL, sparkleR] { layer.fillColor = NSColor.white.cgColor }
@@ -170,7 +188,16 @@ final class Goo {
         swirl.fillColor = nil
         swirl.strokeColor = goo
         swirl.lineCap = .round
-        for layer in [gloss, eyeL, eyeR, pupilL, pupilR, sparkleL, sparkleR, swirl, lidL, lidR, mouth] { root.addSublayer(layer) }
+        for layer in [gloss, eyeL, eyeR, eyeShadeL, eyeShadeR, pupilL, pupilR, sparkleL, sparkleR, swirl, lidL, lidR, mouth] { root.addSublayer(layer) }
+        costume.attach(behind: liquid, over: liquid)
+        costume.onWear = { [unowned self] _ in self.showOff() }
+        propInk.fillColor = goo
+        propLight.fillColor = NSColor.white.cgColor
+        propLine.fillColor = nil
+        propLine.strokeColor = goo
+        propLine.lineCap = .round
+        propLine.lineJoin = .round
+        for layer in [propLight, propLine, propInk] { root.addSublayer(layer) }
     }
 
     func place(at p: V) {
@@ -186,7 +213,7 @@ final class Goo {
     func target(_ i: Int) -> V {
         let d = dir(i)
         let breathe = 1 + (sleeping ? 0.04 * sin(CGFloat(clock) * 1.1) : 0.018 * sin(CGFloat(clock) * 1.5))
-        let stretch = (1 + creep * 0.1 * sin(CGFloat(clock) * 7)) / (1 + tall * 0.28)
+        let stretch = (1 + (trotting ? 0 : creep * 0.1 * sin(CGFloat(clock) * 7))) / (1 + tall * 0.28) * (1 + trot * 0.13)
         var shape = V(d.x * radius * breathe * stretch, d.y * radius * breathe / stretch)
         if splatAmount > 0.01 {
             // Flattened against whatever it hit: wide along the surface, thin across it.
@@ -199,6 +226,10 @@ final class Goo {
             // A little bulge creeping toward the cursor.
             let toward = max(0, d.x * leanDir.x + d.y * leanDir.y)
             shape = shape + d * (toward * toward * toward * lean * radius)
+        }
+        if wiggle > 0.01 {
+            // a corgi with no tail wags the whole back end
+            shape.x += sin(CGFloat(clock) * 19) * radius * 0.16 * wiggle * max(0, d.y)
         }
         return c + shape
     }
@@ -287,6 +318,32 @@ final class Goo {
         host.log("sneaking to the edge")
     }
 
+    /// Just put something on: it shows it off, with a corgi's dash if it has the room, otherwise a happy hop.
+    func showOff() {
+        if costume.isCorgi && mode == .free && settled { startZoomies() } else { celebrate() }
+    }
+
+    /// Zoomies: a few fast runs to and fro along whatever it stands on.
+    func startZoomies() {
+        guard mode == .free, settled, !sleeping, !puddle, !dizzy else { return }
+        zoomUntil = clock + 2.8
+        happyUntil = zoomUntil   // eyes shut with joy, tongue out
+        peekSide = 0
+        let (lo, hi) = roamBounds()
+        wanderTo = clamp(c.x + CGFloat.random(in: 110...170) * (c.x > (lo + hi) / 2 ? -1 : 1), lo, hi)
+        pop = 0.5
+        host.log("zoomies")
+    }
+
+    /// How far it can wander: the screen, or the top of the window it stands on.
+    func roamBounds() -> (CGFloat, CGFloat) {
+        var lo = visible.minX + 30, hi = visible.maxX - 30
+        if let id = standingID, let w = host.platforms.first(where: { $0.id == id })?.frame {
+            lo = max(lo, w.minX + radius + 4); hi = min(hi, w.maxX - radius - 4)
+        }
+        return (lo, hi)
+    }
+
     /// Gives up on having a shape for a while.
     func startPuddle() {
         puddle = true
@@ -315,6 +372,10 @@ final class Goo {
             goal = asked                        // it has been asked to touch something over there
             armStrand = 1
             quick = 620
+        } else if let hold = actHold() {
+            goal = hold                         // holding the scene's prop: a magnifier, a quill
+            armStrand = 2
+            quick = 520
         } else if perch != nil {
             goal = nil                          // over there, waiting for the next thing to touch
         } else if state == "working", mode == .attached, let w = host.target?.frame {
@@ -325,7 +386,7 @@ final class Goo {
         } else if state == "reading", mode == .attached, let w = host.target?.frame {
             goal = V(w.maxX - 44, c.y + 16)    // the middle strand wanders into the window while it reads
             armStrand = 1
-        } else if free && still > 2.5 && distance < 260 && distance > radius + 14 {
+        } else if free && acting == nil && still > 2.5 && distance < 260 && distance > radius + 14 {
             goal = m                            // the cursor has gone quiet: go for it
             armStrand = 2
         }
@@ -333,27 +394,38 @@ final class Goo {
         if goal != nil && armOut < 2 { armLeg = (goal!.x > c.x) ? 3 : 0 }
         let rest = armRest()
         // Moved while the arm is out: caught. It was never doing anything.
-        if armOut > 12 && still < 0.05 && state == "idle" && reachGoal == nil && !guilty {
+        if armOut > 12 && still < 0.05 && state == "idle" && reachGoal == nil && !guilty && acting == nil {
             guiltyUntil = clock + 1.9
             goal = nil
             armArrived = false
             host.log("caught reaching")
         }
         if let g = goal {
+            // Out on a soft spring, never faster than the errand allows: it sneaks, it doesn't shoot.
             let to = g - armTip
-            if to.length > 3 {
-                armTip = armTip + to.unit * min(to.length, quick * dt)
-            } else if !armArrived {
+            armTipV = armTipV + (to * 90 - armTipV * 13) * dt
+            if armTipV.length > quick { armTipV = armTipV.unit * quick }
+            if to.length <= 4 && !armArrived {
                 armArrived = true
                 if state == "idle" { pop = 0.5 }
                 host.log("arm arrived")
             }
         } else {
+            // Let go, it snaps home like elastic: a touch past, a wobble, and the body gives a little bounce.
             let back = rest - armTip
-            armTip = armTip + back.unit * min(back.length, (hop != nil ? 3000 : 900) * dt)
+            armTipV = armTipV + (back * (hop != nil ? 900 : 320) - armTipV * (hop != nil ? 50 : 15)) * dt
             armArrived = false
         }
+        armTip = armTip + armTipV * dt
+        // Home again it simply is its leg (or strand) once more, wherever that leg is stepping.
+        if goal == nil && (armTip - rest).length < 8 && armTipV.length < 300 { armTip = rest; armTipV = V() }
+        let wasOut = armOut
         armOut = (armTip - rest).length
+        if goal == nil && wasOut > 10 && armOut <= 10 && armTipV.length > 120 { kick(min(armTipV.length * 0.06, 70)) }
+        // Thinned while it moves fast, it fills out again when it stops, and the goo jiggles as it does.
+        let thinGoal = 1 - clamp(armTipV.length / 1100, 0, 0.32)
+        armThickV += ((thinGoal - armThick) * 280 - armThickV * 8) * dt
+        armThick = clamp(armThick + armThickV * dt, 0.55, 1.35)
 
         // ink thins out
         for i in ink.indices.reversed() {
@@ -413,6 +485,7 @@ final class Goo {
         let r = radius, f = CGFloat(k) - 1.5, spread = r * 0.32
         let side: CGFloat = f > 0 ? 1 : -1
         let hip = V(c.x + f * spread * 0.8, c.y + r * 0.62)
+        if trotting { return trotLeg(k) }   // drawn stubbier in drawArms
         if mode == .free && settled {
             let ground = surface - 0.6
             let step = creep * (peekSide != 0 ? 1.6 : 1)
@@ -434,6 +507,26 @@ final class Goo {
         return [hip, knee, foot, foot + curl]
     }
 
+    /// A corgi on the move, seen from the side: two legs at the front, two at the back, stepping in diagonal pairs,
+    /// each foot lifted and swung forward, paws pointing the way it goes. The stride follows the ground it covers.
+    var trotting: Bool { costume.isCorgi && mode == .free && wanderTo != nil && creep > 0.05 && !puddle && !sleeping && !dizzy }
+
+    func trotLeg(_ k: Int) -> [V] {
+        let r = radius, f = CGFloat(k) - 1.5, ahead: CGFloat = (wanderTo ?? c.x) >= c.x ? 1 : -1
+        let s = f * ahead                                   // -1.5 … 1.5, back to front
+        let front = s > 0, outer = abs(s) > 1
+        let slot = (front ? 0.44 : -0.44) + (outer ? 0.08 : -0.08) * (front ? 1 : -1)
+        let ground = surface - 0.6
+        let phase = gait + ((front == outer) ? 0 : .pi)     // the diagonal pairs move together
+        // short legs: small, quick steps that barely leave the ground
+        let reach = r * 0.2 * creep, lift = r * 0.16 * creep
+        let hip = V(c.x + ahead * slot * r * 0.82, c.y + r * 0.62)
+        let foot = V(c.x + ahead * (slot * r - cos(phase) * reach), ground - r * 0.1 - max(0, sin(phase)) * lift)
+        // front knees fold back, hind hocks forward
+        let knee = mix(hip, foot, 0.5) + V(ahead * r * (front ? -0.07 : 0.07), 0)
+        return [hip, knee, foot, foot + V(ahead * r * 0.2, r * 0.02), foot + V(ahead * r * 0.3, -r * 0.08)]
+    }
+
     /// Where the reaching limb sits when it isn't reaching.
     func armRest() -> V {
         if mode == .free || mode == .grabbed { return leg(armLeg)[2] }
@@ -445,6 +538,7 @@ final class Goo {
         let path = CGMutablePath()
         let hasLegs = (mode == .free || mode == .grabbed || perch != nil) && !puddle && !sleeping
         let out = armOut > 3
+        var reaching: [V] = []   // the reaching leg's points, so it is kept from closing a pinhole with the others too
         // The limb that goes reaching: one of the legs, or one of the strands while it is stuck on.
         if out {
             let isLeg = mode == .free || mode == .grabbed
@@ -454,32 +548,83 @@ final class Goo {
             let side: CGFloat = armTip.x >= root.x ? 1 : -1
             let reachOut = clamp(armOut * 0.5, 0, r * 1.5)
             let elbow = isLeg ? V(root.x + side * reachOut, root.y + clamp(reachOut * 0.45, 0, r * 0.5)) : root
-            let along = armTip - elbow, n = along.unit.normal
-            // A strand hangs in a curve under its own weight; only a leg goes more or less straight.
+            // One soft limb from root to tip: a single curve (a leg bends out along the ground first, a strand sags
+            // under its own weight) with the same ripple running its whole length, so no part of it is stiffer
+            // than the rest.
+            let chord = armTip - root, n = chord.unit.normal
             let sag = isLeg ? 0 : clamp(armOut * 0.3, 0, 32) * (n.y >= 0 ? 1 : -1)
-            var points = isLeg ? [root, elbow] : [root]
-            let steps = 7
-            for i in 1...steps {
+            let bend = isLeg ? elbow + (elbow - mix(root, armTip, 0.5)) * 0.6 : mix(root, armTip, 0.5) + n * (sag * 2)
+            var points: [V] = []
+            let steps = 9
+            for i in 0...steps {
                 let s = CGFloat(i) / CGFloat(steps)
-                let wave = sin(s * 6.5 - CGFloat(clock) * 5) * min(isLeg ? 6 : 3, armOut * 0.09) * sin(s * .pi)
-                var p = elbow + (along * s) + (n * (wave + sag * sin(s * .pi)))
+                let base = root * ((1 - s) * (1 - s)) + bend * (2 * s * (1 - s)) + armTip * (s * s)
+                let tangent = ((bend - root) * (2 * (1 - s)) + (armTip - bend) * (2 * s)).unit
+                let wave = sin(s * 6 - CGFloat(clock) * 5) * min(isLeg ? 5 : 3, armOut * 0.08) * sin(s * .pi)
+                var p = base + tangent.normal * wave
                 if armArrived && i == steps { p = p + V(0, sin(CGFloat(clock) * 14) * 2) }  // tap tap
                 points.append(p)
             }
+            reaching = points
+            let limb = CGMutablePath()
+            // The same goo however far it goes: the longer it is, the thinner it gets, never to a thread;
+            // and it ends in a round pad, not a point.
+            let slim = clamp((r * 1.6 / max(r * 1.6, armOut)).squareRoot(), 0.6, 1) * armThick
+            let tip = points[points.count - 1]
             if isLeg {
-                taper(points, r * 0.22, max(1.7, r * 0.11), max(1.5, r * 0.085), into: path)
+                taper(points, r * 0.24, max(1.7, r * 0.13 * slim), max(1.5, r * 0.1 * slim), into: limb)
+                limb.addPath(ellipse(tip, max(1.6, r * 0.13 * armThick), max(1.6, r * 0.13 * armThick)))
             } else {
                 // Thick where it leaves the body, thin along the way, a small pad on the end.
-                taper(points, r * 0.36, max(2, r * 0.17), max(1.6, r * 0.12), into: path)
-                path.addPath(ellipse(points[points.count - 1], r * 0.19, r * 0.19))
+                taper(points, r * 0.36, max(2, r * 0.17 * slim), max(1.6, r * 0.12 * slim), into: limb)
+                limb.addPath(ellipse(tip, r * 0.19 * armThick, r * 0.19 * armThick))
             }
+            path.addPath(limb.normalized())
         }
+        // Each limb is made whole on its own and then joined: two legs crossing with their outlines running
+        // opposite ways would otherwise cancel where they overlap and leave pinholes.
+        var joined: CGPath = path
         if hasLegs {
+            // the web between the legs where they leave the body, so no chink of background shows between two of them
+            // (not on the move: then front and hind legs stand apart)
+            // (on the move only a little at the very top, so front and hind legs still stand apart)
+            let web = trotting ? ellipse(c + V(0, r * 0.84), r * 0.38, r * 0.24) : ellipse(c + V(0, r * 0.88), r * 0.5, r * 0.32)
+            joined = joined.isEmpty ? web : joined.union(web)
+            // Wherever two legs come close enough for the goo's soft edge to run them together (walking, they pass
+            // each other; hanging or dashing, they swing in), they are joined into one shape for the moment, so the
+            // goo never closes round a pinhole of background between them. The soft edge is the same few points at
+            // any size, so the reach is too.
+            let touching = r * 0.28 + 5.2
+            do {
+                var legs = (0..<4).filter { !(out && $0 == armLeg) }.map { leg($0) }
+                if reaching.count > 3 { legs.append([reaching[0], reaching[1], reaching[2]]) }
+                for a in 0..<legs.count { for b in (a + 1)..<legs.count {
+                    for joint in [1, 2] where (legs[a][joint] - legs[b][joint]).length < touching {
+                        let bridge = CGMutablePath()
+                        bridge.move(to: L(legs[a][joint]))
+                        bridge.addLine(to: L(legs[b][joint]))
+                        joined = joined.union(bridge.copy(strokingWithWidth: r * 0.24, lineCap: .round, lineJoin: .round, miterLimit: 1))
+                    }
+                } }
+            }
+            // and where a pair of neighbouring legs nearly meet lower down, close the pinhole they would leave
+            if !trotting {
+                for (a, b) in [(0, 1), (2, 3)] where !(out && (a == armLeg || b == armLeg)) {
+                    let p = leg(a), q = leg(b)
+                    joined = joined.union(ellipse((p[1] + q[1] + p[2] + q[2]) * 0.25, r * 0.17, r * 0.2))
+                }
+            }
             for k in 0..<4 where !(out && k == armLeg) {
-                taper(leg(k), r * 0.22, max(1.7, r * 0.11), max(1.5, r * 0.085), into: path)
+                let limb = CGMutablePath()
+                if trotting {
+                    taper(leg(k), r * 0.26, max(1.9, r * 0.17), max(1.7, r * 0.14), into: limb)   // stubby corgi legs
+                } else {
+                    taper(leg(k), r * 0.22, max(1.7, r * 0.11), max(1.5, r * 0.085), into: limb)
+                }
+                joined = joined.isEmpty ? limb : joined.union(limb)
             }
         }
-        arms.path = path
+        arms.path = joined
 
         let puffs = CGMutablePath()
         for puff in ink {
@@ -513,6 +658,7 @@ final class Goo {
         updateMischief(m, distance, dt)
 
         hoverTime = (distance < radius + 5 && mode != .grabbed) ? hoverTime + Double(dt) : 0
+        if hoverTime > 0.5 { pet() }
 
         // Shaken while held: enough reversals in a second and it gets dizzy.
         if mode == .grabbed {
@@ -577,7 +723,8 @@ final class Goo {
         lookTime = max(0, lookTime - Double(dt))
         if mode == .free && settled && !sleeping && !puddle && peekSide == 0 && wanderTo == nil && armOut < 3 && clock > nextAct {
             nextAct = clock + Double.random(in: 9...22)
-            switch Int.random(in: 0..<7) {
+            switch Int.random(in: 0..<(costume.isCorgi ? 9 : 7)) {
+            case 7, 8: startZoomies()                       // a corgi's mad dash, back and forth
             case 0: tallTime = 1.3                               // yawn and stretch
             case 1: v.y = -210; settled = false; kick(70)        // a little hop
             case 2: startPeek()
@@ -613,6 +760,7 @@ final class Goo {
         standingID = nil
         splatUntil = 0
         wanderTo = nil
+        zoomUntil = 0
         creep = 0
         kick(70)
     }

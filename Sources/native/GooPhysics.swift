@@ -70,21 +70,34 @@ extension Goo {
             if dizzy && settled { v.x = sin(CGFloat(clock) * 5) * 34 }  // staggering
             if let goal = wanderTo, settled {
                 creep += (1 - creep) * min(1, dt * 3)
-                v.x = (goal > c.x ? 1 : -1) * 20
-                if abs(goal - c.x) < 3 { wanderTo = nil; nextWander = clock + Double.random(in: 14...40) }
+                v.x = (goal > c.x ? 1 : -1) * (zooming ? 330 : costume.isCorgi ? radius * 2.1 : 20)
+                if costume.isCorgi {
+                    // A corgi trots: quick steps, a bounce in each, looking where it goes, tongue out.
+                    if !zooming && clock > nextStep {
+                        nextStep = clock + 0.16
+                        v.y = -(2 * 1700 * radius * 0.06).squareRoot()
+                        settled = false
+                    }
+                    lookAt = V(goal > c.x ? 1 : -1, 0.15)
+                    lookTime = max(lookTime, 0.15)
+                }
+                if zooming, abs(goal - c.x) < 14 {
+                    let (lo, hi) = roamBounds()
+                    wanderTo = clamp(c.x + CGFloat.random(in: 110...170) * (goal > c.x - 1 ? -1 : 1), lo, hi)
+                    kick(40)
+                } else if abs(goal - c.x) < 3 { wanderTo = nil; nextWander = clock + Double.random(in: 14...40) }
             } else {
-                creep += (0 - creep) * min(1, dt * 3)
+                if wanderTo == nil { creep += (0 - creep) * min(1, dt * 3) }   // mid-step in the air it is still walking
                 if settled && clock > nextWander && !sleeping && !dizzy {
                     let away = CGFloat.random(in: 40...150) * (Bool.random() ? 1 : -1)
-                    var lo = visible.minX + 30, hi = visible.maxX - 30
-                    if let id = standingID, let w = host.platforms.first(where: { $0.id == id })?.frame {
-                        lo = max(lo, w.minX + radius + 4); hi = min(hi, w.maxX - radius - 4)
-                    }
+                    let (lo, hi) = roamBounds()
                     wanderTo = clamp(c.x + away, lo, hi)
                 }
             }
         }
         let before = c
+        gait += min(abs(v.x) * dt / (radius * 0.4) * .pi, CGFloat(dt) * 2 * .pi * 7)
+        trot += ((trotting ? 1 : 0) - trot) * min(1, dt * 6)
         c = c + v * dt
 
         splatAmount += ((clock < splatUntil ? 1 : 0) - splatAmount) * min(1, dt * (clock < splatUntil ? 26 : 6))
@@ -125,7 +138,7 @@ extension Goo {
                 if c.y > floor {
                     let hit = v.y
                     c.y = floor
-                    if hit > 90 {
+                    if hit > 90 && !(trotting && hit < 400) {
                         v.y = -hit * 0.3
                         settled = false
                         kick(min(hit * 0.14, 130))
@@ -133,6 +146,7 @@ extension Goo {
                         if hit > 1500 { makeDizzy(1.6, "hard landing") }
                     } else {
                         v.y = 0
+                        if trotting && hit > 60 { kick(hit * 0.05) }   // each trotting step lands with a small give
                         if !settled {
                             settled = true
                             nextWander = clock + Double.random(in: 8...22)
@@ -315,7 +329,7 @@ extension Goo {
         if let goal = reachGoal, (goal - c).length > 2 { look = (goal - c).unit }  // eyes on what it is touching
         if mode == .grabbed && mouseSpeed.length > 90 { look = (mouseSpeed * -1).unit }
         if mode == .free && !settled { look = (v * 1).unit }
-        if lookTime > 0 { look = lookAt }
+        if lookTime > 0 { look = lookAt } else if let scene = actLook() { look = scene }
         // caught: looks anywhere but at you
         if guilty { look = ((c - mouseAt).unit + V(0, -0.5)).unit }
         // close up it won't meet your eye for long: a side glance, then away
@@ -334,7 +348,7 @@ extension Goo {
         if state == "working" { wantHeavy = 0.14 }
         if oops { wantHeavy = 0.3 }
         if peekSide != 0 { wantHeavy = 0.28 }
-        if armOut > 6 || clock < smirkUntil { wantHeavy = 0.36 }
+        if (armOut > 6 && acting == nil) || clock < smirkUntil { wantHeavy = 0.36 }
         if puddle { wantHeavy = 0.42 }
         heavy += (wantHeavy - heavy) * min(1, dt * 12)
         lid += (open - lid) * min(1, dt * 22)

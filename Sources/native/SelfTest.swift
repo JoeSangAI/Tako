@@ -175,7 +175,146 @@ extension Controller {
             }
             log(String(format: "skin peak=%.2f radii", goo.peakAway))
             log("panel says its region is \(Int(region.width)) wide")  // Only the page's own message can have set this.
+            // Dressed as a corgi on the floor: a dash to and fro, then a stroke on the head.
+            goo.costume.outfit = Outfit.all.first { $0.id == "corgi" }
+            goo.costume.pinned = true
+            goo.tearOff(velocity: V(190, -240), reason: "selftest")
+            fakeMouse = V(goo.visible.midX, goo.visible.minY + 40)
+        }
+        at(42.0) { [self] in
+            goo.nextAct = goo.clock + 60
+            goo.dizzyUntil = 0   // it landed hard; the dash is what is being checked
+            goo.startZoomies()
+            log("zoomies from c.x=\(Int(goo.c.x)) zooming=\(goo.zooming)")
+        }
+        at(43.4) { [self] in log("mid-dash c.x=\(Int(goo.c.x)) v.x=\(Int(goo.v.x))") }
+        at(45.4) { [self] in
+            log("after dash zooming=\(goo.zooming) c.x=\(Int(goo.c.x))")
+            fakeMouse = goo.c + V(0, -goo.radius * 0.5)
+        }
+        at(46.6) { [self] in
+            log("petted happy=\(goo.happy) wiggle=\(String(format: "%.2f", goo.wiggle)) tongue=\(goo.costume.tongue.path != nil)")
+            fakeMouse = V(goo.visible.midX, goo.visible.minY + 40)
             log("self-test done")
         }
     }
+
+    // MARK: showcase: an outfit's moves on the floor, with a drawn cursor and a caption, for recording
+
+    /// `--showcase[=outfit]` (`=none` for Tako as it is): what an outfit does, played out once on the floor in the middle of the screen. Like the self-test
+    /// it opens no panel and moves no window; nothing in it touches the real pointer.
+    func runShowcase() {
+        func at(_ t: Double, _ work: @escaping () -> Void) {
+            let timer = Timer(timeInterval: t, repeats: false) { _ in work() }
+            timer.tolerance = 0
+            RunLoop.main.add(timer, forMode: .common)
+        }
+        var ticker: Timer?
+        func glide(to b: V, seconds: Double) {
+            let a = fakeMouse ?? b, began = CACurrentMediaTime()
+            ticker?.invalidate()
+            ticker = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] timer in
+                let t = min(1, (CACurrentMediaTime() - began) / seconds)
+                self?.fakeMouse = mix(a, b, CGFloat(t * t * (3 - 2 * t)))
+                if t >= 1 { timer.invalidate() }
+            }
+            RunLoop.main.add(ticker!, forMode: .common)
+        }
+        let root = gooView.layer!
+        let arrow = CAShapeLayer(), caption = CATextLayer()
+        let shape = CGMutablePath()
+        for (x, y) in [(0.0, 0.0), (0.0, -17.0), (4.2, -13.2), (7.2, -19.6), (10.0, -18.4), (7.2, -12.2), (12.4, -12.2)] {
+            if x == 0 && y == 0 { shape.move(to: .zero) } else { shape.addLine(to: CGPoint(x: x, y: y)) }
+        }
+        shape.closeSubpath()
+        arrow.path = shape
+        arrow.fillColor = NSColor.black.cgColor
+        arrow.strokeColor = NSColor.white.cgColor
+        arrow.lineWidth = 1.2
+        caption.fontSize = 18
+        caption.font = NSFont.systemFont(ofSize: 18, weight: .medium)
+        caption.foregroundColor = NSColor(white: 0.2, alpha: 1).cgColor
+        caption.alignmentMode = .center
+        caption.contentsScale = 2
+        for layer in [arrow, caption] { root.addSublayer(layer) }
+        let floor = goo.visible.maxY, middle = goo.visible.midX
+        let cursorTick = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] _ in
+            guard let self, let m = self.fakeMouse else { return }
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            arrow.position = self.goo.L(m)
+            caption.frame = CGRect(origin: self.goo.L(V(middle - 160, floor - 236)), size: CGSize(width: 320, height: 24))
+            CATransaction.commit()
+        }
+        RunLoop.main.add(cursorTick, forMode: .common)
+        func say(_ words: String) { caption.string = words; log("showcase: \(words)") }
+
+        // on the floor, dressed, nothing of its own planned
+        // --showcase=corgi, --showcase=none, and ",acts" after it for the scenes it plays while it works
+        let asked = (CommandLine.arguments.first { $0.hasPrefix("--showcase") }?.split(separator: "=").dropFirst().first.map(String.init) ?? "corgi")
+            .split(separator: ",").map(String.init)
+        goo.costume.outfit = Outfit.all.first { $0.id == asked.first }
+        // a title for the recording can be given as ",title=…"
+        let title = asked.first { $0.hasPrefix("title=") }.map { String($0.dropFirst(6)) } ?? goo.costume.outfit?.name ?? "Tako"
+        goo.costume.pinned = true
+        goo.radius = 45   // three times its size, so a recording shows the outfit's details
+        goo.mode = .free
+        goo.stuck = [false, false, false]   // it starts out holding the front window: let go of it first
+        goo.reach = [0, 0, 0]
+        goo.reachV = [0, 0, 0]
+        goo.place(at: V(middle, floor - goo.radius * goo.stance))
+        setWatching(false)
+        fakeMouse = V(middle + 170, floor - 150)
+        func quiet() { goo.nextAct = goo.clock + 600; goo.nextWander = goo.clock + 600; goo.lastMoved = goo.clock }
+        if asked.contains("acts") {
+            // what it does while it works, one scene after another
+            let scenes: [(String, String)] = [("think", "在想"), ("search", "上网查"), ("run", "跑命令"), ("look", "看窗口"), ("read", "读微信"),
+                                              ("answer", "写回答"), ("listen", "陪你听课"), ("wait", "等你点头"), ("trouble", "连不上，重试中")]
+            at(0.2) { [self] in quiet(); say(title); fakeMouse = V(middle + 170, floor - 150) }
+            for (i, (act, words)) in scenes.enumerated() {
+                at(1.4 + Double(i) * 3.4) { [self] in quiet(); goo.act = act; say(words) }
+            }
+            let end = 1.4 + Double(scenes.count) * 3.4
+            at(end) { [self] in goo.act = ""; say("做完了"); fakeMouse = V(middle + 900, floor - 600); goo.celebrate() }
+            at(end + 2.2) { [self] in say("出错了"); goo.fumble() }
+            at(end + 5.0) { [self] in log("showcase done") }
+            return
+        }
+        at(0.2) { [self] in quiet(); say(title) }
+        at(1.6) { [self] in say("好奇"); glide(to: goo.c + V(goo.radius * 2.6, -goo.radius * 2.2), seconds: 1.2) }
+        at(3.4) { [self] in say("摸摸头"); glide(to: goo.c + V(2, -goo.radius * 0.7), seconds: 0.5) }
+        at(4.2) { [self] in glide(to: goo.c + V(-6, -goo.radius * 0.5), seconds: 0.9) }
+        at(5.1) { [self] in glide(to: goo.c + V(6, -goo.radius * 0.7), seconds: 0.9) }
+        at(6.0) { [self] in glide(to: goo.c + V(-4, -goo.radius * 0.6), seconds: 0.9) }
+        at(7.0) { [self] in glide(to: V(middle + 170, floor - 150), seconds: 0.6) }
+        at(7.8) { [self] in say("溜达"); quiet(); goo.wanderTo = middle - 200 }
+        at(10.0) { [self] in quiet(); goo.wanderTo = middle + 170 }
+        at(12.4) { [self] in quiet(); goo.wanderTo = middle }
+        at(13.2) { [self] in say("撒欢"); quiet(); goo.startZoomies() }
+        at(16.4) { [self] in say("办完事，开心"); goo.wanderTo = nil; quiet(); goo.celebrate() }
+        // the cursor stops near it and stays still: a limb creeps out for it; the cursor moves and it is caught
+        at(18.2) { [self] in say("偷偷伸手"); quiet(); glide(to: goo.c + V(goo.radius * 4.2, -goo.radius * 2.4), seconds: 0.8) }
+        at(23.4) { [self] in say("被抓包"); glide(to: (fakeMouse ?? goo.c) + V(14, 6), seconds: 0.15) }
+        at(25.4) { [self] in say("被拎起来晃"); quiet(); glide(to: goo.c, seconds: 0.6) }
+        at(26.1) { [self] in
+            goo.press(goo.c)
+            let start = goo.c, began = CACurrentMediaTime()
+            ticker?.invalidate()
+            ticker = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] timer in
+                guard let self else { timer.invalidate(); return }
+                let t = CACurrentMediaTime() - began
+                // up a little, shaken hard from side to side, then held still so it drops where it is
+                let shake = t < 1.2 ? sin(t * 24) * 70 : 0
+                self.fakeMouse = start + V(shake, -min(1, t * 3) * 60)
+                if t > 1.6 { timer.invalidate() }
+            }
+            RunLoop.main.add(ticker!, forMode: .common)
+        }
+        at(27.9) { [self] in say("晃晕了"); goo.candidate = nil; goo.release() }   // dropped where it is, not onto a window
+        at(30.0) { [self] in glide(to: V(middle + 170, floor - 150), seconds: 0.6) }
+        at(31.0) { [self] in say("困了"); goo.dizzyUntil = 0; quiet(); goo.lastMoved = goo.clock - 41 }
+        at(34.8) { [self] in say(title); glide(to: goo.c + V(goo.radius * 2.4, -goo.radius * 1.8), seconds: 0.5) }
+        at(37.0) { [self] in log("showcase done") }
+    }
 }
+

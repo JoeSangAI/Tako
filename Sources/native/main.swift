@@ -6,6 +6,6 @@ if logFile >= 0 { dup2(logFile, STDERR_FILENO) }
 
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
-let controller = Controller(selfTest: CommandLine.arguments.contains("--selftest"))
+let controller = Controller(selfTest: CommandLine.arguments.contains("--selftest") || CommandLine.arguments.contains { $0.hasPrefix("--showcase") })
 app.delegate = controller
 app.run()

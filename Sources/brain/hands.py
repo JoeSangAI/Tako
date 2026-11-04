@@ -12,9 +12,9 @@ from pathlib import Path
 import feedback as fb
 import wechat_reader as reader
 from chats import render
-from guards import LOCAL_NAMES, SCRIPTABLE, clipped, full_chat_name, plain_command, same_chat, risky_script, unsafe_script, workbench_packet
+from guards import LOCAL_NAMES, SCRIPTABLE, clipped, full_chat_name, lasting_command, overwritten_paths, plain_command, same_chat, risky_script, unsafe_script, workbench_packet
 from outputs import back_up, change_problem, file_in_title, file_pictures, replace_file
-from settings import CONFIG, HAS_WECHAT, OWNER, WECHAT, WORKBENCH, WORKBENCH_CARDS, local_today
+from settings import CONFIG, HAS_WECHAT, OWNER, WECHAT, WORKBENCH, WORKBENCH_CARDS, local_today, note_metric
 
 FEEDBACK_KINDS = {"bug": "出了问题", "rough": "不好用", "wish": "想用的场景"}
 COMING_BACK_SECONDS = 1800  # How long the last step of a job waits for the owner to come back to its window.
@@ -35,13 +35,27 @@ class Hands:
         if method in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval"):
             if not job:
                 return {"decision": "decline"}
+            # The owner is asked only about what can't be taken back (Joe 2026-11-04: keep the cards that matter, interrupt as little as possible).
             if method == "item/fileChange/requestApproval":
                 await asyncio.sleep(0.1)  # the item's own start event carries the paths
-                paths = job.changing.get(params.get("itemId")) or [params.get("grantRoot")]
-                text = "改动文件：" + "、".join(str(path) for path in paths if path) if any(paths) else "改动文件"
+                paths = [str(path) for path in job.changing.get(params.get("itemId")) or [] if path]
+                if paths and await asyncio.to_thread(self._backed_up, paths):
+                    note_metric(kind="approval", by="itself", what="file")
+                    return {"decision": "accept"}  # Not for the session: the next change gets its own backup.
+                text = "改动文件：" + "、".join(paths) if paths else f"改动文件：{params.get('grantRoot') or '不知道改哪里'}"
+                why = str(params.get("reason") or "")[:200]
             else:
                 text = plain_command(params.get("command")) or "运行命令"
-            accepted = await self._card({"kind": "approval", "text": clipped(str(text)), "reason": str(params.get("reason") or "")[:200]}, job)
+                why = lasting_command(params.get("command") or text)
+                if not why:
+                    note_metric(kind="approval", by="itself", what="command")
+                    # Writing over a file with > or tee: what was there is backed up first, and the next time asks again so it gets its own.
+                    over = [path for path in overwritten_paths(params.get("command") or text, params.get("cwd")) if Path(path).is_file()]
+                    if over and await asyncio.to_thread(self._backed_up, over):
+                        return {"decision": "accept"}
+                    return {"decision": "acceptForSession"}
+            note_metric(kind="approval", by="owner", what="file" if method == "item/fileChange/requestApproval" else why)
+            accepted = await self._card({"kind": "approval", "text": clipped(str(text)), "reason": why}, job)
             # Asked once: the same thing doesn't come back to the owner for the rest of this session.
             return {"decision": "acceptForSession" if accepted else "decline"}
         if method == "item/permissions/requestApproval":
@@ -51,6 +65,16 @@ class Hands:
         if method == "mcpServer/elicitation/request":
             return {"action": "decline"}
         raise RuntimeError("unsupported_server_request")
+
+    @staticmethod
+    def _backed_up(paths):
+        """A file the owner didn't name may still be changed: what was there goes to the backups first, so it can always be had back."""
+        if any(Path(path).is_dir() for path in paths):
+            return False
+        for path in map(Path, paths):
+            if path.exists():
+                back_up(path)
+        return True
 
     async def _card(self, card, job):
         card["id"], card["job"] = secrets.token_hex(4), job
@@ -493,9 +517,7 @@ class Hands:
         problem = await asyncio.to_thread(change_problem, source, copy)
         if problem:
             return self._reply(problem, ok=False)
-        accepted = await self._card({"kind": "change", "text": clipped(summary), "original": str(source), "edited": str(copy)}, job)
-        if not accepted:
-            return self._reply(f"{OWNER} 没有应用这份改动，原文件没动。")
+        # The original is backed up before anything happens, so this goes ahead without a card (Joe 2026-11-04). What changed is in the answer.
         backup = await asyncio.to_thread(back_up, source)
         # The card's 看副本 leaves the copy open beside the original. It has done its job; if it won't go, nothing depends on it.
         await self.native("closeDocument", timeout=25, document=str(copy), held=True)

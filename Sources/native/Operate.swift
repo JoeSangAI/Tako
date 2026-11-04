@@ -32,10 +32,13 @@ let messagingNames = ["微信", "wechat", "飞书", "lark", "feishu", "qq", "tel
 // A wrong click here can cost the owner their network or their machine: every step asks first.
 let askFirstBundles: Set<String> = ["com.liguangming.Shadowrocket", "com.apple.systempreferences", "com.apple.keychainaccess",
                                     "com.apple.Terminal", "com.googlecode.iterm2"]
+// Browsers that don't run on Chrome's engine: what looks like a text area there may be a web chat.
+let webBundles: Set<String> = ["com.apple.Safari", "org.mozilla.firefox", "com.apple.SafariTechnologyPreview"]
 let sendWords = ["发送", "发出", "寄出", "send", "reply all"]
-let riskyWords = ["提交", "submit", "支付", "付款", "pay", "购买", "buy", "下单", "checkout", "删除", "delete", "移除", "remove",
+// Only what can't be taken back asks first (Joe 2026-11-04: keep the cards that matter). Stop, remove from a list, disconnect: undone with one more click.
+let riskyWords = ["提交", "submit", "支付", "付款", "pay", "购买", "buy", "下单", "checkout", "删除", "delete",
                   "清空", "发布", "publish", "post", "注销", "退出登录", "sign out", "log out", "卸载", "uninstall", "格式化", "erase",
-                  "抹掉", "重置", "reset", "断开", "disconnect", "停止", "stop", "关闭连接", "转账", "transfer"]
+                  "抹掉", "重置", "reset", "转账", "transfer"]
 let keyCodes: [String: CGKeyCode] = [
     "return": 36, "enter": 76, "tab": 48, "space": 49, "delete": 51, "backspace": 51, "forwarddelete": 117, "esc": 53, "escape": 53,
     "left": 123, "right": 124, "down": 125, "up": 126, "home": 115, "end": 119, "pageup": 116, "pagedown": 121,
@@ -562,11 +565,12 @@ extension Controller {
             // Command-Return sends in mail and most web apps, whatever holds the keyboard.
             if !flags.subtracting(.maskShift).isEmpty { return refusal("\(keys) 通常就是发送，留给用户自己按") }
             let focus = focusedSubrole(win.pid)
-            // A search box or address bar is fine; so is Return on a dropdown or a button whose name says it is harmless.
-            // Anywhere else, Enter may submit or send something.
+            // A search box or address bar is fine; so is Return on a dropdown or a button whose name says it is harmless,
+            // and a new line in a document. Anywhere else, Enter may submit or send something: a text area in a web page can be a chat.
             let label = focusedLabel(win.pid)
+            let inADocument = focus.role == "AXTextArea" && !drawsLikeChrome(win.pid) && !webBundles.contains(win.bundle)
             let harmless = flags.isEmpty && (["AXTextField", "AXComboBox", "AXSearchField", "AXPopUpButton", "AXMenuItem", "AXCheckBox", "AXRadioButton"].contains(focus.role)
-                || (focus.role == "AXButton" && !label.isEmpty && hits(label, riskyWords) == nil))
+                || inADocument || (focus.role == "AXButton" && !label.isEmpty && hits(label, riskyWords) == nil))
             if !harmless && !confirmed {
                 log("return asks first: \(focus.role)")
                 return ["needs": "在 \(win.app) 里按回车（可能会提交或发送）"]

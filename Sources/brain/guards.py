@@ -157,7 +157,68 @@ def unsafe_script(script, app):
     return None
 
 
+# JavaScript that does more than read the page: it could click, type, submit or send on the owner's behalf.
+PAGE_CHANGING = re.compile(r"\.click\(|submit\(|dispatchEvent|\.value\s*=|innerHTML\s*=|innerText\s*=|textContent\s*=|execCommand|\.remove\("
+                           r"|fetch\(|XMLHttpRequest|sendBeacon|WebSocket|location\s*=|location\.(?:assign|replace|href\s*=)|\.focus\(|keydown|keypress|\.send\(", re.I)
+
+
 def risky_script(script):
-    """What a script would do that can't be taken back, or that runs code inside a web page."""
-    found = re.search(r"\b(delete|erase|remove|empty|close|quit|javascript)\b", script_code(script)[0])
-    return found.group(1) if found else None
+    """What a script would do that can't be taken back: deleting, closing without saving, or JavaScript that changes a page. Reading a page, closing or quitting with nothing lost goes ahead."""
+    code, strings = script_code(script)
+    found = re.search(r"\b(delete|erase|remove|empty)\b", code)
+    if found:
+        return found.group(1)
+    if re.search(r"\bsaving no\b", code):
+        return "saving no"
+    # Each piece of page code is the string right after the word; JavaScript kept anywhere else can't be read here, so it asks.
+    for found in re.finditer(r"\bjavascript\b(?:\s+\"(\d+)\")?", code):
+        if found.group(1) is None or PAGE_CHANGING.search(strings[int(found.group(1))]):
+            return "javascript"
+    return None
+
+
+# A command at the start of a line or after a pipe, ;, &&, $( or a wrapper like sudo, xargs, env: the word itself as an argument doesn't count.
+AT_COMMAND = r"(?:^|[;&|(`\n]\s*|\s-\w*c\s+['\"]\s*|\b(?:sudo|xargs|exec|env|time|nohup|command)\s+(?:-\S+\s+|\S+=\S*\s+)*|\s-exec(?:dir)?\s+)"
+LASTING = [
+    (r"(?:rm|rmdir|unlink|srm|shred|trash)\b", "删除文件"),
+    (r"git\s+(?:\S+\s+)*?(?:push|reset\s+--hard|clean\s+-\w*f|branch\s+-D|filter-branch|checkout\s+--\s)", "推送或改写 git"),
+    (r"(?:sudo|su|doas)\b", "管理员权限"),
+    (r"(?:kill|pkill|killall)\b", "结束进程"),
+    (r"(?:launchctl|crontab|systemsetup|networksetup|scutil|pfctl|tccutil|csrutil|spctl|nvram|pmset|diskutil|dd|mkfs\S*|security|profiles)\b", "改这台 Mac 的设置"),
+    (r"defaults\s+(?:-\S+\s+)*(?:write|delete|import)\b", "改这台 Mac 的设置"),
+    (r"(?:shutdown|reboot|halt)\b", "关机或重启"),
+    (r"(?:scp|sftp|rsync|ssh|ftp|mail|sendmail|mutt|gh|lark-cli)\b", "发到别处"),
+    (r"(?:osascript|automator|shortcuts\s+run)\b", "操作别的应用"),
+]
+UPLOADING = re.compile(r"\b(?:curl|wget)\b[^\n|;]*?\s(?:-d\b|--data\S*|-F\b|--form\b|-T\b|--upload-file|-X\s*['\"]?(?:POST|PUT|PATCH|DELETE)|--request\s+['\"]?(?:POST|PUT|PATCH|DELETE)|--json\b)", re.I)
+
+
+TARGET = r"(?:\"([^\"]+)\"|'([^']+)'|([^\s'\";|&()<>-][^\s'\";|&()<>]*))"
+
+
+def overwritten_paths(command, cwd=""):
+    """Files a command writes over in one go (`>` and `tee` without -a): the ones that already exist get backed up before it runs. Appending loses nothing."""
+    text = "\n".join(map(str, command)) if isinstance(command, (list, tuple)) else str(command or "")  # whole: unwrapping loses a closing quote
+    names = ["".join(found) for found in re.findall(r"(?<![0-9&>])>\|?\s*" + TARGET, text)]
+    names += ["".join(found[1:]) for found in re.findall(r"\btee\s+((?:-\w+\s+)*)" + TARGET, text) if "a" not in found[0]]
+    paths = []
+    for name in names:
+        if name.startswith("/dev/"):
+            continue
+        path = Path(os.path.expandvars(os.path.expanduser(name)))
+        paths.append(str(path if path.is_absolute() else Path(cwd or ".") / path))
+    return paths
+
+
+def lasting_command(command):
+    """Why a command that left the sandbox has to wait for the owner: it deletes, sends something off this Mac, or changes the Mac itself. None: they would have said yes, so it just runs."""
+    # Codex may hand the command over as its argument list: each argument is read as its own line, so none hides behind a quote.
+    text = "\n".join(map(str, command)) if isinstance(command, (list, tuple)) else plain_command(command)
+    for pattern, why in LASTING:
+        if re.search(AT_COMMAND + pattern, text, re.I):
+            return why
+    if re.search(r"\bfind\b[^\n|;]*\s-delete\b", text):
+        return "删除文件"
+    if UPLOADING.search(text):
+        return "往网上发送"
+    return None

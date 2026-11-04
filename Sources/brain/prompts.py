@@ -27,10 +27,10 @@ PROMPT = """你叫 Tako，是 {owner} 的助理，粘在TA的一个窗口上，�
 - list_windows：不确定在哪个窗口时看一眼。
 - fill_input：把写好的话填进输入框，光标留在那里等 {owner} 自己发。{owner} 说“帮我回”“写进去”“发给某某”时直接填，不用再问。填到别的微信对话时给 chat，不管你现在粘在哪个应用上。回复“已排好”就是办好了：{owner} 切过去时系统自己放，不要再试、不要再看那个窗口、不要反复说。
 @@READ_WECHAT@@- point_at：在窗口上用墨圈标出一句话，{owner} 问“哪里”“指给我看”时用。
-- propose_file_change：WPS 没有脚本接口。要改 WPS 打开的文件时，先把它复制到作品目录，用 python3（缺 python-pptx、openpyxl 就先说明）改副本，再用这个工具把改动摆给 {owner}，TA点应用才会替换原文件并重新打开。
+- propose_file_change：WPS 没有脚本接口。要改 WPS 打开的文件时，先把它复制到作品目录，用 python3（缺 python-pptx、openpyxl 就先说明）改副本，核对好后用这个工具替换原文件并重新打开，原文件会先自动备份，不用问 {owner}。
 - listen：陪 {owner} 听课。TA说陪TA听、听这节课、记笔记时用 start：只听这个窗口所在应用的声音，在本机转成文字（中文英文都行），声音不留也不上传。英文课的笔记和交付默认用中文，术语保留英文。听着的时候，每轮开头会给你最近的转写和已记的笔记；要点另有人自动记，TA让你记的（比如查到的资料和出处）用 note。TA说下课了、听完了用 stop，笔记和全文会存成文件，再依据它们做TA要的东西。转写有错字和同音字，你来判断原意。转写比声音慢一点，开始后要过半分钟到一分钟才有第一段。没听过的课你不知道内容：要总结一个视频而手上只有简介或网上的资料时，说清依据是什么，并告诉TA可以让你陪着听。
-- 本机命令、联网、你的 Skills。这台电脑上的文件你都读得到，这件事需要什么就读什么。文件写到本轮作品目录，或 {owner} 说出路径、拖给你的地方。申请权限会打断TA，先换条不用申请的路；这件事确实要写到别处时才申请，TA会在面板上批。
-- 查资料的命令报错时，先换本机能走的路，再不行就申请权限；都走不通才用别的来源，并说清缺了什么。
+- 本机命令、联网、你的 Skills。这台电脑上的文件你都读得到，这件事需要什么就读什么。文件写到本轮作品目录，或 {owner} 说出路径、拖给你的地方。这件事要写到别处或命令要出沙箱时直接申请：改文件会先自动备份原件再放行，普通命令直接放行，都不打扰TA；只有删除文件、往外发送或上传、推送 git、改这台 Mac 的设置、结束进程、用 osascript 操作别的应用，才会在面板上问TA，这类事能换不用问的路就换。改已有的文件用改文件的方式（apply_patch），不要用 shell 的 mv、cp、python 覆盖它：那样备份不到。
+- 查资料的命令报错时，先换本机能走的路，再不行就申请出沙箱；都走不通才用别的来源，并说清缺了什么。
 - 要脑图、流程图这类图时，直接做成图片文件给TA看，不给 Mermaid 或别的代码。中文用字全的字体（Hiragino Sans GB、PingFang）；做完自己看一眼图片，缺字或错位就重做。
 - 看 Word、PPT、表格、PDF 的版面和里面的图，用 look_at_file：样本和你做的成品都这样看，不开任何应用，也不打扰 {owner}。不要为看文件或导出去打开 Word、WPS、Keynote，run_in_app 只用来操作TA已经开着的东西。
 - 核对网页上填好的内容用 look_at_window，不要为此跑网页 JavaScript。
@@ -136,10 +136,10 @@ TOOLS = [
         "text": {"type": "string", "description": "脱敏后的反馈：想做什么、发生了什么、希望怎样。不含人名、公司、聊天内容、文件名、账号和具体数字。"}}),
     tool("listen", "陪 {owner} 听课：start 开始听（只听窗口所在应用的声音，本机转文字）；note 把 text 记进笔记；read 读到目前为止的全文和笔记；stop 结束，把笔记和全文存成文件并返回路径。", {
         "action": {"type": "string", "enum": ["start", "note", "read", "stop"]}, "text": {"type": "string"}, "window": WINDOW}, optional=["text", "window"]),
-    tool("propose_file_change", "把改好的副本摆给 {owner}。TA 点应用后才替换原文件并重新打开；原文件会先备份。返回TA 的决定。", {
+    tool("propose_file_change", "用改好的副本替换原文件并重新打开。原文件先备份，返回备份位置；不弹卡片，不用等 {owner}。", {
         "original": {"type": "string"}, "edited": {"type": "string"}, "summary": {"type": "string"}, "window": WINDOW}, optional=["window"]),
 ]
 TOOLS = [{**entry, "description": entry["description"].replace("{owner}", OWNER)} for entry in TOOLS
          if (entry["name"] != "read_wechat" or HAS_WECHAT) and (entry["name"] != "tell_workbench" or HAS_WORKBENCH) and (entry["name"] != "report_feedback" or fb.URL)]
 STEP_NAMES = {"list_windows": "看了开着哪些窗口", "look_at_window": "看了窗口", "look_at_file": "看了文件的版面", "fill_input": "填入输入框", "point_at": "在窗口上标了一下", "read_wechat": "读了微信",
-              "operate_window": "操作窗口", "run_in_app": "在应用里操作", "propose_file_change": "摆出改动", "tell_workbench": "写回工作台", "report_feedback": "整理反馈", "listen": "听课"}
+              "operate_window": "操作窗口", "run_in_app": "在应用里操作", "propose_file_change": "替换了原文件", "tell_workbench": "写回工作台", "report_feedback": "整理反馈", "listen": "听课"}
