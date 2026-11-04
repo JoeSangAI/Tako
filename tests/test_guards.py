@@ -668,6 +668,31 @@ class NeverSends(unittest.TestCase):
         self.assertIn("com.liguangming.Shadowrocket", operate)
         self.assertIn("AXSecureTextField", operate)
 
+    def test_a_web_page_is_filled_with_data_never_with_a_click_a_key_or_the_clipboard(self):
+        import base64
+        import webfill
+        for word in (".click(", "submit", "keydown", "keypress", "KeyboardEvent", "MouseEvent", "PointerEvent", "navigator.clipboard", "fetch(", "location", "eval(", "Function("):
+            self.assertNotIn(word, webfill.PAGE)
+        self.assertIn("password|cc-", webfill.PAGE, "password and payment boxes stay the owner's")
+        text = '");\n document.forms[0].submit(); ("\n第二行 \\ 「引号」'
+        code = webfill.page_code("start", 'Lyrics"); alert(1); ("', text, "ab12")
+        self.assertNotIn("submit", code.replace(webfill.PAGE.strip(), ""), "the text travels as data, never as code")
+        self.assertIn(base64.b64encode(text.encode()).decode(), code)
+        self.assertIn(r'"Lyrics\"); alert(1); (\""', code, "the field name is a JSON string")
+        script = webfill.run_script("Google Chrome", "42", "start", "Lyrics", text, "ab12")
+        self.assertNotIn("\n", script, "one line of AppleScript")
+        self.assertTrue(script.startswith('tell application "Google Chrome" to execute active tab of window id 42 javascript "'))
+        self.assertTrue(code.isascii())
+
+    def test_a_web_page_is_found_by_its_window_not_by_whichever_is_in_front(self):
+        import webfill
+        rows = "7\t0\t38\t1470\t882\thttps://a.example/x\tCreate\n9\t100\t100\t900\t700\thttps://b.example/y\tCreate"
+        self.assertEqual(webfill.which_window(rows, "Create", {"x": 100, "y": 100, "w": 800, "h": 600}), ("9", "https://b.example/y"))
+        self.assertIsNone(webfill.which_window(rows, "Create", None), "two windows with that title: neither is guessed")
+        self.assertEqual(webfill.which_window(rows, "Other", None), None)
+        self.assertTrue(webfill.scripting_off("Executing JavaScript through AppleScript is turned off. To turn it on, from the menu bar, go to View > Developer > Allow JavaScript from Apple Events."))
+        self.assertFalse(webfill.scripting_off("execution error: Can't get window id 5"))
+
     def test_only_these_apps_are_off_limits_and_dingtalk_is_one(self):
         self.assertIn('"钉钉"', native("Windows").split("blockedOwners")[1].split("\n")[0])
 

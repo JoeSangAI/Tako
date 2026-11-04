@@ -779,6 +779,72 @@ class NeedingTheRealPointer(Base):
         self.assertIn("bringForward", [c["command"] for c in self.tako.commands])
 
 
+class FillingAWebPage(Base):
+    """A page in a browser at the back fills from inside: its rich editor too, read back, with nothing clicked and nobody asked over (Joe 2026-11-04)."""
+    LYRICS = "[Verse]\n需求又改了\nBug 又多了"
+    FILL = {"call": "fill_input", "args": {"text": LYRICS, "field": "Lyrics"}}
+
+    def setUp(self):
+        super().setUp()
+        chrome = {"ok": True, "id": 38519, "app": "Google Chrome", "bundle": "com.google.Chrome", "title": "Create | Suno",
+                  "frame": {"x": 0, "y": 38, "w": 1470, "h": 844}, "stuck": True}
+        self.tako.native["resolve"] = lambda c: chrome
+        self.tako.stick("Google Chrome", "com.google.Chrome", "Create | Suno", "38519")
+        self.editor = ""
+        self.page = self.a_page
+
+    def a_page(self, command):
+        script = command["script"]
+        if "repeat with w in windows" in script:
+            return {"ok": True, "output": "1574729330\t0\t38\t1470\t882\thttps://suno.com/create\tCreate | Suno\n"}
+        step = script.rsplit("})(", 1)[1].split(",")[0].strip('\\"')  # the page code's first argument
+        if step == "start":
+            return {"ok": True, "output": json.dumps({"pending": True, "kind": "lexical", "name": "Lyrics editor"})}
+        if step == "paste":
+            self.editor = self.LYRICS
+        return {"ok": True, "output": json.dumps({"ok": step != "check" or self.editor == self.LYRICS, "kind": "lexical", "name": "Lyrics editor", "now": self.editor, "length": len(self.editor)})}
+
+    def reply(self):
+        self.tako.until(lambda s: "填好了" in self.tako.said(s), "an answer")
+        return json.dumps([r for r in self.tako.codex("tool_reply") if r["tool"] == "fill_input"][0]["reply"], ensure_ascii=False)
+
+    def test_a_rich_editor_takes_the_text_behind_the_owners_back(self):
+        self.tako.native["script"] = lambda c: self.page(c)
+        self.tako.ask(steps(self.FILL, {"say": "填好了"}))
+        said = self.reply()
+        self.assertIn("读回核对一致", said)
+        commands = [c["command"] for c in self.tako.commands]
+        for never in ("fill", "bringForward", "step", "isBack"):
+            self.assertNotIn(never, commands)
+        scripts = [c for c in self.tako.commands if c["command"] == "script"]
+        self.assertEqual({c["bundle"] for c in scripts}, {"com.google.Chrome"}, "each asks first whether it may control Chrome")
+        self.assertTrue(all("window id 1574729330" in c["script"] for c in scripts[1:]), "the window it was asked on, not the one in front")
+        self.assertFalse(any("需求" in c["script"] for c in scripts), "the words travel as data")
+        self.assertFalse(self.tako.state().get("cards"), "filling asks nobody")
+
+    def test_a_box_that_isnt_showing_says_what_to_do_first(self):
+        self.tako.native["script"] = lambda c: self.page(c) if "repeat with w" in c["script"] else {"ok": True, "output": json.dumps({"error": "hidden", "name": "Lyrics"})}
+        self.tako.ask(steps(self.FILL, {"say": "填好了"}))
+        said = self.reply()
+        self.assertIn("现在看不见", said)
+        self.assertNotIn("已排好", said)
+
+    def test_scripting_turned_off_falls_back_and_names_the_switch(self):
+        self.tako.native["script"] = lambda c: {"ok": False, "error": "Executing JavaScript through AppleScript is turned off. To turn it on, from the menu bar, go to View > Developer > Allow JavaScript from Apple Events."}
+        self.tako.ask(steps(self.FILL, {"say": "填好了"}))
+        said = self.reply()
+        self.assertIn("允许 Apple 事件中的 JavaScript", said)
+        self.assertIn("fill", [c["command"] for c in self.tako.commands], "the usual way still goes ahead")
+
+    def test_the_system_asking_about_control_comes_back_at_once(self):
+        self.tako.native["script"] = lambda c: {"ok": False, "consent": True, "error": "系统正在问能不能让 TAKO 控制这个应用，点了允许才行"}
+        began = time.time()
+        self.tako.ask(steps(self.FILL, {"say": "填好了"}))
+        said = self.reply()
+        self.assertLess(time.time() - began, 6)
+        self.assertIn("系统正在问", said)
+
+
 class HandingAFileToAnotherApp(Base):
     """Asked on one app's window, it lands in WeChat. WeChat takes the real pointer, so it waits for the owner to get there, and then nobody has to say anything."""
     WECHAT = "com.tencent.xinWeChat"

@@ -283,13 +283,15 @@ extension Controller {
         }
         switch name {
         case "about": return await about(win)
-        case "resolve": return ["ok": true, "id": win.id, "app": win.app, "bundle": win.bundle, "title": win.title, "stuck": win.id == target?.id]
+        case "resolve":
+            let frame = ["x": win.frame.minX, "y": win.frame.minY, "w": win.frame.width, "h": win.frame.height]
+            return ["ok": true, "id": win.id, "app": win.app, "bundle": win.bundle, "title": win.title, "frame": frame, "stuck": win.id == target?.id]
         case "look": return await look(win)
         case "listenStart": return await startListening(win)
         case "titles": return await titles(win)
         case "fill": return await fill(win, text: command["text"] as? String ?? "", files: command["files"] as? [String] ?? [])
         case "point": return await point(win, at: command["text"] as? String ?? "")
-        case "script": return await script(command["script"] as? String ?? "")
+        case "script": return await script(command["script"] as? String ?? "", to: command["bundle"] as? String, within: command["within"] as? Double ?? 80)
         case "openChat": return await openChat(command["name"] as? String ?? "", in: win)
         case "isBack":
             // Their words going into the panel: the input box is about to be clicked out from under them.
@@ -654,8 +656,20 @@ extension Controller {
     // MARK: documents
 
     /// Runs AppleScript with osascript, so a hung app can't freeze the goo. The server has checked what it talks to.
-    func script(_ source: String, within limit: Double = 80) async -> [String: Any] {
+    /// The first script to an app stops at the system asking the owner whether TAKO may control it, and nothing comes back until they answer
+    /// (Chrome, 2026-11-04: the job waited the full limit and gave up). So that is checked first: the question goes up on its own and the job hears at once.
+    func script(_ source: String, to bundle: String? = nil, within limit: Double = 80) async -> [String: Any] {
         await Task.detached { () -> [String: Any] in
+            if let bundle {
+                switch Controller.mayControl(bundle, asking: false) {
+                case OSStatus(errAEEventWouldRequireUserConsent):
+                    Controller.askToControl(bundle)
+                    return ["ok": false, "consent": true, "error": "系统正在问能不能让 TAKO 控制这个应用，点了允许才行"]
+                case OSStatus(errAEEventNotPermitted):
+                    return ["ok": false, "denied": true, "error": "系统设置里没允许 TAKO 控制这个应用（隐私与安全性 › 自动化）"]
+                default: break
+                }
+            }
             let task = Process()
             task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
             task.arguments = ["-e", source]
@@ -671,6 +685,25 @@ extension Controller {
             if task.terminationStatus == 0 { return ["ok": true, "output": String(decoding: output, as: UTF8.self)] }
             return ["ok": false, "error": String(decoding: problem, as: UTF8.self)]
         }.value
+    }
+
+    nonisolated static func mayControl(_ bundle: String, asking: Bool) -> OSStatus {
+        var target = AEAddressDesc()
+        let id = Array(bundle.utf8)
+        guard AECreateDesc(DescType(typeApplicationBundleID), id, id.count, &target) == noErr else { return OSStatus(paramErr) }
+        defer { AEDisposeDesc(&target) }
+        return AEDeterminePermissionToAutomateTarget(&target, AEEventClass(typeWildCard), AEEventID(typeWildCard), asking)
+    }
+
+    nonisolated(unsafe) static var asking = Set<String>()
+    static let askingLock = NSLock()
+    /// Puts the system's question up once and waits for it off to the side; the next script finds the answer.
+    nonisolated static func askToControl(_ bundle: String) {
+        guard askingLock.withLock({ asking.insert(bundle).inserted }) else { return }
+        DispatchQueue.global().async {
+            _ = mayControl(bundle, asking: true)
+            askingLock.withLock { _ = asking.remove(bundle) }
+        }
     }
 
     /// Closes the document so its file can be replaced. Refuses unless the window shows exactly this document, saved.

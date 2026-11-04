@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 import feedback as fb
+import webfill
 import wechat_reader as reader
 from chats import render
 from guards import LOCAL_NAMES, SCRIPTABLE, clipped, full_chat_name, lasting_command, overwritten_paths, plain_command, same_chat, risky_script, unsafe_script, workbench_packet
@@ -299,7 +300,8 @@ class Hands:
             if args.get("cancel"):
                 dropped = self.held.pop(("fill", self._conversation(job)), None)
                 return self._reply(f"不放了：{dropped['what']}。" if dropped else "没有排着的。")
-            result = await self.fill(str(args.get("text") or ""), [str(f) for f in args.get("files") or []], window, str(args.get("chat") or "") or None, job)
+            result = await self.fill(str(args.get("text") or ""), [str(f) for f in args.get("files") or []], window, str(args.get("chat") or "") or None, job,
+                                     field=str(args.get("field") or "") or None)
             return self._reply(result.get("message") or result.get("error") or "", ok=bool(result.get("ok")))
         if name == "read_wechat":
             return await self._read_wechat(str(args.get("chat") or ""), int(args.get("limit") or 30))
@@ -445,15 +447,73 @@ class Hands:
             app = SCRIPTABLE.get((job.window or {}).get("bundle"))
         if not app:
             return self._reply(f"{app_name or (job.window or {}).get('app') or '这个应用'} 没有脚本接口。", ok=False)
+        bundle = next(key for key, name in SCRIPTABLE.items() if name == app)
         if problem := unsafe_script(script, app):
             return self._reply(problem, ok=False)
         if word := risky_script(script):
             if not await self._card({"kind": "approval", "text": clipped(script), "reason": f"在 {app} 里运行这段脚本（含 {word}）"}, job):
                 return self._reply(f"{OWNER} 没批准这段脚本，没有运行。")
-        result = await self.native("script", timeout=90, script=script)
+        result = await self.native("script", timeout=90, script=script, bundle=bundle)
+        if not result.get("ok") and not result.get("consent") and not result.get("denied") and not result.get("error"):
+            return self._reply(f"{app} 80 秒没有回应，脚本被停下了。", ok=False)  # killed for taking too long: nothing on stderr
         return self._reply(str(result.get("output") or result.get("error") or "完成"), ok=bool(result.get("ok")))
 
-    async def fill(self, text, files=(), window=None, chat=None, job=None):
+    async def _fill_page(self, text, field, shown, window):
+        """Into a field of a web page, behind the owner's back (`webfill`). None: the page code can't run here, and why, for the usual way to go on."""
+        app, bundle = webfill.BROWSERS[shown["bundle"]], shown["bundle"]
+        text = text.rstrip("\r\n")  # a line break at the end becomes an empty paragraph in a rich editor
+
+        async def run(source):
+            result = await self.native("script", timeout=25, script=source, bundle=bundle, within=15, window=window)
+            if result.get("ok"):
+                return result.get("output") or "", None
+            if result.get("consent") or result.get("denied"):
+                return None, f"{result.get('error')}（{app}）"
+            if webfill.scripting_off(result.get("error")):
+                return None, f"{app} 没开「允许 Apple 事件中的 JavaScript」（菜单 显示 › 开发者），{OWNER} 打开一次，网页就都能在后台填了"
+            return None, f"{app} 没有回应" + (f"：{str(result.get('error')).strip()[:200]}" if result.get("error") else "")
+
+        listed, why = await run(webfill.windows_script(app))
+        if listed is None:
+            return None, why
+        found = webfill.which_window(listed, shown.get("title"), shown.get("frame"))
+        if not found:
+            return {"ok": False, "error": f"认不出是 {app} 的哪个窗口，没有填"}, None
+        page, address = found
+        if "dingtalk" in address.lower():
+            return {"ok": False, "error": "钉钉的网页不碰"}, None
+        mark = secrets.token_hex(4)
+
+        async def step(name):
+            output, why = await run(webfill.run_script(app, page, name, field, text, mark))
+            return webfill.answer(output) if why is None else {"error": "script", "why": why}
+
+        said = await step("start")
+        if said.get("pending"):
+            for again in (False, True):
+                if again:  # the editor let the paste go by: its own typing
+                    await step("reselect")
+                await asyncio.sleep(webfill.SETTLE)
+                await step("type" if again else "paste")
+                await asyncio.sleep(0.3)
+                said = await step("check")
+                if said.get("ok") or said.get("error"):
+                    break
+        name = said.get("name") or field or "输入框"
+        errors = {"which": f"页面上不止一个输入框，用 field 说填哪个：{'、'.join(said.get('fields') or [])}",
+                  "none": f"页面上没找到「{field}」这个输入框。看得到的有：{'、'.join(said.get('fields') or []) or '没有'}。可能要先切模式或展开那一块",
+                  "hidden": f"「{name}」现在看不见，可能要先切到对应的模式或展开那一块，没有填",
+                  "refused": f"「{name}」是密码或支付信息框，不填，留给 {OWNER}",
+                  "readonly": f"「{name}」现在不能输入，没有填",
+                  "gone": "页面刷新或换了，没有填完",
+                  "script": said.get("why"), "unreadable": f"{app} 回的话看不懂，没有填"}
+        if said.get("error"):
+            return {"ok": False, "error": errors.get(said["error"], "没有填")}, None
+        if said.get("ok"):
+            return {"ok": True, "message": f"在后台填进了「{name}」，读回核对一致（{said.get('length', 0)} 字）。没有点任何按钮。"}, None
+        return {"ok": False, "error": f"填了「{name}」但读回不对，现在框里是：{said.get('now', '')}"}, None
+
+    async def fill(self, text, files=(), window=None, chat=None, job=None, field=None):
         """Into a window's input. `job` left out: the owner pressed the panel's button, right here. A job's fill that needs the window in front waits for the owner to get there, and that is not a failure."""
         if job:
             key = ("fill", self._conversation(job))
@@ -468,9 +528,20 @@ class Hands:
             chat, others = full_chat_name(chat, known, ((job.chat if job else self.chat) or {}).get("name"))
             if others:
                 return {"ok": False, "error": f"微信里有几个「{chat}」：{'、'.join(others[:5])}。问 {OWNER} 是哪一个，再填，chat 写全名"}
+        why = None
+        # A web page fills from inside, in the background, whatever editor it uses: nothing to wait for (Joe 2026-11-04).
+        if job and not chat and not files:
+            shown = await self.native("resolve", window=window)
+            if shown.get("ok") and shown.get("bundle") in webfill.BROWSERS:
+                result, why = await self._fill_page(text, field, shown, str(shown.get("id") or window or ""))
+                if result is not None:
+                    return result
         result = await self._place(text, files, window, chat, job)
         if job and result.get("needsFront"):
-            return self._hold_fill(text, files, WECHAT if result.get("bundle") == WECHAT else str(result.get("id") or window or ""), chat, job, result.get("app") or "那个窗口")
+            result = self._hold_fill(text, files, WECHAT if result.get("bundle") == WECHAT else str(result.get("id") or window or ""), chat, job, result.get("app") or "那个窗口")
+        if why:  # the model hears why the page's own way was missed, and can tell the owner the one thing that turns it on
+            told = "message" if result.get("ok") else "error"
+            result = {**result, told: f"{result.get(told) or ''}（网页里的后台填法没用上：{why}）"}
         return result
 
     async def _place(self, text, files, window, chat, job):
