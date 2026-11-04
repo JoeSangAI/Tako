@@ -195,6 +195,43 @@ extension Controller {
         at(46.6) { [self] in
             log("petted happy=\(goo.happy) wiggle=\(String(format: "%.2f", goo.wiggle)) tongue=\(goo.costume.tongue.path != nil)")
             fakeMouse = V(goo.visible.midX, goo.visible.minY + 40)
+        }
+        // Joe 2026-11-04: over the middle of a window it is only carried; near the right edge it latches on and slides to its place.
+        var dropOn: CGRect?
+        at(47.0) { [self] in
+            goo.costume.outfit = nil
+            dropOn = platforms.first(where: { $0.sticky })?.frame
+            guard let w = dropOn else { log("no window to drop on"); return }
+            let start = goo.c
+            fakeMouse = start
+            goo.press(start)
+            glideMouse(from: start, to: V(w.midX, w.midY), seconds: 0.7)
+        }
+        at(47.9) { [self] in
+            log("over the middle candidate=\(goo.candidate != nil)")
+            goo.release()
+        }
+        at(48.6) { [self] in report("dropped mid-window") }
+        at(49.4) { [self] in
+            guard let w = dropOn else { return }
+            let start = goo.c
+            fakeMouse = start
+            goo.press(start)
+            glideMouse(from: start, to: V(w.maxX - 80, w.minY + min(260, w.height * 0.6)), seconds: 0.7)
+        }
+        at(50.3) { [self] in
+            log("near the edge candidate=\(goo.candidate != nil) lean=\(Int(goo.c.x - (fakeMouse?.x ?? goo.c.x)))")
+            goo.release()
+        }
+        for (k, dt) in [0.08, 0.2, 0.35, 0.5, 0.65].enumerated() {
+            at(50.3 + dt) { [self] in
+                log(String(format: "latch %d: c=%d,%d reach=%.2f,%.2f,%.2f latching=%@ arm=%d out=%.0f wanted=%@ acting=%@", k, Int(goo.c.x), Int(goo.c.y), goo.reach[0], goo.reach[1], goo.reach[2], goo.latch != nil ? "yes" : "no", goo.armStrand, goo.armOut, goo.armWanted ? "y" : "n", goo.acting == nil ? "-" : "y"))
+            }
+        }
+        at(51.5) { [self] in
+            report("latched")
+            log("home=\(Int(goo.home.x)),\(Int(goo.home.y)) edge=\(Int(dropOn?.maxX ?? -1))")
+            fakeMouse = nil
             log("self-test done")
         }
     }

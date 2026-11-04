@@ -93,10 +93,14 @@ extension Controller {
         }
     }
 
-    /// The window under it, for dropping it on: the frontmost one, on it or just off its right edge.
-    func windowNear(_ c: V) -> (id: Int, frame: CGRect)? {
-        for w in platforms where c.y > w.frame.minY - 8 && c.y < w.frame.maxY + 8 && c.x > w.frame.minX && c.x < w.frame.maxX + 70 {
-            return w.sticky ? (w.id, w.frame) : nil
+    /// The window to drop it on: only near its right edge, where it lives (Joe 2026-11-04: over the middle of a window it is just being carried, or set down as a pet).
+    /// The one it is already feeling for keeps it over a wider band, so the feelers don't flicker at the boundary. A window in front hides the ones behind it.
+    func windowNear(_ c: V, keeping held: Int? = nil) -> (id: Int, frame: CGRect)? {
+        for w in platforms where c.y > w.frame.minY - 8 && c.y < w.frame.maxY + 8 {
+            let (inside, outside): (CGFloat, CGFloat) = w.id == held ? (110, 116) : (90, 96)  // Joe 2026-11-04: 56/64 was a bit narrow
+            let past = c.x - w.frame.maxX
+            if past >= -inside && past <= outside { return w.sticky ? (w.id, w.frame) : nil }
+            if w.frame.contains(CGPoint(x: c.x, y: c.y)) { return nil }
         }
         return nil
     }
@@ -133,6 +137,9 @@ extension Controller {
                   let rect = CGRect(dictionaryRepresentation: raw),
                   rect.width > 200, rect.height > 80 else { return nil }
             let owner = info[kCGWindowOwnerName as String] as? String ?? ""
+            // Another Tako's ink and panels (a second copy, as in a self-test) are nothing to stand on and hide nothing behind them. This one's own test window still counts.
+            let process = info[kCGWindowOwnerPID as String] as? Int32 ?? 0
+            guard !(["Tako", "TAKO"].contains(owner) && process != ProcessInfo.processInfo.processIdentifier) else { return nil }
             return (number, rect, !blockedOwners.contains(owner) && rect.width > 300 && rect.height > 200)
         }
         if let current = target {

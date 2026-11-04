@@ -15,11 +15,18 @@ extension Goo {
         updateMoods(m, dt)
 
         // where the window is, and whether we are close enough to grab it
+        let held = candidateID
         candidate = nil
         candidateID = nil
-        if mode == .grabbed, !stuck.contains(true), let near = host.windowNear(c) {
+        if mode == .grabbed, !stuck.contains(true), let near = host.windowNear(c, keeping: held) {
             candidate = near.frame.maxX
             candidateID = near.id
+        }
+        // Coming into reach of an edge: it notices, a little start and a look, and keeps its eyes on it while it is carried there.
+        if let edge = candidate {
+            if held == nil { kick(34) }
+            lookAt = V(edge > c.x ? 1 : -1, 0.08)
+            lookTime = max(lookTime, 0.12)
         }
         let window = candidateID.flatMap { id in host.platforms.first { $0.id == id }?.frame } ?? host.target?.frame
 
@@ -28,7 +35,15 @@ extension Goo {
             if let w = window {
                 // On a window that fills the screen there is nothing to its right: it holds on from just inside.
                 home = V(min(w.maxX + radius + 7, visible.maxX - radius - 4), min(w.minY + 66 + radius, w.maxY - radius))
-                settle(in: w, k: 240, damping: 21, dt)
+                if let l = latch {
+                    // Just set down: it holds where it touched while the strands take hold, then slides along the edge to its place and settles a touch past it.
+                    let t = clamp(CGFloat((clock - l.start - Goo.latchHold) / Goo.latchSlide), 0, 1)
+                    let p = mix(l.from, home, easeOutBack(t))
+                    v = (p - c) * (1 / dt)
+                    if t >= 1 { latch = nil; kick(26) }
+                } else {
+                    settle(in: w, k: 240, damping: 21, dt)
+                }
             }
         case .open:
             if let w = window {
@@ -38,8 +53,13 @@ extension Goo {
         case .grabbed:
             perch = nil
             hop = nil
-            let goal = m + grabOffset
+            var goal = m + grabOffset
             if (m - grabStart).length > 4 { grabMoved = true }
+            if let edge = candidate {
+                // Near an edge it leans towards its place there, a little more the closer it gets, so letting go feels like it was pulled in.
+                let spot = edge + radius + 7
+                goal.x += (spot - goal.x) * 0.2 * clamp(1 - abs(goal.x - spot) / 190, 0, 1)
+            }
             // Stuck strands make it feel heavy until they let go.
             spring(to: goal, k: stuck.contains(true) ? 180 : 900, damping: stuck.contains(true) ? 16 : 46, dt)
         case .free:
@@ -171,7 +191,8 @@ extension Goo {
         }
 
         // the skin: each point chases its place on the circle, tugged by its neighbours
-        let edgeX = (mode == .attached || candidate != nil) ? (window?.maxX ?? -9999) : -9999
+        // While it slides out from over the window after being set down, the skin may cross the edge; only after that does the edge hold it.
+        let edgeX = (mode == .attached && latch == nil || candidate != nil) ? (window?.maxX ?? -9999) : -9999
         let floorY = surface
         var next = ringV
         let tremble: CGFloat = state == "thinking" ? 26 : 0
@@ -275,12 +296,11 @@ extension Goo {
                     if !stuck.contains(true) { peelOff(reason: "dragged away") }
                 }
                 if mode == .open || perch != nil || hop != nil { goal = 0 }
-                if i == armStrand && (armWanted || armOut > 3) && mode == .attached { goal = 0 }
+                if i == armStrand && (armWanted || armOut > 3) && mode == .attached && latch == nil { goal = 0 }
             } else if candidate != nil {
-                // Close to a window: feelers reach out for it before you let go.
-                let distance = c.x - (window?.maxX ?? c.x)
-                // Over the middle of a window the edge is too far away to feel for.
-                goal = distance < -60 ? 0 : clamp(1 - distance / 70, 0.25, 0.92) * (0.9 + 0.1 * sin(CGFloat(clock) * 5 + CGFloat(i) * 2))
+                // In reach of an edge: feelers stretch for it before you let go, further the closer it is, each a beat apart.
+                let distance = abs(c.x - (window?.maxX ?? c.x))
+                goal = clamp(1 - distance / 150, 0.3, 0.92) * (0.9 + 0.1 * sin(CGFloat(clock) * 5 + CGFloat(i) * 2))
             }
             reachV[i] += ((goal - reach[i]) * 210 - reachV[i] * 17) * dt
             reach[i] = clamp(reach[i] + reachV[i] * dt, 0, 1.08)
@@ -289,7 +309,8 @@ extension Goo {
 
     func anchorY(_ i: Int, _ w: CGRect, _ offset: CGFloat) -> CGFloat {
         let base = min(w.minY + 66 + radius, w.maxY - radius)
-        let reference = (mode == .attached || mode == .open) ? base : c.y
+        // Attached, the strands hold level with the body, so they slide up the edge with it after it is set down rather than jumping ahead.
+        let reference = mode == .open ? base : mode == .attached && latch == nil ? base : c.y
         return clamp(reference + offset * radius + sin(CGFloat(clock) * 0.8 + CGFloat(i) * 2) * 1.2, w.minY + 4, w.maxY - 4)
     }
 

@@ -16,6 +16,8 @@ struct V {
 }
 func mix(_ a: CGFloat, _ b: CGFloat, _ t: CGFloat) -> CGFloat { a + (b - a) * t }
 func mix(_ a: V, _ b: V, _ t: CGFloat) -> V { V(mix(a.x, b.x, t), mix(a.y, b.y, t)) }
+/// Arrives a little past 1 and comes back: a thing that slides into place and settles.
+func easeOutBack(_ t: CGFloat, overshoot: CGFloat = 1.5) -> CGFloat { 1 + (overshoot + 1) * pow(t - 1, 3) + overshoot * pow(t - 1, 2) }
 func clamp(_ x: CGFloat, _ lo: CGFloat, _ hi: CGFloat) -> CGFloat { min(hi, max(lo, x)) }
 
 enum Mode { case attached, open, grabbed, free }
@@ -113,6 +115,8 @@ final class Goo {
     var visible = CGRect.zero, screenRect = CGRect.zero
     var candidate: CGFloat?  // right edge of a window we could stick to, if close enough
     var candidateID: Int?
+    var latch: (from: V, start: Double)?  // just set down on an edge: where it touched, and when
+    static let latchHold = 0.14, latchSlide = 0.46
     var reachGoal: V?        // somewhere the host wants it to put a limb: an input, a line of text
     // Something far away: the body goes over and puts out a short arm, rather than one long line across the screen.
     static let armReach: CGFloat = 170
@@ -366,8 +370,8 @@ final class Goo {
         var goal: V?
         let free = !sleeping && !puddle && peekSide == 0 && !dizzy && !guilty && mode != .grabbed && mode != .open
         var quick: CGFloat = 62
-        if hop != nil {
-            goal = nil                          // limbs in while it is in the air
+        if hop != nil || latch != nil {
+            goal = nil                          // limbs in while it is in the air, or sliding into its place
         } else if let asked = reachGoal {
             goal = asked                        // it has been asked to touch something over there
             armStrand = 1
@@ -394,7 +398,7 @@ final class Goo {
         if goal != nil && armOut < 2 { armLeg = (goal!.x > c.x) ? 3 : 0 }
         let rest = armRest()
         // Moved while the arm is out: caught. It was never doing anything.
-        if armOut > 12 && still < 0.05 && state == "idle" && reachGoal == nil && !guilty && acting == nil {
+        if armOut > 12 && still < 0.05 && state == "idle" && reachGoal == nil && !guilty && acting == nil && latch == nil {
             guiltyUntil = clock + 1.9
             goal = nil
             armArrived = false
@@ -413,7 +417,8 @@ final class Goo {
         } else {
             // Let go, it snaps home like elastic: a touch past, a wobble, and the body gives a little bounce.
             let back = rest - armTip
-            armTipV = armTipV + (back * (hop != nil ? 900 : 320) - armTipV * (hop != nil ? 50 : 15)) * dt
+            let tucked = hop != nil || latch != nil  // moving fast: the limb stays with the body
+            armTipV = armTipV + (back * (tucked ? 900 : 320) - armTipV * (tucked ? 50 : 15)) * dt
             armArrived = false
         }
         armTip = armTip + armTipV * dt
@@ -800,18 +805,25 @@ final class Goo {
         }
         // Set down near the window it sticks; flung past the window it keeps flying.
         if let edge = candidate, mouseSpeed.length < 900 {
-            stick(to: edge, window: candidateID)
+            stick(to: edge, window: candidateID, latching: true)
         } else {
             mode = .free
             v = mouseSpeed * 0.75
         }
     }
 
-    func stick(to edge: CGFloat, window id: Int? = nil) {
+    /// `latching`: set down by hand. The strands shoot out one after another, the side against the glass flattens, the ink spreads from where it touched, and then it slides to its place.
+    func stick(to edge: CGFloat, window id: Int? = nil, latching: Bool = false) {
         mode = .attached
-        if let id { host.adopt(id, contact: c) } else if let current = host.target?.id { host.adopt(current, contact: c) }
+        let touched = V(edge, c.y)
+        if let id { host.adopt(id, contact: touched) } else if let current = host.target?.id { host.adopt(current, contact: touched) }
         host.setWatching(true)
-        for i in 0..<3 { stuck[i] = true; reach[i] = max(reach[i], 0.15); reachV[i] = 16 }
+        for i in 0..<3 { stuck[i] = true; reach[i] = max(reach[i], 0.15); reachV[i] = latching ? 30 - CGFloat(i) * 7 : 16 }
+        latch = latching && abs(c.x - edge) < 160 ? (c, clock) : nil
+        if latching {
+            v = V()
+            squash(towards: V(edge > c.x ? 1 : -1, 0), 150)
+        }
         pop = 0.7
         host.log("stuck to window")
         if !host.selfTest { UserDefaults.standard.set("attached", forKey: modeKey) }
@@ -824,6 +836,14 @@ final class Goo {
         host.setWatching(false)
         host.log("peeled off: \(reason)")
         if !host.selfTest { UserDefaults.standard.set("pet", forKey: modeKey) }
+    }
+
+    /// One side meets something: that side flattens and the rest bulges, then the skin springs back.
+    func squash(towards side: V, _ strength: CGFloat) {
+        for i in 0..<Goo.count {
+            let facing = dir(i).x * side.x + dir(i).y * side.y
+            ringV[i] = ringV[i] + side * (-strength * max(0, facing)) + dir(i) * (strength * 0.3 * (1 - abs(facing)))
+        }
     }
 
     func kick(_ strength: CGFloat) {
