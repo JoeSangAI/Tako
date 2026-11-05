@@ -1,8 +1,8 @@
 // Which window it is on: following it, finding it again, and keeping the panels in order above it.
 import AppKit
 
-// It sticks to any ordinary window except these. DingTalk's foreground app is off limits by rule.
-let blockedOwners: Set<String> = ["Tako", "TAKO", "钉钉", "DingTalk", "universalAccessAuthWarn", "Dock", "Window Server", "程序坞", "控制中心", "通知中心", "UserNotificationCenter", "SecurityAgent", "CoreServicesUIAgent"]
+// It sticks to any ordinary window except these.
+let blockedOwners: Set<String> = ["Tako", "TAKO", "universalAccessAuthWarn", "Dock", "Window Server", "程序坞", "控制中心", "通知中心", "UserNotificationCenter", "SecurityAgent", "CoreServicesUIAgent"]
 let weChatBundle = "com.tencent.xinWeChat"
 
 extension Controller {

@@ -693,8 +693,12 @@ class NeverSends(unittest.TestCase):
         self.assertTrue(webfill.scripting_off("Executing JavaScript through AppleScript is turned off. To turn it on, from the menu bar, go to View > Developer > Allow JavaScript from Apple Events."))
         self.assertFalse(webfill.scripting_off("execution error: Can't get window id 5"))
 
-    def test_only_these_apps_are_off_limits_and_dingtalk_is_one(self):
-        self.assertIn('"钉钉"', native("Windows").split("blockedOwners")[1].split("\n")[0])
+    def test_dingtalk_is_an_ordinary_window_where_enter_still_sends(self):
+        blocked = native("Windows").split("blockedOwners")[1].split("\n")[0]
+        self.assertNotIn("钉钉", blocked)
+        self.assertNotIn("DingTalk", blocked)
+        messaging = native("Operate").split("let messagingNames")[1].split("\n")[0]
+        self.assertIn('"dingtalk"', messaging)
 
 
 class Listening(unittest.TestCase):

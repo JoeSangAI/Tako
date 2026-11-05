@@ -480,8 +480,6 @@ class Hands:
         if not found:
             return {"ok": False, "error": f"认不出是 {app} 的哪个窗口，没有填"}, None
         page, address = found
-        if "dingtalk" in address.lower():
-            return {"ok": False, "error": "钉钉的网页不碰"}, None
         mark = secrets.token_hex(4)
 
         async def step(name):
