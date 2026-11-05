@@ -67,6 +67,10 @@ extension Controller: WKScriptMessageHandler, WKNavigationDelegate {
         // Only these two pages: nothing the page says can open anything else in System Settings.
         if let pane = body["settings"] as? String, let name = ["accessibility": "Privacy_Accessibility", "screen": "Privacy_ScreenCapture"][pane],
            let page = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(name)") { NSWorkspace.shared.open(page) }
+        if let n = body["unpoint"] as? Int { unpoint(n, tellPanel: false) }
+        if body["pointsSent"] != nil { pointsSent() }
+        if body["repair"] != nil { repairAccessibility() }
+        if body["relaunch"] != nil { relaunch() }
         if let value = body["pop"] as? Double { goo.pop = CGFloat(value); goo.kick(CGFloat(value) * 90) }
         if let value = body["wanted"] as? Double {
             wanted = value

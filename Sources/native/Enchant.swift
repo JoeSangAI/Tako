@@ -16,6 +16,12 @@ final class Enchant {
     let runner = CAShapeLayer()    // what runs along it while it reads or works
     let jelly = CALayer()
     let circles = CALayer()
+    let marks = CALayer()          // what the owner pointed at, numbered, until they send it
+    let trailLine = CAShapeLayer() // the drag while ⌃ is held
+    let hoverRing = CAShapeLayer() // what a press would take
+    let nib = CALayer()            // while ⌃ is held: an ink tip at the pointer, the pen Tako lends
+    var aiming = false
+    var hovering: CGRect?
     var edge: CGPath?              // the edge as one line, starting opposite where it grabbed on
     var startFraction: CGFloat = 0.5
     var contact = V()
@@ -60,6 +66,27 @@ final class Enchant {
         jelly.contentsGravity = .resize
         root.insertSublayer(jelly, at: 0)
         root.addSublayer(circles)
+        root.addSublayer(marks)
+        for layer in [trailLine, hoverRing] {
+            layer.fillColor = nil
+            layer.lineCap = .round
+            layer.lineJoin = .round
+            root.addSublayer(layer)
+        }
+        let tip = CAShapeLayer(), halo = CAShapeLayer()
+        tip.path = CGPath(ellipseIn: CGRect(x: -3.5, y: -3.5, width: 7, height: 7), transform: nil)
+        halo.path = CGPath(ellipseIn: CGRect(x: -12, y: -12, width: 24, height: 24), transform: nil)
+        halo.fillColor = nil
+        halo.lineWidth = 1.4
+        halo.opacity = 0.4
+        nib.addSublayer(halo)
+        nib.addSublayer(tip)
+        nib.opacity = 0
+        root.addSublayer(nib)
+        trailLine.lineWidth = 2.2
+        trailLine.lineDashPattern = [1, 5]
+        hoverRing.lineWidth = 2.2
+        hoverRing.lineDashPattern = [2, 6]
     }
 
     var ink: CGColor { NSColor(srgbRed: 0.055, green: 0.055, blue: 0.06, alpha: 1).cgColor }
@@ -88,6 +115,9 @@ final class Enchant {
         wipe.frame = band.bounds
         runner.frame = root.bounds
         circles.frame = root.bounds
+        marks.frame = root.bounds
+        trailLine.frame = root.bounds
+        hoverRing.frame = root.bounds
         if frame.size != shown.size { rebuild(frame) }
         CATransaction.commit()
         shown = frame
@@ -330,23 +360,28 @@ final class Enchant {
         }
     }
 
-    /// A hand-drawn ring around something on the window. It stays a few seconds and fades.
-    func circle(_ rect: CGRect) {
-        guard panel.isVisible else { return }
-        sync()
+    /// A hand-drawn ring around a rect given on the screen: a little past one full turn, like a pen that doesn't quite close where it began.
+    func ringPath(around rect: CGRect, wobble given: CGFloat? = nil) -> CGPath {
         let a = local(V(rect.minX, rect.minY)), b = local(V(rect.maxX, rect.maxY))
         let centre = CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
         let rx = abs(b.x - a.x) / 2 + 12, ry = abs(b.y - a.y) / 2 + 8
         let path = CGMutablePath()
-        let wobble = CGFloat.random(in: 0...6.28)
+        let wobble = given ?? CGFloat.random(in: 0...6.28)
         let steps = 90
         for i in 0...steps {
-            // A little past one full turn, like a pen that doesn't quite close where it began.
             let t = CGFloat(i) / CGFloat(steps), angle = t * 2.13 * .pi + 2.4
             let grow = 1 + 0.05 * sin(t * 9 + wobble) + 0.06 * t
             let point = CGPoint(x: centre.x + cos(angle) * rx * grow, y: centre.y + sin(angle) * ry * grow)
             if i == 0 { path.move(to: point) } else { path.addLine(to: point) }
         }
+        return path
+    }
+
+    /// A hand-drawn ring around something on the window. It stays a few seconds and fades.
+    func circle(_ rect: CGRect) {
+        guard panel.isVisible else { return }
+        sync()
+        let path = ringPath(around: rect)
         let ring = CAShapeLayer()
         ring.path = path
         ring.fillColor = nil
@@ -368,6 +403,164 @@ final class Enchant {
             ring.opacity = 0
             CATransaction.commit()
         }
+    }
+
+    // MARK: what the owner points at (Pointing.swift)
+
+    /// A ring, or a brush line under selected text, with its number; it stays until it is sent or taken back.
+    func mark(_ rect: CGRect, n: Int, underline: Bool) -> CALayer? {
+        guard panel.isVisible else { return nil }
+        sync()
+        let holder = CALayer()
+        holder.frame = root.bounds
+        let line = CAShapeLayer()
+        if underline {
+            let a = local(V(rect.minX, rect.maxY)), b = local(V(rect.maxX, rect.maxY))
+            let path = CGMutablePath()
+            path.move(to: CGPoint(x: a.x - 2, y: a.y - 2))
+            let pieces = max(3, Int((b.x - a.x) / 40))
+            for i in 1...pieces {
+                path.addLine(to: CGPoint(x: a.x - 2 + (b.x - a.x + 4) * CGFloat(i) / CGFloat(pieces), y: a.y - 1 - CGFloat.random(in: 0...2.6)))
+            }
+            line.path = path
+        } else {
+            line.path = ringPath(around: rect, wobble: 0.4)   // the very ring the dotted preview showed, now inked
+        }
+        line.fillColor = nil
+        line.strokeColor = inkOnWindow
+        line.lineWidth = underline ? 2.2 : 2.4
+        line.lineCap = .round
+        line.lineJoin = .round
+        holder.addSublayer(line)
+        let draw = CABasicAnimation(keyPath: "strokeEnd")
+        draw.fromValue = 0
+        draw.toValue = 1
+        draw.duration = 0.2
+        draw.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        line.add(draw, forKey: "draw")
+        // The number sits at the top right, inside the ink's own panel.
+        let corner = underline ? local(V(rect.maxX + 12, rect.maxY - 6)) : local(V(rect.maxX + 10, rect.minY - 4))
+        let spot = CGPoint(x: min(max(corner.x, 12), root.bounds.width - 12), y: min(max(corner.y, 12), root.bounds.height - 12))
+        let badge = CAShapeLayer()
+        badge.path = CGPath(ellipseIn: CGRect(x: spot.x - 10, y: spot.y - 10, width: 20, height: 20), transform: nil)
+        badge.fillColor = inkOnWindow
+        badge.strokeColor = host.goo?.onDark == true ? ink : NSColor.white.cgColor
+        badge.lineWidth = 1.5
+        let digit = CATextLayer()
+        digit.string = "\(n)"
+        digit.font = NSFont.systemFont(ofSize: 11.5, weight: .semibold)
+        digit.fontSize = 11.5
+        digit.alignmentMode = .center
+        digit.foregroundColor = host.goo?.onDark == true ? ink : NSColor.white.cgColor
+        digit.contentsScale = panel.backingScaleFactor
+        digit.frame = CGRect(x: spot.x - 10, y: spot.y - 8, width: 20, height: 16)
+        badge.addSublayer(digit)
+        badge.opacity = 0
+        holder.addSublayer(badge)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { badge.opacity = 1 }
+        marks.addSublayer(holder)
+        return holder
+    }
+
+    func unmark(_ mark: CALayer) {
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.22)
+        CATransaction.setCompletionBlock { mark.removeFromSuperlayer() }
+        mark.opacity = 0
+        CATransaction.commit()
+    }
+
+    /// The page scrolled under them: the rings no longer mark anything.
+    func fadeMarks() {
+        for mark in marks.sublayers ?? [] where mark.opacity > 0 { mark.opacity = 0 }
+    }
+
+    /// Sent: each ring shrinks into the goo.
+    func gather(_ list: [CALayer], into point: V) {
+        let goal = local(point)
+        for (i, mark) in list.enumerated() {
+            let move = CABasicAnimation(keyPath: "transform")
+            let box = mark.sublayers?.first.flatMap { ($0 as? CAShapeLayer)?.path?.boundingBox } ?? mark.bounds
+            let from = CGPoint(x: box.midX, y: box.midY)
+            var t = CATransform3DMakeTranslation(goal.x - from.x, goal.y - from.y, 0)
+            t = CATransform3DTranslate(t, from.x, from.y, 0)
+            t = CATransform3DScale(t, 0.05, 0.05, 1)
+            t = CATransform3DTranslate(t, -from.x, -from.y, 0)
+            move.toValue = t
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.toValue = 0.1
+            let both = CAAnimationGroup()
+            both.animations = [move, fade]
+            both.duration = 0.42
+            both.beginTime = CACurrentMediaTime() + Double(i) * 0.07
+            both.timingFunction = CAMediaTimingFunction(controlPoints: 0.5, 0, 0.8, 0.4)
+            both.fillMode = .forwards
+            both.isRemovedOnCompletion = false
+            mark.add(both, forKey: "gather")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45 + Double(i) * 0.07) {
+                mark.removeFromSuperlayer()
+                self.host.goo?.kick(20)
+            }
+        }
+    }
+
+    /// Holding ⌃ on the window: the ink edge swells and an ink tip rides the pointer, so pointing is plainly on. nil puts it away.
+    func aim(at point: V?) {
+        guard panel.isVisible else { return }
+        let on = point != nil
+        if on != aiming {
+            aiming = on
+            CATransaction.begin()
+            CATransaction.setAnimationDuration(on ? 0.16 : 0.22)
+            CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
+            band.strokeColor = inkOnWindow
+            band.lineWidth = on ? 3.2 : 0
+            nib.opacity = on ? 1 : 0
+            for case let shape as CAShapeLayer in nib.sublayers ?? [] {
+                if shape.fillColor != nil { shape.fillColor = inkOnWindow } else { shape.strokeColor = inkOnWindow }
+            }
+            nib.transform = on ? CATransform3DIdentity : CATransform3DMakeScale(0.4, 0.4, 1)
+            CATransaction.commit()
+        }
+        if let point {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            nib.position = local(point)
+            CATransaction.commit()
+        }
+    }
+
+    /// The drag so far, faint and dotted; nil clears it.
+    func trail(_ points: [CGPoint]?) {
+        guard let points, points.count > 1, panel.isVisible else { trailLine.path = nil; return }
+        let path = CGMutablePath()
+        path.addLines(between: points.map { local(V($0.x, $0.y)) })
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        trailLine.strokeColor = inkOnWindow
+        trailLine.opacity = 0.45
+        trailLine.path = path
+        CATransaction.commit()
+    }
+
+    /// While ⌃ is held: a thin outline round what a press would take; nil clears it.
+    /// While ⌃ is held: the ring a press would draw, faint and dotted, round what it would take; nil clears it.
+    /// Always the same stroke for the same thing, so it doesn't tremble as the pointer moves over it.
+    func hover(_ rect: CGRect?) {
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.12)
+        if let rect, panel.isVisible {
+            if rect != hovering {
+                CATransaction.setDisableActions(true)
+                hoverRing.path = ringPath(around: rect, wobble: 0.4)
+            }
+            hoverRing.strokeColor = inkOnWindow
+            hoverRing.opacity = 0.5
+        } else {
+            hoverRing.opacity = 0
+        }
+        hovering = rect
+        CATransaction.commit()
     }
 }
 

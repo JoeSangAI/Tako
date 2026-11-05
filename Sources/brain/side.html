@@ -141,6 +141,12 @@
   .tile.doc { display: flex; align-items: center; gap: 8px; max-width: 190px; padding: 0 24px 0 8px; }
   .tile.doc .kind { flex: none; font: 600 10px/1 ui-monospace, Menlo, monospace; color: var(--btn-ink); background: var(--btn); border-radius: 4px; padding: 3px 4px; text-transform: uppercase; }
   .tile.doc b { font-weight: 400; font-size: 11px; line-height: 1.3; max-height: 2.6em; overflow: hidden; overflow-wrap: anywhere; }
+  /* what the owner pointed at on the window: the ring's number, and what is there */
+  .tile.point { display: flex; align-items: center; gap: 6px; height: 32px; max-width: 100%; padding: 0 24px 0 18px; }
+  .tile.point .kind { flex: none; font: 600 10px/1 -apple-system, sans-serif; color: var(--btn-ink); background: var(--btn); border-radius: 4px; padding: 3px 4px; }
+  .tile.point b { font-weight: 400; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .tile .no { position: absolute; left: -4px; top: -4px; width: 18px; height: 18px; border-radius: 50%; background: var(--btn); color: var(--btn-ink); font-size: 11px; font-weight: 600; display: grid; place-items: center; box-shadow: 0 0 0 2px var(--paper); }
+  #attached { padding-left: 10px; }
   .tile button { position: absolute; top: 3px; right: 3px; width: 18px; height: 18px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: var(--btn); color: var(--btn-ink); cursor: pointer; opacity: 0; transition: opacity .12s; }
   .tile:hover button, .tile button:focus-visible { opacity: 1; }
   #say { width: 100%; padding: 10px 12px 3px; border: 0; outline: 0; font: inherit; background: transparent; color: inherit; user-select: text; resize: none; max-height: 132px; line-height: 1.45; display: block; }
@@ -568,9 +574,19 @@ $('log').append(empty);
 // ---- setting up, and new versions: the only things Tako ever shows on its own behalf ----
 let setup = null, update = null, noticeKey = '', noticeUp = false;
 const PERMISSION_WORDS = {
-  accessibility: ['还差一步：打开“辅助功能”', '在系统设置里打开 Tako 的开关，它才能操作这个窗口。', '打开系统设置'],
-  screen: ['还差一步：打开录屏权限', '在系统设置里打开 Tako 的开关，它才能看见这个窗口。系统让你重开 Tako，就重开一次。', '打开系统设置'],
+  accessibility: ['还差一步：打开“辅助功能”', '在系统设置的“辅助功能”列表里打开 Tako 的开关（不是“终端”），它才能操作这个窗口。打开后这张卡自己会消失。'],
+  screen: ['还差一步：打开录屏权限', '在系统设置的“录屏与系统录音”列表里打开 Tako 的开关，它才能看见这个窗口。打开后 Tako 会自己重开一次。'],
 };
+// The switch was opened a while ago and the system still says no: its record of Tako is stale, and clearing it is the fix.
+const STALE_AFTER = 12000;
+let permissionAsked = {}, repaired = null;
+function askPermission(which) {
+  permissionAsked[which] = Date.now();
+  native?.postMessage({ settings: which });
+  showNotice();
+  setTimeout(showNotice, STALE_AFTER + 100);
+}
+window.setRepaired = (ok) => { repaired = ok; showNotice(); };
 const SETUP_WORDS = {
   install: ['还差一步：装上 Codex', 'Tako 的大脑是 OpenAI 的 Codex，用你自己的 ChatGPT 账号。', '安装 Codex', '正在安装 Codex，大约一分钟…'],
   update: ['还差一步：更新 Codex', '这台电脑上的 Codex 太旧，Tako 连不上它。更新后不用重新登录。', '更新 Codex', '正在更新 Codex，大约一分钟…'],
@@ -582,7 +598,8 @@ function showNotice() {
   const box = $('notice');
   const pending = setup && setup.step !== 'ready';
   const permission = !canMove ? 'accessibility' : !canRead ? 'screen' : null;
-  const key = JSON.stringify([permission, pending ? setup : null, update, busy]);
+  const stale = permission === 'accessibility' && permissionAsked.accessibility && Date.now() - permissionAsked.accessibility > STALE_AFTER;
+  const key = JSON.stringify([permission, stale, repaired, !!permissionAsked.screen, pending ? setup : null, update, busy]);
   if (key === noticeKey) return;
   noticeKey = key;
   box.replaceChildren();
@@ -595,9 +612,17 @@ function showNotice() {
   const updateFirst = update && !(pending && setup.busy);
   if (permission && !updateFirst) {
     const words = PERMISSION_WORDS[permission];
-    box.append(noticeLine('title', words[0]), noticeLine('body', words[1]));
-    actions.append(button(words[2], () => native?.postMessage({ settings: permission }), true));
-    box.append(actions);
+    let body = words[1];
+    if (permission === 'accessibility' && repaired !== null) {
+      body = repaired ? '清掉了。在系统设置的列表里再打开一次 Tako 的开关就好。'
+        : '没能自动清掉。在“辅助功能”列表里选中 Tako，点下面的“−”删掉，再打开一次 Tako 的开关。';
+    } else if (stale) {
+      body = '开关已经开着，系统还是没认？它对 Tako 的记录旧了。点“修复”清掉这条记录，再打开一次开关就好。';
+      actions.append(button('修复', () => native?.postMessage({ repair: true }), true));
+    }
+    if (permission === 'screen' && permissionAsked.screen) actions.append(button('开好了，重开 Tako', () => native?.postMessage({ relaunch: true }), true));
+    actions.append(button('打开系统设置', () => askPermission(permission), !actions.childElementCount));
+    box.append(noticeLine('title', words[0]), noticeLine('body', body), actions);
     return;
   }
   if (pending && !updateFirst) {
@@ -670,9 +695,9 @@ checkSetup();
 checkStatistics();
 
 // ---- what the owner says ----
-let attachments = [];
+let attachments = [], points = [];
 function updateSend() {
-  const empty = !$('say').value.trim() && !attachments.length;
+  const empty = !$('say').value.trim() && !attachments.length && !points.length;
   const stopping = busy && empty;
   $('send').classList.toggle('stopping', stopping);
   $('send').disabled = empty && !stopping;
@@ -715,12 +740,67 @@ function attachmentTile(path) {
   }
   return tile;
 }
+const circled = (n) => String.fromCharCode(0x2460 + n - 1);
+// The thing itself, short: words are quoted with no label; only what a name can't tell apart says what it is (as prompts.point_label).
+function pointLabel(p) {
+  const short = (t, w = 24) => { t = String(t || '').replace(/\s+/g, ' ').trim(); return t.length > w ? `${t.slice(0, w)}…` : t; };
+  const text = String(p.text || '');
+  const said = text.includes('圈里的字：') ? text.split('圈里的字：')[1] : (p.kind === '图片局部' ? '' : text);
+  const first = said.trim() ? `「${short(said.trim().split('\n')[0])}」` : '';
+  if (p.kind === '图片局部') return ['', first ? `图上${first}` : '图的一角'];
+  if (['区域', '文字', '条目', ''].includes(p.kind || '')) return ['', first || short(p.name) || (p.pending ? '…' : '这一块')];
+  const host = String(p.url || '').split('//').pop().split('/')[0];
+  return [p.kind, short(p.name || host || String(p.path || '').split('/').pop())];
+}
+// A tile names what the ring is round: a link, an image, a run of words. Pressing it puts its number in the sentence.
+function pointTile(p) {
+  const tile = document.createElement('div');
+  tile.className = 'tile point';
+  tile.title = [p.kind, p.name, p.url || p.path, p.text].filter(Boolean).join('\n').slice(0, 400);
+  const no = document.createElement('span');
+  no.className = 'no';
+  no.textContent = p.n;
+  const [what, said] = pointLabel(p);
+  const label = document.createElement('b');
+  label.textContent = said;
+  const kind = document.createElement('span');
+  kind.className = 'kind';
+  kind.textContent = what;
+  if (!what) kind.hidden = true;
+  tile.onclick = () => {
+    const say = $('say'), at = say.selectionStart ?? say.value.length;
+    say.value = say.value.slice(0, at) + circled(p.n) + say.value.slice(say.selectionEnd ?? at);
+    say.focus({ preventScroll: true });
+    say.selectionStart = say.selectionEnd = at + 1;
+    grow(); updateSend();
+  };
+  const remove = button('', (e) => {
+    e.stopPropagation();
+    points = points.filter((q) => q.n !== p.n);
+    native?.postMessage({ unpoint: p.n });
+    showAttached();
+  });
+  remove.innerHTML = '<svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true"><path d="M1 1l6 6M7 1 1 7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+  remove.setAttribute('aria-label', `去掉 ${p.n}`);
+  remove.title = '去掉';
+  tile.append(no, kind, label, remove);
+  return tile;
+}
 function showAttached() {
   const box = $('attached');
-  box.classList.toggle('show', attachments.length > 0);
-  box.replaceChildren(...attachments.map(attachmentTile));
+  box.classList.toggle('show', attachments.length + points.length > 0);
+  box.replaceChildren(...[...points].sort((a, b) => a.n - b.n).map(pointTile), ...attachments.map(attachmentTile));
   updateSend();
 }
+window.addPoint = (p) => {
+  points = [...points.filter((q) => q.n !== p.n), p];
+  showAttached();
+  window.setOpen(true);
+  native?.postMessage({ pop: .5 });
+};
+// Holding ⌃ on the window: the box says what a press there does.
+window.setAiming = (on) => { $('say').placeholder = on ? '点一下圈住它，拖一下圈一片，拖过字就选字…' : '跟 Tako 说…'; };
+window.dropPoint = (n) => { points = points.filter((q) => q.n !== n); showAttached(); };
 window.addFiles = async (paths) => {
   await api('/offer', { paths });
   attachments = [...new Set([...attachments, ...paths])];
@@ -759,18 +839,20 @@ $('f').onsubmit = async (e) => {
   e.preventDefault();
   if (busy && !$('say').value.trim()) { await api('/stop', {}); return; }
   const text = $('say').value.trim();
-  if (!text && !attachments.length) return;
-  const files = attachments;
+  if (!text && !attachments.length && !points.length) return;
+  const files = attachments, pointed = [...points].sort((a, b) => a.n - b.n);
   $('say').value = '';
   attachments = [];
+  points = [];
+  if (pointed.length) native?.postMessage({ pointsSent: true });
   showAttached();
   grow();
   showError('');
   try {
-    await api('/ask', { text, files });
+    await api('/ask', { text, files, points: pointed });
   } catch {
     // Never lose what the owner wrote: it goes back in the box.
-    $('say').value = text; attachments = files; showAttached(); grow();
+    $('say').value = text; attachments = files; points = pointed; showAttached(); grow();
     showError('没发出去，Tako 的后台刚才断了一下，再按一次试试。', true);
   }
 };

@@ -33,6 +33,7 @@ from codex_runtime import CodexRuntime, RuntimeErrorCode
 from first_run import Setup, codex_on_path, find_codex
 from hands import Hands
 from lecture import Lectures
+from prompts import point_label
 from routes import serve
 from settings import HAS_WECHAT, HAS_WORKBENCH, INBOX, RUNTIME, app_version, clock
 
@@ -140,18 +141,19 @@ class Companion(Chats, Turns, Hands, Lectures, Agents):
         await self.runtime.close()
         await self.warm()
 
-    def ask(self, text, files=()):
+    def ask(self, text, files=(), points=()):
         # On the loop, in the order things arrived: a sentence right after sticking to a window belongs to that window.
-        self.submit(self._ask(text, list(files)))
+        self.submit(self._ask(text, list(files), list(points)))
 
-    async def _ask(self, text, files):
-        reply = None if files else greet.secret(text)
+    async def _ask(self, text, files, points=()):
+        reply = None if files or points else greet.secret(text)
         if reply:
             self.add("owner", text)
             self.add("tako", reply)
             return
         names = "".join(f"\n[{Path(f).name}](</{f.lstrip('/')}>)" for f in files)
-        self.add("owner", text + names)
+        circled = "　".join(f"{chr(0x2460 + int(p.get('n') or 1) - 1)} {point_label(p)}" for p in points)
+        self.add("owner", text + names + (f"\n\n{circled}" if circled else ""))
         self.said = [*self.said, (secrets.token_hex(8), text)][-50:]
         self.feedback.heard((self.window or {}).get("app"), text)
         here = (self.chat or {}).get("username") or id(self.events)
@@ -161,8 +163,8 @@ class Companion(Chats, Turns, Hands, Lectures, Agents):
         self.held.pop(here, None)  # They said something else: that comes first, and it decides what is still wanted.
         self.picked_up.pop(here, None)
         words = self._waiting_fill_note() + text
-        if files or not await self._steer(words):
-            await self.turn(words, attachments=files, where=(self.chat, self.events, self.window))
+        if files or points or not await self._steer(words):
+            await self.turn(words, attachments=files, where=(self.chat, self.events, self.window), points=points)
 
 
 async def main():

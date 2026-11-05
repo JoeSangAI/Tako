@@ -77,6 +77,7 @@ extension Controller {
         lostBundle = bundle
         target = nil
         side.orderOut(nil)
+        forgetMarks()
         enchant.hide()
         guard goo.mode == .attached || goo.mode == .open else { return }
         // Off this Space or minimized, it waits with the window. Really closed, it has nothing to hold: it falls.
@@ -111,7 +112,7 @@ extension Controller {
               let raw = info[kCGWindowBounds as String] as? NSDictionary, let rect = CGRect(dictionaryRepresentation: raw) else { return }
         let changed = (target?.id ?? lostID) != id
         // Moved the old window to make room: it goes back before the goo leaves it.
-        if changed { moveBackNow(); homeX = nil; glide = nil }
+        if changed { moveBackNow(); homeX = nil; glide = nil; forgetMarks() }
         target = (id, rect)
         pid = pid_t(info[kCGWindowOwnerPID as String] as? Int ?? 0)
         appName = info[kCGWindowOwnerName as String] as? String ?? ""

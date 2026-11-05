@@ -109,8 +109,10 @@ def serve(companion, token, port, agent_token=None):
             if not self.allowed(parse_qs(url.query)):
                 return self.reply({"error": "forbidden"}, code=403)
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
-            if url.path == "/ask" and (str(body.get("text", "")).strip() or body.get("files")):
-                companion.ask(str(body.get("text", "")).strip() or "看看这些文件。", [str(f) for f in body.get("files") or []])
+            points = [p for p in body.get("points") or [] if isinstance(p, dict)][:20]
+            if url.path == "/ask" and (str(body.get("text", "")).strip() or body.get("files") or points):
+                companion.ask(str(body.get("text", "")).strip() or ("看看这些文件。" if body.get("files") else "看看我指的这些。"),
+                              [str(f) for f in body.get("files") or []], points)
                 return self.reply({"ok": True})
             if url.path == "/stop":
                 companion.submit(companion.stop())

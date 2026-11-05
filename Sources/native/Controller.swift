@@ -50,6 +50,14 @@ final class Controller: NSObject, NSApplicationDelegate {
     var hotKey: EventHotKeyRef?
     var isWeChat: Bool { bundle == weChatBundle }
     var trusted = false
+    var trustTimer: Timer?, trustTicks = 0, repairedOnce = false, askingFresh = false   // Permissions.swift
+    let launchedAt = Date()
+    var pointTap: CFMachPort?                   // ⌃ and the pointer on the stuck window (Pointing.swift)
+    var gesture: PointGesture?
+    var pointed: [Pointed] = []
+    var pointingShown = false, hoverAt: CFTimeInterval = 0, hoverBusy = false
+    var hovered: (at: CGPoint, found: Found?, time: CFTimeInterval)?   // the last look under the pointer while ⌃ was held
+    var snapshot: (id: Int, frame: CGRect, at: CFTimeInterval, image: Task<CGImage?, Never>)?  // the window as it was when ⌃ went down
     var homeX: CGFloat?, homeWidth: CGFloat = 0           // where the window was before we made room
     var expectedX: CGFloat = 0, expectedWidth: CGFloat = 0 // where we last put it; anything else means the owner moved it
     var ownMoveAt: CFTimeInterval = 0, resettle = false
@@ -146,8 +154,8 @@ final class Controller: NSObject, NSApplicationDelegate {
         setScreen(screen)
         gooPanel.orderFront(nil)
 
-        trusted = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
-        log("accessibility trusted=\(trusted)")
+        checkTrustAtLaunch()
+        installPointing()
         // A hung app must not freeze the goo for the default 6 seconds per question.
         AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 1)
         scan()
@@ -264,6 +272,7 @@ final class Controller: NSObject, NSApplicationDelegate {
         else if ticks % 30 == 0 { readHeaderIfDue() }
         stepGlide()
         followScreen()
+        followPointing()
 
         spill = min(0.05, spill + CGFloat(dt))
         let fixed: CGFloat = 1.0 / 240
@@ -281,14 +290,6 @@ final class Controller: NSObject, NSApplicationDelegate {
         updateClickThrough()
         updateOrder()
 
-        if ticks % 120 == 0 && !trusted {
-            trusted = AXIsProcessTrusted()
-            if trusted {
-                log("accessibility trusted=true")
-                web.evaluateJavaScript("setCanMove(true)")
-                makeRoom(animated: true)
-            }
-        }
         // One question at a time: the screen is asked for as soon as accessibility is settled, whatever window it sits on.
         if ticks % 120 == 0 && !canCapture {
             canCapture = CGPreflightScreenCaptureAccess()
@@ -298,7 +299,11 @@ final class Controller: NSObject, NSApplicationDelegate {
             } else if trusted && !captureAsked {
                 captureAsked = true
                 log("screen capture trusted=false")
-                _ = CGRequestScreenCaptureAccess()
+                // The system's prompt once ever; after that the panel's card asks, with a restart in it.
+                if !UserDefaults.standard.bool(forKey: "askedScreenCapture") {
+                    UserDefaults.standard.set(true, forKey: "askedScreenCapture")
+                    _ = CGRequestScreenCaptureAccess()
+                }
             }
         }
     }
