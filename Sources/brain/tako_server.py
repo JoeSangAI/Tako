@@ -71,7 +71,7 @@ class Companion(Chats, Turns, Hands, Lectures, Agents):
         self.on_thread = {}    # thread -> the owner's job on it; only these may use tools or ask for anything
         self.settling = False  # the brain's thread is being got ready or summarized: wait for it rather than go round it
         self.limb_news = []    # what limbs did while the brain was busy, for its next turn
-        self.finished = {}     # conversation -> name, for jobs that ended while the owner was elsewhere
+        self.finished = {}     # conversation -> its name and window, for jobs that ended while the owner was elsewhere
         self.rings = {}        # window -> the latest ring to draw again when the owner gets there
         self.held = {}         # conversation -> a job's last step, waiting for the owner to get to the window it needs; ("fill", conversation) -> a hand-over that finishes by itself
         self.picked_up = {}    # conversation -> turns a waiting step has started by itself since the owner last spoke there

@@ -998,6 +998,36 @@ extension Controller {
         return ["ok": true]
     }
 
+    /// The owner pressed a line about a job on another window: the goo leaps over and the window comes up as it lands, then the panel opens there.
+    /// A WeChat job also opens its chat: the press is the owner asking for exactly that, and the panel follows the chat WeChat shows.
+    func goTo(_ spec: String, chat: String) {
+        Task { @MainActor in
+            guard let win = await resolve(spec), !blockedOwners.contains(win.app) else {
+                goo.fumble()
+                web.evaluateJavaScript("wentNowhere('那个窗口已经关了')", completionHandler: nil)
+                return
+            }
+            let reopen = sideOpen
+            closeSide()
+            goo.sleeping = false
+            goo.puddle = false
+            goo.peekSide = 0
+            goo.splatUntil = 0
+            let flight = win.id == target?.id ? 0 : goo.leap(to: win.id, frame: win.frame)
+            // The window comes up as the goo comes down onto it.
+            try? await Task.sleep(nanoseconds: UInt64(flight * 0.6 * 1e9))
+            _ = await run(["command": "bringForward", "window": String(win.id)])
+            try? await Task.sleep(nanoseconds: UInt64(max(0, flight * 0.4 - 0.25) * 1e9))
+            if !chat.isEmpty, win.bundle == weChatBundle {
+                // Already showing it is nothing to do; otherwise its search box, the pointer put back after. Not opened is only not opened: WeChat is in front either way.
+                _ = await openChat(chat, in: win)
+            }
+            guard reopen, goo.mode == .attached, target?.id == win.id else { return }
+            openQuietly = true
+            web.evaluateJavaScript("setOpen(true)", completionHandler: nil)
+        }
+    }
+
     func followDone() {
         guard reopenAfterFollow else { return }
         reopenAfterFollow = false

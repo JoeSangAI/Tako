@@ -16,7 +16,7 @@ from first_run import codex_on_path, find_codex
 from guards import last_draft, named_paths, plain_command, pointable
 from outputs import make_output_dir, tidy_output_dir
 from prompts import BRAIN_CONFIG, PROMPT, READER_CONFIG, STEP_NAMES, TOOLS, pointed_at
-from settings import (COMPACT_AT, COMPACT_PICTURES_AT, LIGHT_MODEL, MODEL, OWNER, RUNTIME, WORKBENCH, local_now, local_today, note_metric, user_background, voice_block, voice_notes)
+from settings import (COMPACT_AT, COMPACT_PICTURES_AT, LIGHT_MODEL, MODEL, OWNER, RUNTIME, WECHAT, WORKBENCH, local_now, local_today, note_metric, user_background, voice_block, voice_notes)
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic"}
 
@@ -76,6 +76,16 @@ class Job:
     @property
     def name(self):
         return (self.chat or {}).get("name") or (self.window or {}).get("app") or "刚才的窗口"
+
+    @property
+    def wechat_chat(self):
+        """The WeChat chat this job belongs to, by name, or None: a tap that goes to it has to open that chat, not just WeChat."""
+        return self.chat.get("name") if self.chat and self.chat.get("kind", "wechat") != "window" else None
+
+    @property
+    def goes_to(self):
+        """Where a tap on its line takes the owner: its own window, or WeChat for a chat asked on without one."""
+        return self.window_id or (WECHAT if self.wechat_chat else None)
 
 
 class TurnFailed(Exception):
@@ -315,14 +325,14 @@ class Turns:
 
     def _tell_owner_elsewhere(self, job):
         if job.events is not self.events:
-            self.finished[(job.chat or {}).get("username") or id(job.events)] = job.name
+            self.finished[(job.chat or {}).get("username") or id(job.events)] = {"name": job.name, "window": job.goes_to, "chat": job.wechat_chat}
 
     def _others(self):
-        """What is going on in the windows the owner is not looking at."""
-        rows = [{"name": job.name, "state": "held" if job.trouble else "working", "trouble": job.trouble}
+        """What is going on in the windows the owner is not looking at, each with the window a tap on it goes to."""
+        rows = [{"name": job.name, "state": "held" if job.trouble else "working", "trouble": job.trouble, "window": job.goes_to, "chat": job.wechat_chat}
                 for job in self.active if job.events is not self.events and job.status != "idle"]
-        rows += [{"name": mark["name"], "state": "held", "trouble": mark["trouble"]} for mark in self.held.values() if mark["events"] is not self.events]
-        return rows + [{"name": name, "state": "done", "trouble": ""} for name in self.finished.values()]
+        rows += [{"name": mark["name"], "state": "held", "trouble": mark["trouble"], "window": mark.get("window"), "chat": mark.get("chat")} for mark in self.held.values() if mark["events"] is not self.events]
+        return rows + [{**done, "state": "done", "trouble": ""} for done in self.finished.values()]
 
     def _trouble_here(self, job):
         # While a turn runs, the panel takes trouble to mean the model can't be reached.

@@ -123,6 +123,7 @@ final class Goo {
     var perch: V?            // where it works from, measured from the window's top left, so it moves with the window
     var perchUntil = 0.0
     var hop: (from: V, start: Double, length: Double)?
+    var leap: (id: Int, frame: CGRect, from: V, start: Double, length: Double)?  // over to another window the owner pressed to go to
     var happyUntil = 0.0, oopsUntil = 0.0
     var happy: Bool { clock < happyUntil }
     var oops: Bool { clock < oopsUntil }

@@ -59,6 +59,7 @@ extension Controller: WKScriptMessageHandler, WKNavigationDelegate {
         if body["oops"] != nil { goo.fumble() }
         if let value = body["cardWidth"] as? Double { cardWidth = CGFloat(value); enchant.sync() }
         if let path = body["openFile"] as? String { openFile(path) }
+        if let spec = body["goTo"] as? String { goTo(spec, chat: body["chat"] as? String ?? "") }
         if body["pickFiles"] != nil { pickFiles() }
         if let action = body["update"] as? String { updater.act(action) }
         if let value = body["statistics"] as? Bool { statistics = value }

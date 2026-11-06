@@ -667,6 +667,7 @@ class TheOwnerMovesOn(Base):
         self.assertFalse(seen["busy"], "this window isn't busy: its stop button must not stop the other one")
         seen = self.tako.until(lambda s: s["others"] and s["others"][0]["state"] == "done", "told it's done", 3)
         self.assertEqual(self.tako.said(seen), [])
+        self.assertEqual(seen["others"][0]["window"], "1", "the line knows which window a tap takes them to")
         self.tako.stick()
         seen = self.tako.until(lambda s: "第一个窗口做完了" in self.tako.said(s), "the result back here", 3)
         self.assertEqual(seen["others"], [])
@@ -921,6 +922,12 @@ class HandingAFileToAnotherApp(Base):
         self.assertIn("已排好", json.dumps(reply, ensure_ascii=False))
         self.assertIn("微信", seen["trouble"])
         self.assertNotIn("Keynote", seen["trouble"])
+
+    def test_the_line_elsewhere_takes_them_to_that_chat(self):
+        self.queued()
+        self.tako.stick("Safari", "com.apple.Safari", "另一个页面", "2")
+        seen = self.tako.until(lambda s: s["others"], "the line on the other window", 3)
+        self.assertEqual((seen["others"][0]["window"], seen["others"][0]["chat"]), (self.WECHAT, "小林"), "a tap opens WeChat on that chat, not just WeChat")
 
     def test_the_owner_arriving_finishes_it_with_no_model_turn(self):
         self.queued()

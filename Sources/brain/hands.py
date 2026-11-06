@@ -146,7 +146,7 @@ class Hands:
             self.feedback.count("job.gave_up")
             self._say_to_owner(job.events, "差的这一步在后台没走通，放下了，其余的都在上面。")
             return
-        mark = self.held[key] = {"name": job.name, "events": job.events, "trouble": f"差一步在后台做不了。不用专门切过去，你之后用到 {app} 时我接上。"}
+        mark = self.held[key] = {"name": job.name, "events": job.events, "window": window, "chat": job.wechat_chat, "trouble": f"差一步在后台做不了。不用专门切过去，你之后用到 {app} 时我接上。"}
         deadline = time.time() + COMING_BACK_SECONDS
         try:
             while self.held.get(key) is mark and time.time() < deadline:
@@ -167,7 +167,7 @@ class Hands:
         key = ("fill", self._conversation(job))
         where = f"{app}「{chat}」" if chat else app
         what = "、".join(Path(f).name for f in files) or "这段话"
-        mark = self.held[key] = {"name": job.name, "events": job.events, "what": what, "where": where, "app": app,
+        mark = self.held[key] = {"name": job.name, "events": job.events, "what": what, "where": where, "app": app, "window": window or (WECHAT if chat else None), "chat": chat or job.wechat_chat,
                                  "trouble": f"{what} 备好了，切到{app}就自动放进去。", "placed": asyncio.Event()}
         self._later(self._place_when_back(key, mark, text, files, window, chat, job))
         return {"ok": True, "message": f"已排好，还没放进去：这一步要{app}在前台。{OWNER} 切到{app}时系统自己放好，不要再试，也不用再看那个窗口。其余能做的接着做，最后提一句就够了。"}

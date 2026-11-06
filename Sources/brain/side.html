@@ -99,6 +99,16 @@
   .steps div { padding-left: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #others { flex: none; padding: 0 14px; font-size: 11px; color: var(--muted); }
   #others div { padding-bottom: 6px; }
+  /* A job done or waiting elsewhere: the line itself takes the owner there. */
+  #others .go { margin: 0 -6px 3px; padding: 3px 6px; border-radius: 6px; cursor: pointer; outline: none;
+    transition: color .18s ease, background-color .18s ease, transform .12s ease, opacity .25s ease; }
+  #others .go::after { content: "→"; display: inline-block; margin-left: 5px; transition: transform .22s cubic-bezier(.2, .8, .2, 1); }
+  #others .go:hover, #others .go:focus-visible { color: var(--ink); background: var(--card); }
+  #others .go:hover::after, #others .go:focus-visible::after { transform: translateX(3px); }
+  #others .go:active { transform: scale(.98); }
+  #others .go.leaving { opacity: 0; transform: translateX(10px); pointer-events: none; }
+  #others .new { animation: hello .35s ease; }
+  @media (prefers-reduced-motion: reduce) { #others .go, #others .go::after, #others .new { transition: none; animation: none; } }
   #live { display: none; flex: none; padding: 0 14px 10px; max-height: 60%; overflow: hidden auto; user-select: text; }
   #live.show { display: block; }
   #live .now { font-size: 11px; color: var(--muted); }
@@ -456,7 +466,9 @@ function showError(text, hold) {
   else if (Date.now() < heldError) return;
   setText($('err'), text || ''); $('err').classList.toggle('show', !!text);
 }
-let othersKey = '', othersDone = 0;
+// Pressed to go to a window that is no longer there: the line comes back and says so.
+function wentNowhere(text) { othersKey = ''; showError(text, true); }
+let othersKey = '', othersDone = 0, othersSeen = new Set();
 function showOthers(rows) {
   const key = JSON.stringify(rows);
   if (key === othersKey) return;
@@ -464,11 +476,27 @@ function showOthers(rows) {
   const done = rows.filter((row) => row.state === 'done').length;
   if (done > othersDone) native?.postMessage({ pop: 1, done: true });
   othersDone = done;
+  const seen = new Set();
   $('others').replaceChildren(...rows.map((row) => {
     const line = document.createElement('div');
-    line.textContent = `「${row.name}」那边${row.state === 'done' ? '做完了，回到那个窗口就能看到结果' : row.state === 'held' ? `：${row.trouble}` : '还在做，不用管它'}`;
+    const said = row.state === 'done' ? '做完了' : row.state === 'held' ? `：${row.trouble}` : '还在做，不用管它';
+    line.textContent = `「${row.name}」${said}`;
+    const id = `${row.state}|${row.name}`;
+    seen.add(id);
+    if (!othersSeen.has(id)) line.className = 'new';
+    // Still going needs nothing from them: no way over, so nothing pulls them away from what they are doing.
+    if (row.window && row.state !== 'working') {
+      line.classList.add('go');
+      line.tabIndex = 0;
+      line.setAttribute('role', 'button');
+      line.title = '去那个窗口';
+      const go = () => { line.classList.add('leaving'); native?.postMessage({ goTo: String(row.window), chat: row.chat || '' }); };
+      line.onclick = go;
+      line.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } };
+    }
     return line;
   }));
+  othersSeen = seen;
 }
 let liveKey = '', lastError = '';
 function showLive(s) {

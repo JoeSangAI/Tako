@@ -32,7 +32,9 @@ extension Goo {
 
         switch mode {
         case .attached:
-            if let w = window {
+            if let l = leap {
+                flyLeap(l, dt)
+            } else if let w = window {
                 // On a window that fills the screen there is nothing to its right: it holds on from just inside.
                 home = V(min(w.maxX + radius + 7, visible.maxX - radius - 4), min(w.minY + 66 + radius, w.maxY - radius))
                 if let l = latch {
@@ -262,6 +264,47 @@ extension Goo {
         let height = clamp((place - flight.from).length * 0.22, 16, 96)
         let p = mix(flight.from, place, t) - V(0, sin(t * .pi) * height)
         v = (p - c) * (1 / dt)
+    }
+
+    /// The owner pressed to go to another window: it lets go here, arcs over and takes hold where it lands. Returns how long the flight takes.
+    @discardableResult
+    func leap(to id: Int, frame: CGRect) -> Double {
+        let landing = Goo.landing(on: frame, radius: radius)
+        let length = Double(clamp(0.3 + (landing - c).length / 2400, 0.34, 0.62))
+        mode = .attached
+        perch = nil
+        hop = nil
+        latch = nil
+        for i in 0..<3 { stuck[i] = false }
+        leap = (id, frame, c, clock, length)
+        kick(34)
+        squash(towards: V(0, 1), 90)  // crouches before it goes
+        return length
+    }
+
+    static func landing(on frame: CGRect, radius: CGFloat) -> V {
+        V(frame.maxX + radius + 7, min(frame.minY + 66 + radius, frame.maxY - radius))
+    }
+
+    func flyLeap(_ l: (id: Int, frame: CGRect, from: V, start: Double, length: Double), _ dt: CGFloat) {
+        let landing = Goo.landing(on: l.frame, radius: radius)
+        let t = clamp(CGFloat((clock - l.start) / l.length), 0, 1)
+        if t >= 1 {
+            leap = nil
+            v = (landing - c) * (1 / dt)
+            stick(to: l.frame.maxX, window: l.id)
+            kick(46)
+            squash(towards: V(-1, 0), 140)
+            spray(at: landing + V(-radius, 0), 3, speed: 80, along: V(-1, 0))
+            return
+        }
+        // Eased at both ends: it gathers itself, flies, and settles onto the glass rather than slamming into it.
+        let e = t * t * (3 - 2 * t)
+        let height = clamp((landing - l.from).length * 0.24, 28, 140)
+        let p = mix(l.from, landing, e) - V(0, sin(e * .pi) * height)
+        v = (p - c) * (1 / dt)
+        lookAt = (landing - c).unit
+        lookTime = max(lookTime, 0.1)
     }
 
     func beginHop(to place: V) {
