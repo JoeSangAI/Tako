@@ -162,7 +162,7 @@ class Hands:
             if self.held.get(key) is mark:
                 del self.held[key]
 
-    def _hold_fill(self, text, files, window, chat, job, app):
+    def _hold_fill(self, text, files, window, chat, job, app, why=None):
         """The hand-over itself is known exactly, so no model is needed to finish it: the owner getting to that window is enough. Asked again, the newest one stands."""
         key = ("fill", self._conversation(job))
         where = f"{app}「{chat}」" if chat else app
@@ -170,7 +170,9 @@ class Hands:
         mark = self.held[key] = {"name": job.name, "events": job.events, "what": what, "where": where, "app": app, "window": window or (WECHAT if chat else None), "chat": chat or job.wechat_chat,
                                  "trouble": f"{what} 备好了，切到{app}就自动放进去。", "placed": asyncio.Event()}
         self._later(self._place_when_back(key, mark, text, files, window, chat, job))
-        return {"ok": True, "message": f"已排好，还没放进去：这一步要{app}在前台。{OWNER} 切到{app}时系统自己放好，不要再试，也不用再看那个窗口。其余能做的接着做，最后提一句就够了。"}
+        # Facts, not orders: told "don't try again, don't look", the model obeyed that over the owner saying the chat was open (2026-11-06).
+        why = why or f"{app}的输入框要用真鼠标放字"
+        return {"ok": True, "message": f"还没放进去，排着：{why}。{OWNER} 到{app}、手停下时系统自己放，不用你再做什么。跟 {OWNER} 照实说“排着，切过去就放”，不要说已经放进去了。再调 fill_input 会换掉排着的这条，cancel:true 取消。"}
 
     async def _place_when_back(self, key, mark, text, files, window, chat, job):
         ending = f"文件在这里：{' '.join(f'[{Path(f).name}](</{f.lstrip(chr(47))}>)' for f in files)}" if files else ""
@@ -215,14 +217,17 @@ class Hands:
             self.limb_news = [*self.limb_news, f"（刚才排着的一步系统已做完：{mark['what']} 放进了{mark['where']}的输入框，没有发送。不要再放一次。）"][-5:]
             self._say_to_owner(mark["events"], f"{mark['what']} 放进{mark['where']}了。{said}")
         else:
-            self._say_to_owner(mark["events"], f"{mark['what']} 没放进{mark['where']}：{result.get('error') or '这一步没走通'}。{ending}")
+            why = result.get('error') or '这一步没走通'
+            # The model was told it is queued and not to try again; left at that, "just paste it" next gets nothing done.
+            self.limb_news = [*self.limb_news, f"（刚才排着的一步没做成：{mark['what']} 没放进{mark['where']}，{why}。现在没有排着的了，{OWNER} 再要就重新调 fill_input。）"][-5:]
+            self._say_to_owner(mark["events"], f"{mark['what']} 没放进{mark['where']}：{why}。{ending}")
 
     def _waiting_fill_note(self):
         """The owner is talking while a hand-over waits: the model should know, and only it can tell whether this calls it off. No paths here: this reads as the owner's own words."""
         mark = self.held.get(("fill", (self.chat or {}).get("username") or id(self.events)))
         if not mark:
             return ""
-        return f"（系统提示，不是 {OWNER} 说的：还排着一步，把 {mark['what']} 放进{mark['where']}，TA切过去就自动放。下面这句话如果是不要了，调 fill_input 传 cancel:true；否则不用管，不要重放。）\n"
+        return f"（系统提示，不是 {OWNER} 说的：还排着一步，把 {mark['what']} 放进{mark['where']}，TA切过去就自动放。下面这句话如果是不要了，调 fill_input 传 cancel:true；再调 fill_input 会换掉排着的这条。）\n"
 
     def native_done(self, request, result):
         future = self.waiting.get(request)
@@ -536,7 +541,7 @@ class Hands:
                     return result
         result = await self._place(text, files, window, chat, job)
         if job and result.get("needsFront"):
-            result = self._hold_fill(text, files, WECHAT if result.get("bundle") == WECHAT else str(result.get("id") or window or ""), chat, job, result.get("app") or "那个窗口")
+            result = self._hold_fill(text, files, WECHAT if result.get("bundle") == WECHAT else str(result.get("id") or window or ""), chat, job, result.get("app") or "那个窗口", result.get("why"))
         if why:  # the model hears why the page's own way was missed, and can tell the owner the one thing that turns it on
             told = "message" if result.get("ok") else "error"
             result = {**result, told: f"{result.get(told) or ''}（网页里的后台填法没用上：{why}）"}
@@ -561,18 +566,21 @@ class Hands:
             # Without the optional reader no draft belongs to a chat: it goes where the owner is looking, and nothing is sent.
             if not want and HAS_WECHAT:
                 return {"ok": False, "error": "要说清填到微信的哪段对话，没有填"}
-            # Already showing it: nothing to search for, and the owner's pointer stays out of it.
-            showing = (await self.native("titles", timeout=10, window=window)).get("lines") or [] if chat else []
-            if chat and not any(same_chat(chat, line) for line in showing):
+            # Already showing it: nothing to search for, and the owner's pointer stays out of it. "Showing" is decided the way the panel follows the chat.
+            async def header():
+                seen = await self.native("titles", timeout=10, window=window)
+                return [*(seen.get("lines") or []), *(seen.get("others") or [])]
+            showing = await header() if chat else []
+            if chat and not await asyncio.to_thread(self.is_showing, chat, showing):
                 opened = await hand("openChat", timeout=15, window=window, name=chat)
                 if opened.get("needsFront"):
-                    return {**opened, **waiting}
+                    return {**opened, **waiting, "why": f"微信标题读到的是「{(showing or ['看不清'])[0]}」，要先在搜索框里打开「{chat}」，这要用真鼠标"}
                 if not opened.get("ok"):
                     return opened
             if want:
-                seen = await self.native("titles", timeout=10, window=window)
-                if not any(same_chat(want, line) for line in seen.get("lines") or []):
-                    return {"ok": False, "error": f"微信现在打开的不是「{want}」，没有填"}
+                seen = await header()
+                if not await asyncio.to_thread(self.is_showing, want, seen):
+                    return {"ok": False, "error": f"微信标题读到的是「{(seen or ['看不清'])[0]}」，对不上「{want}」，没有填。要是 {OWNER} 说开着的就是它，look_at_window 看一眼，对就不传 chat 再填"}
         result = await hand("fill", timeout=20, text=text, files=list(files), window=window)
         if result.get("needsFront"):
             return {**result, **waiting}

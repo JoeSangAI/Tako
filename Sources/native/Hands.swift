@@ -432,7 +432,8 @@ extension Controller {
     @MainActor
     func titles(_ win: Win) async -> [String: Any] {
         let found = await Controller.headerTitles(windowID: win.id, width: win.frame.width, previous: 0, listEnd: listEnd)
-        return ["ok": found != nil, "lines": found?.lines ?? []]
+        // The reader's second guesses too: the fill decides which chat is open the same way the panel follows it.
+        return ["ok": found != nil, "lines": found?.lines ?? [], "others": found?.others ?? []]
     }
 
     func clickInput(of frame: CGRect) {

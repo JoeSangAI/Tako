@@ -12,7 +12,7 @@ from pathlib import Path
 
 import greetings as greet
 import wechat_reader as reader
-from guards import learned_notes, normalized
+from guards import learned_notes, normalized, same_chat
 from prompts import LEARN_PROMPT
 from settings import (CONTEXT_MESSAGES, FULL_READ_SECONDS, HAS_WECHAT, MAX_MESSAGE_CHARS, OWNER, POLL_SECONDS, SENT_SETTLE_SECONDS, VOICE, WECHAT,
                       clock, note_metric, voice_notes)
@@ -102,6 +102,22 @@ class Chats:
         finally:
             con.close()
 
+    def which_chat(self, titles):
+        """The chat a header read means: (key, chat) or (None, None). The one answer to "which chat is open": the panel follows it, and a fill checks against it,
+        so Tako never tells the owner it is in a chat and then refuses to write there (2026-11-06)."""
+        key, chats = self._candidates(titles)
+        if not chats:
+            return None, None
+        return key, (chats[0] if len(chats) == 1 else self._latest(chats) or chats[0])
+
+    def is_showing(self, want, titles):
+        """Whether WeChat's header shows the chat called `want`: what the panel would follow to, then the short-name rule for names the list doesn't hold."""
+        if HAS_WECHAT and reader.WXEXPORT:
+            _, chat = self.which_chat(titles)
+            if chat and normalized(chat["name"]) == normalized(want):
+                return True
+        return any(same_chat(want, line) for line in titles)
+
     async def follow_header(self, titles):
         """The newest title always wins; reads take seconds and the owner may click faster than that."""
         self.wanted_titles = titles
@@ -111,16 +127,15 @@ class Chats:
         try:
             while self.wanted_titles is not None:
                 titles, self.wanted_titles = self.wanted_titles, None
-                key, chats = await asyncio.to_thread(self._candidates, titles)
-                if not chats or key == self.last_header:
+                key, _ = await asyncio.to_thread(self._candidates, titles)
+                if not key or key == self.last_header:
                     continue
-                chat = chats[0] if len(chats) == 1 else await asyncio.to_thread(self._latest, chats)
+                # Same-named chats: the one with the newest message; no readable history still means the owner is looking at it.
+                _, chat = await asyncio.to_thread(self.which_chat, titles)
                 # A newer title arrived while this one was resolving: skip straight to it.
-                if self.wanted_titles is not None:
+                if self.wanted_titles is not None or not chat:
                     continue
                 self.last_header = key
-                # No readable history still means the owner is looking at this chat: say so instead of showing the old one.
-                chat = chat or chats[0]
                 if not self.chat or chat["username"] != self.chat["username"]:
                     await self.attach(chat)
         finally:

@@ -875,18 +875,29 @@ extension Controller {
         try? await Task.sleep(nanoseconds: 700_000_000)
         let area = CGRect(x: 0, y: 0, width: min(460, win.frame.width), height: win.frame.height)
         var lines: [(text: String, box: CGRect)] = []
+        // The first rows suggest web searches; real chats come under a section heading.
+        let headings = ["功能", "联系人", "群聊", "最常使用", "最近使用", "聊天记录"]
         // The box sometimes drops what is typed while it is still opening: check it arrived, and type again if not.
-        for _ in 0..<3 {
+        for attempt in 0..<3 {
             guard stillOurs() else { return takenOver }
+            // Typing again on top of what did arrive searches for the name twice and finds nothing (2026-11-06): each try starts from an empty box.
+            if attempt > 0 {
+                press(53, flags: [])
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                guard stillOurs() else { return takenOver }
+                click(at: box)
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                guard stillOurs() else { return takenOver }
+            }
             typed = true
             typeShort(name)
             try? await Task.sleep(nanoseconds: 1_400_000_000)
             guard let image = await Hands.captureLive(win, scale: 2, source: area) else { return ["ok": false, "error": "看不到搜索结果"] }
             lines = await Task.detached { Hands.recognize(image, size: area.size) }.value
-            if lines.contains(where: { $0.box.minY < 40 && $0.box.minX < 260 && Hands.normalize($0.text).contains(want) }) { break }
+            // Results under a heading mean the name arrived, even when the box itself reads back a character off.
+            if lines.contains(where: { $0.box.minY < 40 && $0.box.minX < 260 && Hands.normalize($0.text).contains(want) })
+                || lines.contains(where: { line in headings.contains { Hands.normalize(line.text) == $0 } }) { break }
         }
-        // The first rows suggest web searches; real chats come under a section heading.
-        let headings = ["功能", "联系人", "群聊", "最常使用", "最近使用", "聊天记录"]
         let below = lines.first { line in headings.contains { Hands.normalize(line.text) == $0 } }?.box.maxY ?? 0
         // Chats only: what comes under 聊天记录 is messages that mention the name.
         let history = lines.first { $0.box.minY >= below && Hands.normalize($0.text) == "聊天记录" }?.box.minY ?? .greatestFiniteMagnitude

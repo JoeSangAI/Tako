@@ -861,7 +861,7 @@ class FillingAWebPage(Base):
         self.tako.ask(steps(self.FILL, {"say": "填好了"}))
         said = self.reply()
         self.assertIn("现在看不见", said)
-        self.assertNotIn("已排好", said)
+        self.assertNotIn("排着", said)
 
     def test_scripting_turned_off_falls_back_and_names_the_switch(self):
         self.tako.native["script"] = lambda c: {"ok": False, "error": "Executing JavaScript through AppleScript is turned off. To turn it on, from the menu bar, go to View > Developer > Allow JavaScript from Apple Events."}
@@ -919,7 +919,7 @@ class HandingAFileToAnotherApp(Base):
         seen = self.queued()
         reply = [r for r in self.tako.codex("tool_reply") if r["tool"] == "fill_input"][0]["reply"]
         self.assertTrue(reply["success"])
-        self.assertIn("已排好", json.dumps(reply, ensure_ascii=False))
+        self.assertIn("排着", json.dumps(reply, ensure_ascii=False))
         self.assertIn("微信", seen["trouble"])
         self.assertNotIn("Keynote", seen["trouble"])
 
@@ -986,7 +986,7 @@ class HandingAFileToAnotherApp(Base):
         self.tako.ask(steps(self.SEND, {"say": "没放"}))
         self.tako.idle()
         self.assertEqual(self.sent("fill"), [])
-        self.assertIn("不是「小林」", json.dumps(self.tako.codex("tool_reply")[-1]["reply"], ensure_ascii=False))
+        self.assertIn("对不上「小林」", json.dumps(self.tako.codex("tool_reply")[-1]["reply"], ensure_ascii=False))
 
     def test_the_owner_taking_the_pointer_mid_way_only_makes_it_wait(self):
         taken = iter([{"ok": False, "needsFront": True, "app": "微信", "error": "用户 动了鼠标或切走了窗口，已停下，没有填"}])
@@ -1011,6 +1011,19 @@ class HandingAFileToAnotherApp(Base):
         seen = self.tako.until(lambda s: not s["trouble"], "the wait over", 5)
         self.assertTrue(any("没搜到" in text and "名单.xlsx" in text for text in self.tako.said(seen)))
         self.assertEqual(self.sent("fill"), [])
+
+    def test_when_it_could_not_place_it_the_model_hears_so_next_time(self):
+        # 2026-11-06: the queued draft failed to find the group, the owner opened it and said "just paste", and Tako still thought it was queued.
+        self.queued()
+        self.tako.native["openChat"] = lambda c: {"ok": False, "error": "微信里没搜到“小林”"}
+        self.here.set()
+        self.still.set()
+        self.tako.until(lambda s: not s["trouble"], "the wait over", 5)
+        self.tako.ask("我已经打开了，你直接粘贴")
+        self.tako.until(lambda s: not s["busy"] and len(self.tako.owner_turns()) == 2, "answered", 5)
+        words = json.dumps(self.tako.owner_turns()[-1]["input"], ensure_ascii=False)
+        self.assertIn("没做成", words)
+        self.assertNotIn("还排着", words)
 
     def test_what_the_owner_says_next_keeps_it_and_the_model_hears_it_is_there(self):
         self.queued()
@@ -1181,6 +1194,23 @@ class Inside(unittest.IsolatedAsyncioTestCase):
         loop = asyncio.create_task(self.tako.poll_forever())
         await asyncio.sleep(0.05)
         loop.cancel()
+
+    async def test_which_chat_is_open_has_one_answer(self):
+        """2026-11-06: the panel followed the group from its title, and the fill, judging the same title more strictly, said it wasn't open."""
+        chats, reader = __import__("chats"), __import__("wechat_reader")
+        root = self.home / "wx"
+        (root / "work").mkdir(parents=True, exist_ok=True)
+        (root / "work/namemap.json").write_text(json.dumps({"names": {"g1@chatroom": "战略部～益海嘉里", "lc": "上海-战略部-李聪", "g2@chatroom": "执行组-益海嘉里"}}, ensure_ascii=False))
+        self.addCleanup(setattr, reader, "WXEXPORT", reader.WXEXPORT)
+        self.addCleanup(setattr, chats, "HAS_WECHAT", chats.HAS_WECHAT)
+        reader.WXEXPORT, chats.HAS_WECHAT, self.tako.index = root, True, None
+        read = ["战略部~益海嘉重(12)"]  # one character misread, and the member count
+        self.assertFalse(__import__("guards").same_chat("战略部～益海嘉里", read[0]), "the stricter rule alone refused it")
+        self.assertEqual(self.tako.which_chat(read)[1]["name"], "战略部～益海嘉里", "what the panel follows")
+        self.assertTrue(self.tako.is_showing("战略部～益海嘉里", read), "and what a fill checks against")
+        self.assertFalse(self.tako.is_showing("执行组-益海嘉里", read))
+        self.assertFalse(self.tako.is_showing("上海-战略部-李聪", read))
+        self.assertTrue(self.tako.is_showing("战略部～益海嘉里", ["战略部~益海嘉重", "战略部～益海嘉里"]), "a second guess read right counts")
 
     async def test_a_message_coming_in_costs_nothing_and_shows_nothing(self):
         rows = [self.row(1, "在吗")]
