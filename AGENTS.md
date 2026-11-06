@@ -35,6 +35,8 @@ A release is a version bump, nothing else: change `VERSION`, add a section to `C
 
 A release also carries a small package without the Python, which an installed Tako with the same `python.id` fetches instead of the whole app; the Python is signed once and cached in `.build/signed-python/` so its bytes stay the same. Losing that cache only means the next update is whole again.
 
+The uplink can be very slow (~25 KB/s through the proxy), so publishing puts the small update out first and makes the release public, then uploads the whole app with retries; until it lands, `latest.json` points new installs at the previous whole app if its Python is the same. A stalled publish is finished by running `scripts/release.sh publish <commit>` again: it uploads only what GitHub doesn't hold yet.
+
 Updates install only when the new app satisfies the running app's designated requirement, so the signing identity must stay the same: changing it strands everyone on the old version and resets their permissions.
 
 ## Layout

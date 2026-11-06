@@ -28,5 +28,6 @@ if gh release view "v$VERSION" --repo JoeSangAI/Tako >/dev/null 2>&1; then exit 
 echo "new version $VERSION: building the release…"
 "$ROOT/scripts/release.sh" build || { echo "push stopped: the release didn't build" >&2; exit 1; }
 mkdir -p "$ROOT/.local"
-nohup /bin/bash -c "'$ROOT/scripts/release.sh' publish '$COMMIT' && osascript -e 'display notification \"Tako $VERSION 已发布，装过的人会收到提示。\" with title \"Tako 发布\"' || osascript -e 'display notification \"Tako $VERSION 发布失败，看 .local/release.log\" with title \"Tako 发布\"'" >"$ROOT/.local/release.log" 2>&1 &
+# It says itself when the update is out; this only catches a failure before that.
+nohup /bin/bash -c "'$ROOT/scripts/release.sh' publish '$COMMIT' || osascript -e 'display notification \"Tako $VERSION 发布没走完，看 .local/release.log\" with title \"Tako 发布\"'" >"$ROOT/.local/release.log" 2>&1 &
 echo "Tako $VERSION will be published as soon as this push lands. Log: .local/release.log"
