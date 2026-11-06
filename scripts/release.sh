@@ -61,7 +61,8 @@ PY
     ;;
   publish)
     # The uplink here can be ~25 KB/s and GitHub drops an upload that stalls (HTTP 408), so the 20 MB whole app is the part that fails.
-    # What installed copies fetch is the 1 MB update: that goes public first, and the whole app follows with retries.
+    # A relay with a fast uplink makes all of it take seconds; without one, the 1 MB update that installed copies fetch goes public first
+    # and the whole app follows with retries.
     # Until it lands, latest.json sends new installs and a changed Python to the previous whole app, which then offers this update.
     # Safe to run again: it picks up where it stopped.
     COMMIT="$(git -C "$ROOT" rev-parse "$2")"
@@ -76,11 +77,28 @@ PY
     # What GitHub holds for this release, by name and content: a re-run uploads only what is missing, cut short or different.
     holds() { gh api "repos/$REPO/releases/$RELEASE_ID/assets" --paginate --jq '.[] | select(.state=="uploaded") | "\(.name) \(.digest)"' 2>/dev/null || true; }
     has() { holds | grep -qx "$(basename "$1") sha256:$(shasum -a 256 "$1" | cut -d' ' -f1)"; }
+    # A machine with a fast uplink, reached over ssh, carries the bytes when it answers (its host in .local/release-relay, never in the repo).
+    # The token goes to it on stdin, never on a command line; the file is gone from it afterwards.
+    RELAY="${TAKO_RELEASE_RELAY:-$(tr -d '[:space:]' < "$ROOT/.local/release-relay" 2>/dev/null || true)}"
+    via_relay() {
+      local file="$1" name type id
+      name="$(basename "$file")"
+      [ -n "$RELAY" ] && ssh -o ConnectTimeout=8 -o BatchMode=yes "$RELAY" true 2>/dev/null || return 1
+      say "uploading $name ($(du -h "$file" | cut -f1)) through $RELAY"
+      scp -q -o BatchMode=yes "$file" "$RELAY:/tmp/tako-release-$name" || return 1
+      for id in $(gh api "repos/$REPO/releases/$RELEASE_ID/assets" --paginate --jq ".[] | select(.name==\"$name\") | .id" 2>/dev/null || true); do
+        gh api -X DELETE "repos/$REPO/releases/assets/$id" >/dev/null 2>&1 || true
+      done
+      case "$name" in *.zip) type=application/zip ;; *.json) type=application/json ;; *) type=application/octet-stream ;; esac
+      printf 'Authorization: Bearer %s\n' "$(gh auth token)" | ssh -o BatchMode=yes "$RELAY" \
+        "curl -sS --fail --max-time 900 -o /dev/null -H @- -H 'Content-Type: $type' --data-binary @/tmp/tako-release-$name 'https://uploads.github.com/repos/$REPO/releases/$RELEASE_ID/assets?name=$name'; s=\$?; rm -f /tmp/tako-release-$name; exit \$s"
+    }
     upload() {  # file: tries until GitHub holds it whole; a stalled try is killed rather than waited on
       local file="$1" try
       for try in 1 2 3 4 5 6; do
         has "$file" && return 0
-        say "uploading $(basename "$file") ($(du -h "$file" | cut -f1)), try $try"
+        if via_relay "$file"; then has "$file" && return 0; fi
+        say "uploading $(basename "$file") ($(du -h "$file" | cut -f1)) from here, try $try"
         gh release upload "$TAG" "$file" --clobber --repo "$REPO" & local pid=$!
         ( sleep 2400; kill "$pid" 2>/dev/null ) & local watch=$!
         wait "$pid" 2>/dev/null || true
