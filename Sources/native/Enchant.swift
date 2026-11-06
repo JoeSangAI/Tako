@@ -19,6 +19,7 @@ final class Enchant {
     let marks = CALayer()          // what the owner pointed at, numbered, until they send it
     let trailLine = CAShapeLayer() // the drag while ⌃ is held
     let hoverRing = CAShapeLayer() // what a press would take
+    let trailEdge = CAShapeLayer(), hoverEdge = CAShapeLayer()
     let nib = CALayer()            // while ⌃ is held: an ink tip at the pointer, the pen Tako lends
     var aiming = false
     var hovering: CGRect?
@@ -67,7 +68,7 @@ final class Enchant {
         root.insertSublayer(jelly, at: 0)
         root.addSublayer(circles)
         root.addSublayer(marks)
-        for layer in [trailLine, hoverRing] {
+        for layer in [trailEdge, trailLine, hoverEdge, hoverRing] {
             layer.fillColor = nil
             layer.lineCap = .round
             layer.lineJoin = .round
@@ -75,6 +76,7 @@ final class Enchant {
         }
         let tip = CAShapeLayer(), halo = CAShapeLayer()
         tip.path = CGPath(ellipseIn: CGRect(x: -3.5, y: -3.5, width: 7, height: 7), transform: nil)
+        tip.lineWidth = 1.5
         halo.path = CGPath(ellipseIn: CGRect(x: -12, y: -12, width: 24, height: 24), transform: nil)
         halo.fillColor = nil
         halo.lineWidth = 1.4
@@ -87,10 +89,34 @@ final class Enchant {
         trailLine.lineDashPattern = [1, 5]
         hoverRing.lineWidth = 2.2
         hoverRing.lineDashPattern = [2, 6]
+        for (edge, line) in [(trailEdge, trailLine), (hoverEdge, hoverRing)] {
+            edge.lineWidth = line.lineWidth + 3
+            edge.lineDashPattern = line.lineDashPattern
+            edge.opacity = 0
+        }
     }
 
     var ink: CGColor { NSColor(srgbRed: 0.055, green: 0.055, blue: 0.06, alpha: 1).cgColor }
     var inkOnWindow: CGColor { host.goo?.onDark == true ? NSColor(white: 0.93, alpha: 1).cgColor : ink }
+
+    /// Dark or light is read off the strip the panel sits by, but a ring lands anywhere on the window: a dark sidebar, a photo, a
+    /// terminal in a light app. A black ring on black was simply not there (2026-11-06). So each line drawn on the window has the
+    /// other colour laid under it, a little wider: on a matching background it melts away, on the wrong one it is the line's edge.
+    var edgeOnWindow: CGColor { (host.goo?.onDark == true ? ink : NSColor.white.cgColor).copy(alpha: 0.9)! }
+
+    func edge(under line: CAShapeLayer, in holder: CALayer) -> CAShapeLayer {
+        let under = CAShapeLayer()
+        under.frame = line.frame
+        under.path = line.path
+        under.fillColor = nil
+        under.strokeColor = edgeOnWindow
+        under.lineWidth = line.lineWidth + 3
+        under.lineCap = line.lineCap
+        under.lineJoin = line.lineJoin
+        under.lineDashPattern = line.lineDashPattern
+        holder.insertSublayer(under, below: line)
+        return under
+    }
 
     /// The screen rect the ink goes around: the window, and the side window once it is welded on.
     func outline() -> CGRect? {
@@ -118,6 +144,8 @@ final class Enchant {
         marks.frame = root.bounds
         trailLine.frame = root.bounds
         hoverRing.frame = root.bounds
+        trailEdge.frame = root.bounds
+        hoverEdge.frame = root.bounds
         if frame.size != shown.size { rebuild(frame) }
         CATransaction.commit()
         shown = frame
@@ -382,25 +410,30 @@ final class Enchant {
         guard panel.isVisible else { return }
         sync()
         let path = ringPath(around: rect)
-        let ring = CAShapeLayer()
+        let ring = CAShapeLayer(), holder = CALayer()
+        holder.frame = root.bounds
+        ring.frame = root.bounds
         ring.path = path
         ring.fillColor = nil
         ring.strokeColor = inkOnWindow
-        ring.lineWidth = 2.4
+        ring.lineWidth = 2.6
         ring.lineCap = .round
         ring.lineJoin = .round
-        circles.addSublayer(ring)
+        holder.addSublayer(ring)
+        let under = edge(under: ring, in: holder)
+        circles.addSublayer(holder)
         let draw = CABasicAnimation(keyPath: "strokeEnd")
         draw.fromValue = 0
         draw.toValue = 1
         draw.duration = 0.5
         draw.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
         ring.add(draw, forKey: "draw")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 7) { [weak ring] in
-            guard let ring else { return }
+        under.add(draw, forKey: "draw")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 7) { [weak holder] in
+            guard let holder else { return }
             CATransaction.begin()
-            CATransaction.setCompletionBlock { ring.removeFromSuperlayer() }
-            ring.opacity = 0
+            CATransaction.setCompletionBlock { holder.removeFromSuperlayer() }
+            holder.opacity = 0
             CATransaction.commit()
         }
     }
@@ -428,16 +461,18 @@ final class Enchant {
         }
         line.fillColor = nil
         line.strokeColor = inkOnWindow
-        line.lineWidth = underline ? 2.2 : 2.4
+        line.lineWidth = underline ? 2.2 : 2.6
         line.lineCap = .round
         line.lineJoin = .round
         holder.addSublayer(line)
+        let under = edge(under: line, in: holder)
         let draw = CABasicAnimation(keyPath: "strokeEnd")
         draw.fromValue = 0
         draw.toValue = 1
         draw.duration = 0.2
         draw.timingFunction = CAMediaTimingFunction(name: .easeOut)
         line.add(draw, forKey: "draw")
+        under.add(draw, forKey: "draw")
         // The number sits at the top right, inside the ink's own panel.
         let corner = underline ? local(V(rect.maxX + 12, rect.maxY - 6)) : local(V(rect.maxX + 10, rect.minY - 4))
         let spot = CGPoint(x: min(max(corner.x, 12), root.bounds.width - 12), y: min(max(corner.y, 12), root.bounds.height - 12))
@@ -517,7 +552,7 @@ final class Enchant {
             band.lineWidth = on ? 3.2 : 0
             nib.opacity = on ? 1 : 0
             for case let shape as CAShapeLayer in nib.sublayers ?? [] {
-                if shape.fillColor != nil { shape.fillColor = inkOnWindow } else { shape.strokeColor = inkOnWindow }
+                if shape.fillColor != nil { shape.fillColor = inkOnWindow; shape.strokeColor = edgeOnWindow } else { shape.strokeColor = inkOnWindow }
             }
             nib.transform = on ? CATransform3DIdentity : CATransform3DMakeScale(0.4, 0.4, 1)
             CATransaction.commit()
@@ -532,7 +567,7 @@ final class Enchant {
 
     /// The drag so far, faint and dotted; nil clears it.
     func trail(_ points: [CGPoint]?) {
-        guard let points, points.count > 1, panel.isVisible else { trailLine.path = nil; return }
+        guard let points, points.count > 1, panel.isVisible else { trailLine.path = nil; trailEdge.path = nil; return }
         let path = CGMutablePath()
         path.addLines(between: points.map { local(V($0.x, $0.y)) })
         CATransaction.begin()
@@ -540,6 +575,9 @@ final class Enchant {
         trailLine.strokeColor = inkOnWindow
         trailLine.opacity = 0.45
         trailLine.path = path
+        trailEdge.strokeColor = edgeOnWindow
+        trailEdge.opacity = 0.45
+        trailEdge.path = path
         CATransaction.commit()
     }
 
@@ -553,11 +591,15 @@ final class Enchant {
             if rect != hovering {
                 CATransaction.setDisableActions(true)
                 hoverRing.path = ringPath(around: rect, wobble: 0.4)
+                hoverEdge.path = hoverRing.path
             }
             hoverRing.strokeColor = inkOnWindow
             hoverRing.opacity = 0.5
+            hoverEdge.strokeColor = edgeOnWindow
+            hoverEdge.opacity = 0.5
         } else {
             hoverRing.opacity = 0
+            hoverEdge.opacity = 0
         }
         hovering = rect
         CATransaction.commit()
