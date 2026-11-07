@@ -39,6 +39,8 @@ let sendWords = ["发送", "发出", "寄出", "send", "reply all"]
 let riskyWords = ["提交", "submit", "支付", "付款", "pay", "购买", "buy", "下单", "checkout", "删除", "delete",
                   "清空", "发布", "publish", "post", "注销", "退出登录", "sign out", "log out", "卸载", "uninstall", "格式化", "erase",
                   "抹掉", "重置", "reset", "转账", "transfer"]
+// Order confirmation, checkout, cashier and payment pages, by address or title (see `checkoutPage`).
+let checkoutMarks = try! NSRegularExpression(pattern: #"confirm_?order|order_?confirm|order[_/-]?checkout|checkout|cashier|收银台|确认订单|提交订单|结算页|支付|付款|alipay\.com|tenpay\.com|buy\.(?:taobao|tmall)\.com|(?:trade|pay|settle)\.jd\.com|(?:[/_-]|//)pay(?:ment)?(?:[/?.#_-]|$)|\bpayment\b"#, options: [.caseInsensitive])
 let keyCodes: [String: CGKeyCode] = [
     "return": 36, "enter": 76, "tab": 48, "space": 49, "delete": 51, "backspace": 51, "forwarddelete": 117, "esc": 53, "escape": 53,
     "left": 123, "right": 124, "down": 125, "up": 126, "home": 115, "end": 119, "pageup": 116, "pagedown": 121,
@@ -663,6 +665,33 @@ extension Controller {
         event?.post(tap: .cghidEventTap)
     }
 
+    /// A page where one press may place an order or pay: by the window's title, or a browser page's address.
+    /// The button that does it can carry any name, or one Accessibility doesn't give (2026-11-07: an order went through on a Tmall
+    /// confirm_order page with no card), so on such a page every press, key and typed word asks, whatever it is called.
+    @MainActor
+    func checkoutPage(_ win: Win) async -> String? {
+        var places = [currentTitle(id: win.id)]
+        if drawsLikeChrome(win.pid) || webBundles.contains(win.bundle), let window = axWindow(pid: win.pid, frame: win.frame, id: win.id) {
+            places.append(await Task.detached { Controller.pageAddress(window) }.value)
+        }
+        return places.first { place in
+            !place.isEmpty && checkoutMarks.firstMatch(in: place, range: NSRange(place.startIndex..., in: place)) != nil
+        }
+    }
+
+    /// The address of the page the window shows: its first web area, the frame around any embedded ones.
+    nonisolated static func pageAddress(_ element: AXUIElement, depth: Int = 0) -> String {
+        if words(element, kAXRoleAttribute) == "AXWebArea" { return words(element, "AXURL") }
+        var children: CFTypeRef?
+        guard depth < 12, AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &children) == .success,
+              let list = children as? [AXUIElement] else { return "" }
+        for child in list {
+            let found = pageAddress(child, depth: depth + 1)
+            if !found.isEmpty { return found }
+        }
+        return ""
+    }
+
     /// One step of a run. Everything it may refuse is decided before anything is posted.
     @MainActor
     func step(_ step: [String: Any], in win: Win, confirmed: Bool) async -> [String: Any] {
@@ -670,6 +699,9 @@ extension Controller {
         let action = step["action"] as? String ?? ""
         await surface(win)
         if win.id == target?.id { goo.state = "working"; enchant.setMood("working") }
+        if !confirmed, ["click", "double_click", "right_click", "key", "type", "drag", "choose"].contains(action), let page = await checkoutPage(win) {
+            return ["needs": "在结算或支付页面（\(page.prefix(60))）上\(action == "type" ? "输入" : action == "key" ? "按键" : "点击")：这一步可能下单或付款"]
+        }
         switch action {
         case "click", "double_click", "right_click":
             var point: CGPoint?, label = "", element: Element?
