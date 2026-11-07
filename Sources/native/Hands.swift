@@ -292,6 +292,7 @@ extension Controller {
         case "fill": return await fill(win, text: command["text"] as? String ?? "", files: command["files"] as? [String] ?? [])
         case "point": return await point(win, at: command["text"] as? String ?? "")
         case "script": return await script(command["script"] as? String ?? "", to: command["bundle"] as? String, within: command["within"] as? Double ?? 80)
+        case "closeFileChooser": return closeFileChooser(win)
         case "openChat": return await openChat(command["name"] as? String ?? "", in: win)
         case "isBack":
             // Their words going into the panel: the input box is about to be clicked out from under them.
@@ -673,11 +674,18 @@ extension Controller {
             }
             let task = Process()
             task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-            task.arguments = ["-e", source]
-            let out = Pipe(), err = Pipe()
+            // A file handed to a page goes in pieces of about 2 MB, more than one argument may hold: those come in on standard input.
+            let large = source.utf8.count > 100_000
+            task.arguments = large ? [] : ["-e", source]
+            let out = Pipe(), err = Pipe(), input = Pipe()
             task.standardOutput = out
             task.standardError = err
+            if large { task.standardInput = input }
             guard (try? task.run()) != nil else { return ["ok": false, "error": "osascript 启动失败"] }
+            if large {
+                input.fileHandleForWriting.write(Data(source.utf8))
+                try? input.fileHandleForWriting.close()
+            }
             let killer = DispatchWorkItem { task.terminate() }
             DispatchQueue.global().asyncAfter(deadline: .now() + limit, execute: killer)
             let output = out.fileHandleForReading.readDataToEndOfFile(), problem = err.fileHandleForReading.readDataToEndOfFile()
@@ -686,6 +694,42 @@ extension Controller {
             if task.terminationStatus == 0 { return ["ok": true, "output": String(decoding: output, as: UTF8.self)] }
             return ["ok": false, "error": String(decoding: problem, as: UTF8.self)]
         }.value
+    }
+
+    /// The system's file chooser over a browser window (an upload button was clicked) can't be worked behind the owner's back, and
+    /// Tako hands the page its files another way. It is closed with its own Cancel button, so nothing is chosen.
+    @MainActor
+    func closeFileChooser(_ win: Win) -> [String: Any] {
+        func attribute(_ e: AXUIElement, _ name: String) -> CFTypeRef? { var v: CFTypeRef?; return AXUIElementCopyAttributeValue(e, name as CFString, &v) == .success ? v : nil }
+        func children(_ e: AXUIElement) -> [AXUIElement] { attribute(e, kAXChildrenAttribute) as? [AXUIElement] ?? [] }
+        let choose = ["打开", "Open", "选取", "Choose", "上传", "Upload", "选择", "Select"]
+        // A chooser: a sheet or dialog with a Cancel button and one to open what is chosen. Nothing else on the window is touched.
+        func isChooser(_ e: AXUIElement) -> AXUIElement? {
+            guard let cancel = attribute(e, kAXCancelButtonAttribute) else { return nil }
+            var queue = children(e), looked = 0
+            while !queue.isEmpty, looked < 400 {
+                let next = queue.removeFirst()
+                looked += 1
+                if (attribute(next, kAXRoleAttribute) as? String) == kAXButtonRole, let title = attribute(next, kAXTitleAttribute) as? String, choose.contains(title) {
+                    return (cancel as! AXUIElement)  // swiftlint:disable:this force_cast
+                }
+                queue += children(next)
+            }
+            return nil
+        }
+        var found: [AXUIElement] = []
+        if let window = axWindow(pid: win.pid, frame: win.frame, id: win.id) {
+            found += children(window).filter { (attribute($0, kAXRoleAttribute) as? String) == "AXSheet" }
+        }
+        found += (attribute(AXUIElementCreateApplication(win.pid), kAXWindowsAttribute) as? [AXUIElement] ?? []).filter {
+            (attribute($0, kAXSubroleAttribute) as? String) == "AXDialog" && ["打开", "Open"].contains(attribute($0, kAXTitleAttribute) as? String ?? "")
+        }
+        var closed = 0
+        for chooser in found {
+            if let cancel = isChooser(chooser), AXUIElementPerformAction(cancel, kAXPressAction as CFString) == .success { closed += 1 }
+        }
+        if closed > 0 { log("closed \(closed) file chooser(s) on \(win.app)") }
+        return ["ok": true, "closed": closed]
     }
 
     nonisolated static func mayControl(_ bundle: String, asking: Bool) -> OSStatus {

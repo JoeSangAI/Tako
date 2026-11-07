@@ -615,6 +615,11 @@ function askPermission(which) {
   setTimeout(showNotice, STALE_AFTER + 100);
 }
 window.setRepaired = (ok) => { repaired = ok; showNotice(); };
+// Which of three a screen-recording no is (Permissions.swift): off, on but this process started before it (restart),
+// or the switch on screen belongs to another build of Tako (identity). Signed ad hoc, every build is another app to the system.
+let permissionState = { screen: '', adhoc: false, screenRepaired: null, accessRepaired: null };
+window.setPermissionState = (state) => { permissionState = { ...permissionState, ...state }; showNotice(); };
+const ADHOC_HINT = '自己编译的 Tako 每次重新编译都会这样，用固定的证书签名就不会（见 docs/BUILDING.md）。';
 const SETUP_WORDS = {
   install: ['还差一步：装上 Codex', 'Tako 的大脑是 OpenAI 的 Codex，用你自己的 ChatGPT 账号。', '安装 Codex', '正在安装 Codex，大约一分钟…'],
   update: ['还差一步：更新 Codex', '这台电脑上的 Codex 太旧，Tako 连不上它。更新后不用重新登录。', '更新 Codex', '正在更新 Codex，大约一分钟…'],
@@ -626,8 +631,9 @@ function showNotice() {
   const box = $('notice');
   const pending = setup && setup.step !== 'ready';
   const permission = !canMove ? 'accessibility' : !canRead ? 'screen' : null;
-  const stale = permission === 'accessibility' && permissionAsked.accessibility && Date.now() - permissionAsked.accessibility > STALE_AFTER;
-  const key = JSON.stringify([permission, stale, repaired, !!permissionAsked.screen, pending ? setup : null, update, busy]);
+  const stale = !!permission && !!permissionAsked[permission] && Date.now() - permissionAsked[permission] > STALE_AFTER
+    && (permission === 'accessibility' || permissionState.screen === 'off');
+  const key = JSON.stringify([permission, stale, repaired, !!permissionAsked.screen, permissionState, pending ? setup : null, update, busy]);
   if (key === noticeKey) return;
   noticeKey = key;
   box.replaceChildren();
@@ -640,17 +646,28 @@ function showNotice() {
   const updateFirst = update && !(pending && setup.busy);
   if (permission && !updateFirst) {
     const words = PERMISSION_WORDS[permission];
-    let body = words[1];
-    if (permission === 'accessibility' && repaired !== null) {
+    let title = words[0], body = words[1];
+    const why = permission === 'screen' ? permissionState.screen : '';
+    const list = permission === 'screen' ? '“录屏与系统录音”' : '“辅助功能”';
+    const cleared = (ok) => ok ? `列表里那个开着的开关是以前那一版 Tako 的，系统不认这一版。旧记录已经清掉，在${list}里再打开一次 Tako 的开关就好。`
+      : `列表里那个开着的开关是以前那一版 Tako 的，系统不认这一版。没能自动清掉：在${list}里选中 Tako，点“−”删掉，再打开一次 Tako 的开关。`;
+    if (why === 'restart') {
+      title = '录屏权限开好了，还差重开一次';
+      body = '系统只让重开后的 Tako 用上新开的录屏权限。手上的事做完，它会自己重开；现在就重开也行，正在做的事会停下。';
+      actions.append(button('现在重开', () => native?.postMessage({ relaunch: true }), true));
+    } else if (why === 'identity') {
+      title = '这一版 Tako 换了签名，要再开一次录屏';
+      body = cleared(permissionState.screenRepaired !== false) + (permissionState.adhoc ? ADHOC_HINT : '');
+    } else if (permission === 'accessibility' && repaired !== null) {
       body = repaired ? '清掉了。在系统设置的列表里再打开一次 Tako 的开关就好。'
         : '没能自动清掉。在“辅助功能”列表里选中 Tako，点下面的“−”删掉，再打开一次 Tako 的开关。';
+      if (permissionState.adhoc) body += ADHOC_HINT;
     } else if (stale) {
-      body = '开关已经开着，系统还是没认？它对 Tako 的记录旧了。点“修复”清掉这条记录，再打开一次开关就好。';
-      actions.append(button('修复', () => native?.postMessage({ repair: true }), true));
+      body = '开关已经开着，系统还是没认？它对 Tako 的记录旧了。点“修复”清掉这条记录，再打开一次开关就好。' + (permissionState.adhoc ? ADHOC_HINT : '');
+      actions.append(button('修复', () => native?.postMessage({ repair: permission }), true));
     }
-    if (permission === 'screen' && permissionAsked.screen) actions.append(button('开好了，重开 Tako', () => native?.postMessage({ relaunch: true }), true));
     actions.append(button('打开系统设置', () => askPermission(permission), !actions.childElementCount));
-    box.append(noticeLine('title', words[0]), noticeLine('body', body), actions);
+    box.append(noticeLine('title', title), noticeLine('body', body), actions);
     return;
   }
   if (pending && !updateFirst) {

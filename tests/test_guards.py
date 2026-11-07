@@ -668,6 +668,24 @@ class NeverSends(unittest.TestCase):
         self.assertIn("com.liguangming.Shadowrocket", operate)
         self.assertIn("AXSecureTextField", operate)
 
+    def test_files_reach_a_page_as_data_and_nothing_is_sent_or_submitted(self):
+        """GitHub issue 3: the page's upload box gets the files; the only click is the button the model named, with its chooser held back."""
+        import webfill
+        for word in ("submit", "keydown", "KeyboardEvent", "MouseEvent", "PointerEvent", "navigator.clipboard", "fetch(", "XMLHttpRequest", "location", "eval(", "Function(", "showOpenFilePicker"):
+            self.assertNotIn(word, webfill.UPLOAD)
+        self.assertEqual(webfill.UPLOAD.count(".click("), 1, "one click: the named button, in the catch step")
+        self.assertIn("ev.preventDefault()", webfill.UPLOAD, "the chooser that click would open is held back")
+        name = '");\n document.forms[0].submit(); ("「封面」.jpg'
+        code = webfill.upload_code("file", '上传"); alert(1); ("', {"name": name, "size": 3}, "ab12")
+        rest = code.replace(webfill.UPLOAD.strip(), "")
+        self.assertTrue(code.isascii(), "names and the field travel as escaped JSON")
+        self.assertIn(r'"\u4e0a\u4f20\"); alert(1); (\""', rest, "the field is a JSON string, its quotes escaped: never code")
+        self.assertIn(json.dumps(json.dumps({"name": name, "size": 3})), rest, "the file's name is data inside a JSON string")
+        self.assertEqual(webfill.kind_of(["/a/第一集.MP4", "/a/b.mov"]), "video")
+        self.assertEqual(webfill.kind_of(["/a/封面.jpg", "/a/b.mp4"]), "")
+        self.assertEqual(webfill.type_of("/a/封面.JPG"), "image/jpeg")
+        self.assertLess(len(webfill.upload_script("Google Chrome", "42", "chunk", "", "A" * ((webfill.CHUNK + 2) // 3 * 4), "ab12")), 2_400_000)
+
     def test_a_web_page_is_filled_with_data_never_with_a_click_a_key_or_the_clipboard(self):
         import base64
         import webfill
@@ -761,10 +779,26 @@ class FirstRun(unittest.TestCase):
         self.assertEqual(setup.state()["step"], "update")
 
     def test_the_screen_is_asked_for_wherever_it_sits_one_step_at_a_time(self):
-        controller = (NATIVE / "Controller.swift").read_text()
-        self.assertIn("CGRequestScreenCaptureAccess", controller)
+        controller, permissions = (NATIVE / "Controller.swift").read_text(), (NATIVE / "Permissions.swift").read_text()
+        self.assertIn("!canCapture { checkCapture() }", controller, "asked every couple of seconds, wherever it sits")
+        self.assertIn("CGRequestScreenCaptureAccess", permissions)
         self.assertNotIn("CGRequestScreenCaptureAccess", (NATIVE / "WeChatHeader.swift").read_text())
-        self.assertIn("trusted && !captureAsked", controller)
+        self.assertIn("guard trusted, !captureAsked", permissions, "the screen only once accessibility is settled")
+
+    def test_a_switch_left_by_another_build_is_cleared_once_for_this_one(self):
+        """GitHub issue 2: the system ties a switch to the signature, and an ad-hoc build is a new app every time it is built."""
+        permissions = (NATIVE / "Permissions.swift").read_text()
+        self.assertIn("SecCodeCopyDesignatedRequirement", permissions)
+        stale = permissions[permissions.index("func staleRecord"):permissions.index("func repairOnce")]
+        self.assertIn("was != signedAs && (was != nil || adhocSigned)", stale)
+        once = permissions[permissions.index("func repairOnce"):permissions.index("func clearRecord")]
+        self.assertIn("!= signedAs else { return false }", once, "cleared once per build, never in a loop")
+        clear = permissions[permissions.index("func clearRecord"):permissions.index("func repairAccessibility")]
+        self.assertIn('["reset", service, id]', clear, "only Tako's own line in the list")
+        self.assertIn('self.log("screen capture fresh process=', permissions, "Tako's own answer, for diagnosing, is in panel.log")
+        side = (ROOT / "Sources/brain/side.html").read_text()
+        for why in ("'restart'", "'identity'"):
+            self.assertIn(f"why === {why}", side, "the card says which of the three it is")
 
     def _clock_in(self, config):
         home = tempfile.mkdtemp()

@@ -47,9 +47,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 # Inside out: every library the Python carries, then the app that seals them.
-IDENTITY="$(security find-identity -v -p codesigning | sed -n 's/.*"\(Apple Development[^"]*\)".*/\1/p' | head -1)"
+# TAKO_SIGN_IDENTITY names another certificate, such as a self-signed one made once in Keychain Access (docs/BUILDING.md):
+# any certificate that stays the same keeps the permissions; ad hoc, each build is a new app to the system.
+IDENTITY="${TAKO_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | sed -n 's/.*"\(Apple Development[^"]*\)".*/\1/p' | head -1)}"
 SIGN="${IDENTITY:--}"
-[ "$SIGN" = "-" ] && echo "note: no signing identity on this Mac; ad-hoc build, permissions won't survive rebuilds and one-click update is off." >&2
+[ "$SIGN" = "-" ] && echo "note: no signing identity on this Mac; ad-hoc build: Screen Recording and Accessibility must be switched on again after every rebuild, and one-click update is off. See docs/BUILDING.md for a free certificate that keeps them." >&2
 # A signature differs every time it is made, so the Python is signed once and reused: the same bytes in every
 # release are what let an installed Tako keep the Python it has and fetch only the rest.
 SIGNED="$ROOT/.build/signed-python/$(printf '%s' "$(ls -A "$ROOT/.build/python" | grep '^\.tako-')$SIGN" | shasum | cut -c1-16)"

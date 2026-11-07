@@ -879,6 +879,89 @@ class FillingAWebPage(Base):
         self.assertIn("系统正在问", said)
 
 
+class UploadingToAWebPage(Base):
+    """GitHub issue 3: a video for a draft goes into the page's upload box from inside, never through the system's file chooser.
+    It leaves the Mac, so the owner sees which files and where, once; then the page is read to see whether the upload began."""
+
+    def setUp(self):
+        super().setUp()
+        chrome = {"ok": True, "id": 38519, "app": "Google Chrome", "bundle": "com.google.Chrome", "title": "公众号",
+                  "frame": {"x": 0, "y": 38, "w": 1470, "h": 844}, "stuck": True}
+        self.tako.native["resolve"] = lambda c: chrome
+        self.tako.native["closeFileChooser"] = lambda c: {"ok": True, "closed": 1}
+        self.tako.stick("Google Chrome", "com.google.Chrome", "公众号", "38519")
+        self.video = self.tako.home / "第一集.mp4"
+        self.video.write_bytes(os.urandom(3_200_000))  # three pieces
+        self.steps, self.got = [], 0
+        self.tako.native["script"] = self.page
+        self.UPLOAD = {"call": "fill_input", "args": {"files": [str(self.video)], "field": "上传视频"}}
+
+    def page(self, command):
+        script = command["script"]
+        if "repeat with w in windows" in script:
+            return {"ok": True, "output": "1574729330\t0\t38\t1470\t882\thttps://mp.weixin.qq.com/cgi-bin/appmsg\t公众号\n"}
+        step = script.rsplit("})(", 1)[1].split(",")[0].strip('\\"')
+        self.steps.append(step)
+        if step == "find":
+            return {"ok": True, "output": json.dumps({"found": True, "name": "上传视频", "accept": "video/*", "multiple": False})}
+        if step == "chunk":
+            data = script.rsplit("})(", 1)[1].split(", ")[2].strip('\\"')
+            self.got += len(data) * 3 // 4
+            return {"ok": True, "output": json.dumps({"ok": True, "got": self.got})}
+        if step == "set":
+            return {"ok": True, "output": json.dumps({"ok": True, "given": [self.video.name], "kept": 1, "name": "上传视频"})}
+        if step == "check":
+            return {"ok": True, "output": json.dumps({"ok": True, "seen": [self.video.name], "percent": "12", "bars": 1, "uploading": "上传中", "done": "", "failed": ""})}
+        return {"ok": True, "output": json.dumps({"ok": True})}
+
+    def reply(self):
+        self.tako.until(lambda s: "好了" in self.tako.said(s), "an answer", 15)
+        return json.dumps([r for r in self.tako.codex("tool_reply") if r["tool"] == "fill_input"][0]["reply"], ensure_ascii=False)
+
+    def test_the_file_goes_in_from_inside_after_one_look_from_the_owner(self):
+        self.tako.ask(steps(self.UPLOAD, dict(self.UPLOAD), {"say": "好了"}))
+        card = self.tako.until(lambda s: s["pending"], "the card", 8)["pending"][0]
+        self.assertIn("第一集.mp4", card["text"])
+        self.assertIn("mp.weixin.qq.com", card["reason"])
+        self.assertNotIn("set", self.steps, "nothing leaves before the owner says yes")
+        self.tako.call("/decide", {"id": card["id"], "accepted": True})
+        said = self.reply()
+        self.assertIn("交给了 mp.weixin.qq.com", said)
+        self.assertIn("进度 12%", said)
+        self.assertIn("没有打开系统的选择框", said)
+        self.assertGreaterEqual(self.steps.count("chunk"), 6, "two uploads, each in pieces")
+        self.assertEqual(self.steps.count("set"), 2)
+        self.assertFalse(self.tako.state().get("pending"), "the same site in the same job asks once")
+        commands = [c["command"] for c in self.tako.commands]
+        for never in ("fill", "bringForward", "step"):
+            self.assertNotIn(never, commands, "no pointer, no keys, no chooser")
+        self.assertIn("closeFileChooser", commands)
+
+    def test_a_no_sends_nothing(self):
+        self.tako.ask(steps(self.UPLOAD, {"say": "好了"}))
+        card = self.tako.until(lambda s: s["pending"], "the card", 8)["pending"][0]
+        self.tako.call("/decide", {"id": card["id"], "accepted": False})
+        said = self.reply()
+        self.assertIn("没批准上传", said)
+        self.assertNotIn("chunk", self.steps)
+        self.assertNotIn("set", self.steps)
+
+    def test_page_scripting_off_says_what_to_do_and_never_clicks_the_button(self):
+        self.tako.native["script"] = lambda c: {"ok": False, "error": "Executing JavaScript through AppleScript is turned off."}
+        self.tako.ask(steps(self.UPLOAD, {"say": "好了"}))
+        said = self.reply()
+        self.assertIn("允许 Apple 事件中的 JavaScript", said)
+        self.assertIn(str(self.video), said, "if the owner would rather pick it, which file")
+        self.assertNotIn("fill", [c["command"] for c in self.tako.commands])
+
+    def test_a_click_that_opens_the_chooser_closes_it_and_says_how_to_upload(self):
+        self.tako.ask(steps({"call": "operate_window", "args": {"steps": [{"action": "click", "text": "上传视频"}]}}, {"say": "好了"}))
+        self.tako.until(lambda s: "好了" in self.tako.said(s), "an answer", 8)
+        said = json.dumps([r for r in self.tako.codex("tool_reply") if r["tool"] == "operate_window"][0]["reply"], ensure_ascii=False)
+        self.assertIn("已经点“取消”关掉了", said)
+        self.assertIn("fill_input 的 files", said)
+
+
 class HandingAFileToAnotherApp(Base):
     """Asked on one app's window, it lands in WeChat. WeChat takes the real pointer, so it waits for the owner to get there, and then nobody has to say anything."""
     WECHAT = "com.tencent.xinWeChat"

@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import secrets
 import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import feedback as fb
 import webfill
@@ -387,6 +389,11 @@ class Hands:
                 done.append(str(result.get("did") or "完成"))
         finally:
             await self.native("endSteps")
+        # An upload button clicked opens the system's file chooser, which nothing behind the owner's back can work (GitHub issue 3).
+        if target.get("bundle") in webfill.BROWSERS and any(str(s.get("action")) in ("click", "double_click") for s in steps[:40]):
+            if (await self.native("closeFileChooser", window=window)).get("closed"):
+                done.append("这一下打开了系统的文件选择框，后台选不了文件，已经点“取消”关掉了，什么都没选。"
+                            "要传文件，用 fill_input 的 files（文件路径）和 field（上传按钮或那一块上的字），它在后台直接交给网页，不要再点上传按钮。")
         seen = await self.native("look", window=window)
         report = "\n".join(done)
         if seen.get("ok"):
@@ -463,13 +470,10 @@ class Hands:
             return self._reply(f"{app} 80 秒没有回应，脚本被停下了。", ok=False)  # killed for taking too long: nothing on stderr
         return self._reply(str(result.get("output") or result.get("error") or "完成"), ok=bool(result.get("ok")))
 
-    async def _fill_page(self, text, field, shown, window):
-        """Into a field of a web page, behind the owner's back (`webfill`). None: the page code can't run here, and why, for the usual way to go on."""
-        app, bundle = webfill.BROWSERS[shown["bundle"]], shown["bundle"]
-        text = text.rstrip("\r\n")  # a line break at the end becomes an empty paragraph in a rich editor
-
+    def _page_runner(self, app, bundle, window, within=15):
+        """Runs Tako's own page code in the browser: (output, None), or (None, why it can't run there)."""
         async def run(source):
-            result = await self.native("script", timeout=25, script=source, bundle=bundle, within=15, window=window)
+            result = await self.native("script", timeout=within + 10, script=source, bundle=bundle, within=within, window=window)
             if result.get("ok"):
                 return result.get("output") or "", None
             if result.get("consent") or result.get("denied"):
@@ -477,6 +481,13 @@ class Hands:
             if webfill.scripting_off(result.get("error")):
                 return None, f"{app} 没开「允许 Apple 事件中的 JavaScript」（菜单 显示 › 开发者），{OWNER} 打开一次，网页就都能在后台填了"
             return None, f"{app} 没有回应" + (f"：{str(result.get('error')).strip()[:200]}" if result.get("error") else "")
+        return run
+
+    async def _fill_page(self, text, field, shown, window):
+        """Into a field of a web page, behind the owner's back (`webfill`). None: the page code can't run here, and why, for the usual way to go on."""
+        app, bundle = webfill.BROWSERS[shown["bundle"]], shown["bundle"]
+        text = text.rstrip("\r\n")  # a line break at the end becomes an empty paragraph in a rich editor
+        run = self._page_runner(app, bundle, window)
 
         listed, why = await run(webfill.windows_script(app))
         if listed is None:
@@ -516,6 +527,97 @@ class Hands:
             return {"ok": True, "message": f"在后台填进了「{name}」，读回核对一致（{said.get('length', 0)} 字）。没有点任何按钮。"}, None
         return {"ok": False, "error": f"填了「{name}」但读回不对，现在框里是：{said.get('now', '')}"}, None
 
+    async def _upload_page(self, files, field, shown, window, job):
+        """Files into a web page's upload box, behind the owner's back (`webfill.UPLOAD`): never through the system's file chooser,
+        which only the real pointer can work. The files leave this Mac, so the owner sees which ones and where first, once per site
+        in a job. Then the page is read to see whether the upload began. None: the page code can't run here, and why."""
+        app, bundle = webfill.BROWSERS[shown["bundle"]], shown["bundle"]
+        paths = [Path(f).expanduser() for f in files]
+        missing = [str(p) for p in paths if not p.is_file()]
+        if missing:
+            return {"ok": False, "error": f"没有这个文件：{'、'.join(missing)}，什么都没传"}, None
+        sizes = [p.stat().st_size for p in paths]
+        if sum(sizes) > webfill.UPLOAD_LIMIT:
+            return {"ok": False, "error": f"这些文件一共 {sum(sizes) / 1e9:.1f} GB，太大了，后台交不过去；一次少传几个"}, None
+        run = self._page_runner(app, bundle, window, within=30)
+        listed, why = await run(webfill.windows_script(app))
+        if listed is None:
+            return None, why
+        found = webfill.which_window(listed, shown.get("title"), shown.get("frame"))
+        if not found:
+            return {"ok": False, "error": f"认不出是 {app} 的哪个窗口，什么都没传"}, None
+        page, address = found
+        site = urlparse(address).hostname or address[:60]
+        mark = secrets.token_hex(4)
+
+        async def step(name, data=None):
+            output, why = await run(webfill.upload_script(app, page, name, field, data, mark))
+            return webfill.answer(output) if why is None else {"error": "script", "why": why}
+
+        # A chooser opened by an earlier click would sit over the page for nothing: close it (it is the Cancel button, nothing chosen).
+        closed = await self.native("closeFileChooser", window=window)
+        said = await step("find", {"kind": webfill.kind_of(paths)})
+        if said.get("error") == "button":
+            said = await step("catch", {"kind": webfill.kind_of(paths)})
+        boxes = "、".join(said.get("boxes") or []) or "没有"
+        errors = {"none": f"页面上没找到「{field}」对应的上传框。页面上的上传框有：{boxes}。可能要先切到对应的模式或展开那一块",
+                  "which": f"页面上不止一个上传框，用 field 说传到哪个（上传按钮或那一块上的字）：{boxes}",
+                  "nobox": f"点了「{said.get('button')}」，没等到上传框出来，也没打开系统的选择框。可能要先选上传方式；look_at_window 看看现在是什么样",
+                  "script": said.get("why"), "unreadable": f"{app} 回的话看不懂，什么都没传"}
+        if not said.get("found"):
+            return {"ok": False, "error": errors.get(said.get("error"), "没找到上传框，什么都没传")}, None
+        box = said.get("name") or field or "上传框"
+        if len(paths) > 1 and not said.get("multiple"):
+            return {"ok": False, "error": f"「{box}」一次只收一个文件：一个一个传，每次 files 只给一个"}, None
+        # The one card: these files, to this site. Once said yes to, the rest of this job's files for the same site go ahead.
+        allowed = job.uploads_allowed
+        if site not in allowed:
+            listed_files = "\n".join(f"{p.name}（{size / 1e6:.1f} MB）" for p, size in zip(paths, sizes))
+            if not await self._card({"kind": "approval", "text": listed_files, "reason": f"把这些文件传到 {site} 的「{box}」"}, job):
+                await step("drop")
+                return {"ok": False, "error": f"{OWNER} 没批准上传，什么都没传"}, None
+            allowed.add(site)
+        for path, size in zip(paths, sizes):
+            said = await step("file", {"name": path.name, "type": webfill.type_of(path), "size": size, "modified": int(path.stat().st_mtime * 1000)})
+            if not said.get("ok"):
+                break
+            with path.open("rb") as handle:
+                while said.get("ok") and (piece := await asyncio.to_thread(handle.read, webfill.CHUNK)):
+                    said = await step("chunk", base64.b64encode(piece).decode())
+                    if job and job.stopping:
+                        await step("drop")
+                        return {"ok": False, "error": f"{OWNER} 让停下，没有上传"}, None
+            if not said.get("ok"):
+                break
+        else:
+            said = await step("set")
+        if not said.get("ok"):
+            await step("drop")
+            problems = {"gone": "页面刷新或换了，上传框不在了，什么都没传", "lost": "页面没接住文件（可能刷新了），什么都没传",
+                        "single": f"「{box}」一次只收一个文件：一个一个传",
+                        "accept": f"「{box}」不收「{said.get('name')}」这种文件（它只收 {said.get('accept')}），没有传。看看是不是传错了框",
+                        "script": said.get("why")}
+            return {"ok": False, "error": problems.get(said.get("error"), "没传进去")}, None
+        given = said.get("given") or [p.name for p in paths]
+        # The uploader starts on the change event; a moment later the page shows whether it did.
+        seen = {}
+        for wait in (1.5, 2.5, 4):
+            await asyncio.sleep(wait)
+            seen = await step("check", {"names": given})
+            if seen.get("failed") or seen.get("done") or seen.get("uploading") or seen.get("percent") or seen.get("bars"):
+                break
+        signs = [f"页面出现了文件名 {'、'.join(seen['seen'])}" if seen.get("seen") else "",
+                 f"进度 {seen['percent']}%" if seen.get("percent") else ("有进度条" if seen.get("bars") else ""),
+                 f"页面上写着「{seen['uploading']}」" if seen.get("uploading") else "",
+                 f"页面上写着「{seen['done']}」" if seen.get("done") else ""]
+        signs = "；".join(s for s in signs if s)
+        head = f"在后台把 {'、'.join(given)} 交给了 {site} 的「{box}」，没有打开系统的选择框，也没有点发布或提交。" + ("（先关掉了一个开着的系统文件选择框。）" if closed.get("closed") else "")
+        if seen.get("failed"):
+            return {"ok": False, "error": f"{head}但页面上写着「{seen['failed']}」：上传没成。看一眼窗口，告诉 {OWNER} 差在哪"}, None
+        if signs:
+            return {"ok": True, "message": f"{head}看到：{signs}。上传要一会儿，传完前不要保存或发布；用 look_at_window 核对传完了再接着做"}, None
+        return {"ok": True, "message": f"{head}但页面上还看不出开始上传了：look_at_window 看一眼。没开始就说清停在哪一步，不要说传好了"}, None
+
     async def fill(self, text, files=(), window=None, chat=None, job=None, field=None):
         """Into a window's input. `job` left out: the owner pressed the panel's button, right here. A job's fill that needs the window in front waits for the owner to get there, and that is not a failure."""
         if job:
@@ -533,9 +635,15 @@ class Hands:
                 return {"ok": False, "error": f"微信里有几个「{chat}」：{'、'.join(others[:5])}。问 {OWNER} 是哪一个，再填，chat 写全名"}
         why = None
         # A web page fills from inside, in the background, whatever editor it uses: nothing to wait for (Joe 2026-11-04).
-        if job and not chat and not files:
+        if job and not chat:
             shown = await self.native("resolve", window=window)
             if shown.get("ok") and shown.get("bundle") in webfill.BROWSERS:
+                if files:  # a page's upload box takes the files from inside too: the system's file chooser is never opened (GitHub issue 3)
+                    result, why = await self._upload_page(files, field, shown, str(shown.get("id") or window or ""), job)
+                    if result is not None:
+                        return result
+                    return {"ok": False, "error": f"没有上传：{why}。不要去点上传按钮：系统的文件选择框后台选不了。{OWNER} 打开那个开关后再调一次就行；"
+                                                  f"要是TA宁愿自己选，告诉TA在选择框里选哪个文件（{'、'.join(files)}），选好说一声你再接着做"}
                 result, why = await self._fill_page(text, field, shown, str(shown.get("id") or window or ""))
                 if result is not None:
                     return result

@@ -51,6 +51,7 @@ final class Controller: NSObject, NSApplicationDelegate {
     var isWeChat: Bool { bundle == weChatBundle }
     var trusted = false
     var trustTimer: Timer?, trustTicks = 0, repairedOnce = false, askingFresh = false   // Permissions.swift
+    var signedAs = "", adhocSigned = false, screenWhy = "", screenFresh: Bool?, screenRepaired: Bool?, accessRepaired: Bool?   // Permissions.swift
     let launchedAt = Date()
     var pointTap: CFMachPort?                   // ⌃ and the pointer on the stuck window (Pointing.swift)
     var gesture: PointGesture?
@@ -291,21 +292,7 @@ final class Controller: NSObject, NSApplicationDelegate {
         updateOrder()
 
         // One question at a time: the screen is asked for as soon as accessibility is settled, whatever window it sits on.
-        if ticks % 120 == 0 && !canCapture {
-            canCapture = CGPreflightScreenCaptureAccess()
-            if canCapture {
-                log("screen capture trusted=true")
-                web.evaluateJavaScript("setCanRead(true)")
-            } else if trusted && !captureAsked {
-                captureAsked = true
-                log("screen capture trusted=false")
-                // The system's prompt once ever; after that the panel's card asks, with a restart in it.
-                if !UserDefaults.standard.bool(forKey: "askedScreenCapture") {
-                    UserDefaults.standard.set(true, forKey: "askedScreenCapture")
-                    _ = CGRequestScreenCaptureAccess()
-                }
-            }
-        }
+        if ticks % 120 == 0 && !canCapture { checkCapture() }
     }
 
     func targetRefreshDue() -> Bool {

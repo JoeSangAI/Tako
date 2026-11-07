@@ -243,3 +243,207 @@ def answer(output):
 def scripting_off(error):
     """The browser refuses page code until the owner turns it on once (View › Developer › Allow JavaScript from Apple Events)."""
     return bool(re.search(r"JavaScript.*(turned off|Apple Events|Apple 事件)|允许.*Apple 事件.*JavaScript", error or "", re.I | re.S))
+
+
+# ---- handing files to a page's upload box (GitHub issue 3, 2026-11-07) ----
+# Clicking an upload button opens the system's file chooser, which nothing behind the owner's back can work. The page's own
+# file box takes files directly: the bytes come over in pieces as data (base64), become File objects in the page, and the box
+# gets them the way a drop would, with the input and change events its uploader listens for. Nothing is clicked, except, when
+# the box only appears on a click, the button the owner named, with the chooser it would open held back. Nothing is submitted.
+CHUNK = 1_500_000            # bytes per call: about 2 MB of page code, well within what one Apple event carries
+UPLOAD_LIMIT = 2_000_000_000  # the page holds every byte in memory until its uploader has read them
+KINDS = {"video": (".mp4", ".mov", ".m4v", ".avi", ".wmv", ".flv", ".mkv", ".webm", ".3gp", ".mpg", ".mpeg"),
+         "image": (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic", ".tif", ".tiff", ".svg")}
+TYPES = {".mp4": "video/mp4", ".mov": "video/quicktime", ".m4v": "video/x-m4v", ".avi": "video/x-msvideo", ".wmv": "video/x-ms-wmv",
+         ".flv": "video/x-flv", ".mkv": "video/x-matroska", ".webm": "video/webm", ".3gp": "video/3gpp", ".mpg": "video/mpeg", ".mpeg": "video/mpeg",
+         ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+         ".heic": "image/heic", ".tif": "image/tiff", ".tiff": "image/tiff", ".svg": "image/svg+xml", ".pdf": "application/pdf",
+         ".doc": "application/msword", ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+         ".xls": "application/vnd.ms-excel", ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+         ".ppt": "application/vnd.ms-powerpoint", ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+         ".zip": "application/zip", ".txt": "text/plain", ".csv": "text/csv", ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".wav": "audio/wav"}
+
+UPLOAD = r"""
+(function (step, field, data, mark) {
+  var say = function (o) { return JSON.stringify(o); };
+  var store = window.__takoUpload = window.__takoUpload || {};
+  var KIND = {video: /video|\.(mp4|mov|m4v|avi|wmv|flv|mkv|webm|3gp|mpe?g)\b/i, image: /image|\.(jpe?g|png|gif|webp|bmp|heic|tiff?|svg)\b/i};
+  var WORDS = {video: /视频|video/i, image: /图片|封面|照片|image|cover|photo|picture/i};
+  function isFile(e) { return e.tagName === 'INPUT' && (e.getAttribute('type') || '').toLowerCase() === 'file'; }
+  function walk(root, test, into) {
+    var found = root.querySelectorAll('*');
+    for (var i = 0; i < found.length; i++) {
+      var e = found[i];
+      if (test(e)) into.push(e);
+      if (e.shadowRoot) walk(e.shadowRoot, test, into);
+      if (e.tagName === 'IFRAME') { try { if (e.contentDocument) walk(e.contentDocument, test, into); } catch (x) {} }
+    }
+    return into;
+  }
+  function shown(e) {
+    var r = e.getBoundingClientRect(), s = e.ownerDocument.defaultView.getComputedStyle(e);
+    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+  }
+  function text(e) { return String(e.innerText || e.textContent || '').replace(/\s+/g, ' ').trim(); }
+  function own(e) {
+    var words = ['aria-label', 'title', 'name', 'id', 'accept'].map(function (a) { return e.getAttribute(a); });
+    (e.labels || []).forEach(function (l) { words.push(text(l)); });
+    return words.filter(function (w) { return w && w.trim(); });
+  }
+  // A file box is nearly always hidden inside the button or area it belongs to: what that area says is its name.
+  function around(e) {
+    var near = [], up = e.parentElement;
+    for (var level = 0; up && level < 5; level++, up = up.parentElement) {
+      var t = text(up);
+      if (t && t.length <= 160) near.push(t);
+    }
+    return near;
+  }
+  function name(e) { return (around(e)[0] || own(e)[0] || 'file').slice(0, 40); }
+  // Words on the page that say the name: buttons, labels, the text of an upload area.
+  function labelled(want) {
+    return walk(document, function (e) {
+      var t = text(e);
+      return shown(e) && t && t.length <= 40 && t.toLowerCase().indexOf(want) >= 0 && !e.querySelector('button, a, [role=button], input');
+    }, []);
+  }
+  // How well a box answers to the name the model gave: its own words, or words in the area that holds it and no other box.
+  function named(e, want) {
+    var best = 0;
+    own(e).forEach(function (w) { if (w.toLowerCase().indexOf(want) >= 0) best = Math.max(best, 70); });
+    labelled(want).forEach(function (l) {
+      var up = e.parentElement;
+      for (var level = 0; up && level < 5; level++, up = up.parentElement) {
+        if (walk(up, isFile, []).length > 1) break;  // an area with two boxes in it names neither
+        if (up.contains(l)) { best = Math.max(best, 60 - 8 * level); break; }
+      }
+    });
+    return best;
+  }
+  function score(e, want, kind) {
+    var best = want ? named(e, want) : 0;
+    var accept = e.getAttribute('accept') || '';
+    if (kind && KIND[kind].test(accept)) best += 25;
+    else if (kind && accept && !/\*\/\*|^\*$/.test(accept)) best -= 30;  // made for some other kind of file
+    if (kind && around(e).slice(0, 2).some(function (w) { return WORDS[kind].test(w); })) best += 10;
+    if (e.disabled) best -= 100;
+    return best;
+  }
+  function boxes() { return walk(document, isFile, []); }
+  function described(list) {
+    return list.map(function (e) { return name(e) + (e.getAttribute('accept') ? '（' + e.getAttribute('accept').slice(0, 40) + '）' : ''); })
+      .filter(function (n, i, a) { return a.indexOf(n) === i; }).slice(0, 12);
+  }
+  function marked() { var list = boxes(); for (var i = 0; i < list.length; i++) if (list[i].getAttribute('data-tako-upload') === mark) return list[i]; return null; }
+  function pick(e, label) { e.setAttribute('data-tako-upload', mark); return say({found: true, name: label || name(e), accept: e.getAttribute('accept') || '', multiple: !!e.multiple}); }
+  var meta = {};
+  try { meta = data && step !== 'chunk' ? JSON.parse(data) : {}; } catch (x) {}
+  var want = String(field || '').trim().toLowerCase();
+
+  if (step === 'find') {
+    var list = boxes(), top = null, topScore = -1;
+    list.forEach(function (e) { var s = score(e, want, meta.kind); if (s > topScore) { top = e; topScore = s; } });
+    // Named: the box must answer to the name itself, never only to the kind of file. Not named: the only box there is, or the one made for this kind.
+    if (top && (want ? named(top, want) >= 30 && topScore >= 30 : (list.length === 1 && topScore > -50) || topScore >= 25)) return pick(top);
+    var buttons = want ? labelled(want) : [];
+    return say({error: buttons.length ? 'button' : (want ? 'none' : 'which'), boxes: described(list), button: buttons.length ? text(buttons[0]) : ''});
+  }
+  if (step === 'catch') {
+    // The box appears only when its button is clicked. Clicked here, the chooser it would open is held back, and that box is the one.
+    var caught = null, button = labelled(want)[0];
+    if (!button) return say({error: 'none', boxes: described(boxes())});
+    var hold = function (ev) { if (ev.target && isFile(ev.target)) { caught = ev.target; ev.preventDefault(); ev.stopImmediatePropagation(); } };
+    window.addEventListener('click', hold, true);
+    try { button.click(); } finally { window.removeEventListener('click', hold, true); }
+    if (!caught) {
+      var after = boxes().filter(function (e) { return !e.getAttribute('data-tako-upload') && named(e, want) >= 30; });
+      if (after.length === 1) caught = after[0];
+    }
+    return caught ? pick(caught, text(button)) : say({error: 'nobox', button: text(button), boxes: described(boxes())});
+  }
+  if (step === 'file') {
+    var box = marked();
+    if (!box) return say({error: 'gone'});
+    if (!store[mark]) store[mark] = [];
+    store[mark].push({name: meta.name, type: meta.type || '', size: meta.size || 0, modified: meta.modified || Date.now(), parts: [], got: 0});
+    return say({ok: true, files: store[mark].length});
+  }
+  if (step === 'chunk') {
+    var files = store[mark];
+    if (!files || !files.length) return say({error: 'lost'});
+    var bytes = Uint8Array.from(atob(data), function (c) { return c.charCodeAt(0); });
+    var f = files[files.length - 1];
+    f.parts.push(bytes);
+    f.got += bytes.length;
+    return say({ok: true, got: f.got});
+  }
+  if (step === 'drop') { delete store[mark]; var left = marked(); if (left) left.removeAttribute('data-tako-upload'); return say({ok: true}); }
+  if (step === 'set') {
+    var box = marked(), files = store[mark];
+    if (!box) return say({error: 'gone'});
+    if (!files || !files.length) return say({error: 'lost'});
+    var short = files.filter(function (f) { return f.got !== f.size; });
+    if (short.length) return say({error: 'lost', name: short[0].name});
+    if (files.length > 1 && !box.multiple) return say({error: 'single', name: name(box)});
+    var accept = (box.getAttribute('accept') || '').split(',').map(function (a) { return a.trim().toLowerCase(); }).filter(Boolean);
+    var fits = function (f) {
+      if (!accept.length) return true;
+      var lower = f.name.toLowerCase(), type = (f.type || '').toLowerCase();
+      return accept.some(function (a) {
+        if (a === '*' || a === '*/*') return true;
+        if (a.charAt(0) === '.') return lower.slice(-a.length) === a;
+        if (a.slice(-2) === '/*') return type.indexOf(a.slice(0, -1)) === 0;
+        return type === a;
+      });
+    };
+    var wrong = files.filter(function (f) { return !fits(f); });
+    if (wrong.length) return say({error: 'accept', name: wrong[0].name, accept: accept.join(',')});
+    var dt = new DataTransfer();
+    files.forEach(function (f) { dt.items.add(new File(f.parts, f.name, {type: f.type, lastModified: f.modified})); });
+    box.files = dt.files;
+    box.dispatchEvent(new Event('input', {bubbles: true}));
+    box.dispatchEvent(new Event('change', {bubbles: true}));
+    delete store[mark];
+    var given = Array.prototype.map.call(dt.files, function (f) { return f.name; });
+    return say({ok: true, given: given, kept: box.files ? box.files.length : 0, name: name(box)});
+  }
+  if (step === 'check') {
+    // What the page shows now: the file's name, a progress bar or a percentage, words for uploading, done or failed.
+    var page = text(document.body), names = meta.names || [];
+    var seen = names.filter(function (n) { var stem = n.replace(/\.[^.]+$/, ''); return page.indexOf(n) >= 0 || (stem.length >= 4 && page.indexOf(stem) >= 0); });
+    var bars = walk(document, function (e) {
+      return shown(e) && (e.tagName === 'PROGRESS' || e.getAttribute('role') === 'progressbar' || /(^|[\s_-])progress/i.test(String(e.className && e.className.baseVal !== undefined ? e.className.baseVal : e.className)));
+    }, []).length;
+    var percent = (page.match(/(\d{1,3}(?:\.\d+)?)\s?%/) || [])[1] || '';
+    var snip = function (re) { var m = page.match(re); return m ? page.slice(Math.max(0, m.index - 20), m.index + m[0].length + 20) : ''; };
+    return say({ok: true, seen: seen, bars: bars, percent: percent,
+      uploading: snip(/上传中|正在上传|处理中|转码中|uploading|processing/i),
+      done: snip(/上传成功|上传完成|已上传|upload(ed)? (complete|successful)|上传完毕/i),
+      failed: snip(/上传失败|格式不支持|不支持该格式|超过.{0,6}(大小|限制)|文件过大|upload failed|too large|not supported/i),
+      box: (function () { var b = marked(); return b ? (b.files ? b.files.length : 0) : -1; })()});
+  }
+  return say({error: 'step'});
+})
+"""
+
+UPLOAD = UPLOAD.encode("ascii", "backslashreplace").decode()  # plain ASCII like PAGE: the Chinese words in it as \u escapes, which JS reads the same
+
+
+def upload_code(step, field, data, mark):
+    """One step of a hand-over as page code. File bytes, names and the field all travel as data (JSON or base64)."""
+    data = data if isinstance(data, str) or data is None else json.dumps(data, ensure_ascii=True)
+    return f"{UPLOAD.strip()}({json.dumps(step)}, {json.dumps(field or '')}, {json.dumps(data)}, {json.dumps(mark)})"
+
+
+def upload_script(app, window_id, step, field, data, mark):
+    return f"tell application {quoted(app)} to execute active tab of window id {int(window_id)} javascript {quoted(upload_code(step, field, data, mark))}"
+
+
+def kind_of(paths):
+    """What sort of file these all are, so the box made for it is picked: video, image, or '' when mixed or anything else."""
+    kinds = {next((k for k, ends in KINDS.items() if str(p).lower().endswith(ends)), "") for p in paths}
+    return kinds.pop() if len(kinds) == 1 else ""
+
+
+def type_of(path):
+    return TYPES.get("." + str(path).rsplit(".", 1)[-1].lower(), "") if "." in str(path) else ""

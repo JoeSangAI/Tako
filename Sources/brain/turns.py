@@ -60,6 +60,7 @@ class Job:
         self.stopping, self.call_waiting, self.tools_running = False, None, 0
         self.first_text, self.usage, self.pictures = None, None, 0
         self.refused = {}  # (tool, what it said) -> times this turn
+        self.uploads_allowed = set()  # sites the owner said yes to sending files to, in this job (Hands._upload_page)
         self.left_for_owner = None  # a step needs a window in front, which and whose: when the owner is there, it goes on
         self.trail, self.blocked = [], []  # tools as they went and why a step couldn't go on behind the owner: fixed words only, for the record of how it ended
         self.changing = {}  # file changes under way: item id -> paths, so a card can say what would change

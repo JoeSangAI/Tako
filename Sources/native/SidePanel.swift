@@ -27,6 +27,7 @@ extension Controller: WKScriptMessageHandler, WKNavigationDelegate {
         if saved > 0 { web.evaluateJavaScript("setWidth(\(saved))") }
         web.evaluateJavaScript("setCanMove(\(trusted))")
         web.evaluateJavaScript("setCanRead(\(CGPreflightScreenCaptureAccess()))")
+        tellPermissions()
         updater.panelLoaded()
         sentGeometry = ""
         placeSide()
@@ -70,7 +71,7 @@ extension Controller: WKScriptMessageHandler, WKNavigationDelegate {
            let page = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(name)") { NSWorkspace.shared.open(page) }
         if let n = body["unpoint"] as? Int { unpoint(n, tellPanel: false) }
         if body["pointsSent"] != nil { pointsSent() }
-        if body["repair"] != nil { repairAccessibility() }
+        if let which = body["repair"] { if which as? String == "screen" { repairScreen() } else { repairAccessibility() } }
         if body["relaunch"] != nil { relaunch() }
         if let value = body["pop"] as? Double { goo.pop = CGFloat(value); goo.kick(CGFloat(value) * 90) }
         if let value = body["wanted"] as? Double {

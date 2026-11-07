@@ -189,7 +189,7 @@ git clone https://github.com/JoeSangAI/Tako.git
 cd Tako && ./run.sh
 ```
 
-需要 Xcode Command Line Tools。[高级设置](docs/CONFIG.md)可以告诉 Tako 怎么称呼你、你的背景、用哪个模型，还能接入本地资料库。发现问题请[提 Issue](https://github.com/JoeSangAI/Tako/issues)。
+需要 Xcode Command Line Tools。自己编译的版本怎么签名、权限为什么会掉，见[编译说明](docs/BUILDING.md)。[高级设置](docs/CONFIG.md)可以告诉 Tako 怎么称呼你、你的背景、用哪个模型，还能接入本地资料库。发现问题请[提 Issue](https://github.com/JoeSangAI/Tako/issues)。
 
 ## 装上试试
 

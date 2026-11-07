@@ -5,6 +5,10 @@ import CoreGraphics
 // started before the switch was turned on never does. Before anything else, so it touches no log and opens no window.
 if CommandLine.arguments.contains("--can-capture") {
     print(CGPreflightScreenCaptureAccess() ? "yes" : "no")
+    // From a terminal the system answers for the terminal app, which owns the process, not for Tako (GitHub issue 2).
+    if isatty(STDOUT_FILENO) != 0 {
+        FileHandle.standardError.write(Data("run from a terminal, this is the terminal's own Screen Recording switch; Tako's own answer is in panel.log (\"screen capture fresh process=\")\n".utf8))
+    }
     exit(0)
 }
 
