@@ -379,8 +379,8 @@ final class Controller: NSObject, NSApplicationDelegate {
             item.state = choice == value ? .on : .off
             sub.addItem(item)
         }
-        let now = Outfit.wardrobe(on: today).first { $0.wornOn(today) }
-        add(now.map { "跟着节日换（这几天：\($0.name)）" } ?? "跟着节日换", "occasions")
+        let now = Outfit.occasion(on: today, service: Outfit.service)
+        add(now.map { "跟着节日换（\($0.service != nil ? "接着 DeepSeek" : "这几天")：\($0.name)）" } ?? "跟着节日换", "occasions")
         sub.addItem(.separator())
         for outfit in Outfit.wardrobe(on: today) { add(outfit.name, outfit.id) }
         sub.addItem(.separator())

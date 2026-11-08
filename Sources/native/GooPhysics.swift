@@ -160,6 +160,7 @@ extension Goo {
                 if c.y > floor {
                     let hit = v.y
                     c.y = floor
+                    if costume.isWhale { landsInWater(hit) }   // the whale girl comes down with a splash (Whale.swift)
                     if hit > 90 && !(trotting && hit < 400) {
                         v.y = -hit * 0.3
                         settled = false

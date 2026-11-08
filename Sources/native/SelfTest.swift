@@ -241,8 +241,11 @@ extension Controller {
     /// `--showcase[=outfit]` (`=none` for Tako as it is): what an outfit does, played out once on the floor in the middle of the screen. Like the self-test
     /// it opens no panel and moves no window; nothing in it touches the real pointer.
     func runShowcase() {
+        // ",lead=3": wait that many seconds before it starts, so a recorder can be running first
+        let lead = CommandLine.arguments.first { $0.hasPrefix("--showcase") }?.split(separator: ",")
+            .first { $0.hasPrefix("lead=") }.flatMap { Double($0.dropFirst(5)) } ?? 0
         func at(_ t: Double, _ work: @escaping () -> Void) {
-            let timer = Timer(timeInterval: t, repeats: false) { _ in work() }
+            let timer = Timer(timeInterval: t + lead, repeats: false) { _ in work() }
             timer.tolerance = 0
             RunLoop.main.add(timer, forMode: .common)
         }
@@ -285,6 +288,8 @@ extension Controller {
         }
         RunLoop.main.add(cursorTick, forMode: .common)
         func say(_ words: String) { caption.string = words; log("showcase: \(words)") }
+        // ",bare": no caption and no drawn cursor, for footage that goes into something else
+        if CommandLine.arguments.contains(where: { $0.hasPrefix("--showcase") && $0.contains(",bare") }) { arrow.isHidden = true; caption.isHidden = true }
 
         // on the floor, dressed, nothing of its own planned
         // --showcase=corgi, --showcase=none, and ",acts" after it for the scenes it plays while it works
@@ -294,13 +299,14 @@ extension Controller {
         // a title for the recording can be given as ",title=…"
         let title = asked.first { $0.hasPrefix("title=") }.map { String($0.dropFirst(6)) } ?? goo.costume.outfit?.name ?? "Tako"
         goo.costume.pinned = true
-        goo.radius = 45   // three times its size, so a recording shows the outfit's details
+        goo.radius = asked.contains("real") ? 15 : 45   // three times its size, so a recording shows the outfit's details (",real": as it is)
         goo.mode = .free
         goo.stuck = [false, false, false]   // it starts out holding the front window: let go of it first
         goo.reach = [0, 0, 0]
         goo.reachV = [0, 0, 0]
         goo.place(at: V(middle, floor - goo.radius * goo.stance))
         setWatching(false)
+        enchant.hide()   // it started out on a window: that window's ink border goes, so a recording holds only the goo
         fakeMouse = V(middle + 170, floor - 150)
         func quiet() { goo.nextAct = goo.clock + 600; goo.nextWander = goo.clock + 600; goo.lastMoved = goo.clock }
         if asked.contains("acts") {
@@ -315,6 +321,69 @@ extension Controller {
             at(end) { [self] in goo.act = ""; say("做完了"); fakeMouse = V(middle + 900, floor - 600); goo.celebrate() }
             at(end + 2.2) { [self] in say("出错了"); goo.fumble() }
             at(end + 5.0) { [self] in log("showcase done") }
+            return
+        }
+        if goo.costume.isWhale && asked.contains("fish") {
+            // ",fish": her fish gag, twice, nothing else
+            fakeMouse = V(middle + 230, floor - 230)
+            at(0.2) { [self] in quiet(); say("吃小鱼") }
+            at(1.0) { [self] in quiet(); goo.whaleSnack() }
+            at(5.0) { [self] in quiet(); goo.whaleSnack() }
+            at(9.0) { [self] in log("showcase done") }
+            return
+        }
+        if goo.costume.isWhale && asked.contains("eggs") {
+            // ",eggs": the whale girl's own moves that are not scenes of work: swimming along, stroked, her leap, the fish,
+            // a long job's rainbow, held up dripping and dropped with a splash, asleep breathing bubbles
+            fakeMouse = V(middle + 230, floor - 230)
+            at(0.2) { [self] in quiet(); say("游一游") ; goo.wanderTo = middle - 3 * goo.radius }
+            at(3.4) { [self] in quiet(); goo.wanderTo = middle }
+            at(6.4) { [self] in say("摸摸头"); quiet(); glide(to: goo.c + V(2, -goo.radius * 0.7), seconds: 0.5) }
+            at(7.2) { [self] in glide(to: goo.c + V(-6, -goo.radius * 0.5), seconds: 0.9) }
+            at(8.1) { [self] in glide(to: V(middle + 230, floor - 230), seconds: 0.6) }
+            at(9.6) { [self] in say("鲸跃"); quiet(); goo.whaleBreach() }
+            at(12.6) { [self] in say("吃小鱼"); quiet(); goo.whaleSnack() }
+            at(16.0) { [self] in say("长任务做完：彩虹"); quiet(); goo.act = "run"; goo.costume.busySince = goo.clock - 70 }
+            at(18.0) { [self] in goo.act = ""; goo.celebrate() }
+            at(21.4) { [self] in say("拎起来，滴水"); quiet(); glide(to: goo.c, seconds: 0.4) }
+            at(22.0) { [self] in
+                goo.press(goo.c)
+                let start = goo.c, began = CACurrentMediaTime()
+                ticker?.invalidate()
+                ticker = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] timer in
+                    guard let self else { timer.invalidate(); return }
+                    self.fakeMouse = start + V(0, -min(1, (CACurrentMediaTime() - began) * 1.5) * self.goo.radius * 6)
+                    if CACurrentMediaTime() - began > 2.2 { timer.invalidate() }
+                }
+                RunLoop.main.add(ticker!, forMode: .common)
+            }
+            at(24.6) { [self] in say("从高处落下：拍水"); goo.candidate = nil; goo.release() }
+            at(26.6) { [self] in glide(to: V(middle + 230, floor - 230), seconds: 0.4) }
+            at(27.4) { [self] in say("睡着，吐泡泡"); quiet(); goo.lastMoved = goo.clock - 41 }
+            at(34.0) { [self] in log("showcase done") }
+            return
+        }
+        if goo.costume.isWhale && !asked.contains("moves") {   // ",moves": the moves every outfit plays, in her
+            // plain Tako puts the whale girl on (as when a DeepSeek key is saved), then her moves; the cursor well away, so it
+            // neither leans toward it nor reaches for it
+            let whale = goo.costume.outfit
+            goo.costume.outfit = nil
+            fakeMouse = V(middle + 230, floor - 230)
+            quiet()
+            at(0.2) { [self] in quiet(); say("Tako") }
+            at(1.2) { [self] in say("接上 DeepSeek"); goo.costume.outfit = whale; goo.showOff() }
+            at(4.6) { [self] in say("开心，喷水"); quiet(); goo.celebrate() }
+            at(6.6) { [self] in say("甩尾巴"); quiet(); goo.swishTail() }
+            at(8.4) { [self] in say("完成一件事"); quiet(); goo.celebrate() }
+            at(10.0) { [self] in say("游一游"); quiet(); goo.wanderTo = middle - 140 }
+            at(12.4) { [self] in quiet(); goo.wanderTo = middle }
+            at(14.4) { [self] in say("摸摸头"); glide(to: goo.c + V(2, -goo.radius * 0.7), seconds: 0.5) }
+            at(15.2) { [self] in glide(to: goo.c + V(-6, -goo.radius * 0.5), seconds: 0.9) }
+            at(16.1) { [self] in glide(to: goo.c + V(6, -goo.radius * 0.7), seconds: 0.9) }
+            at(17.0) { [self] in glide(to: V(middle + 230, floor - 230), seconds: 0.6) }
+            // and, as the film ends, sitting pleased with her spout up
+            at(18.4) { [self] in say(title); quiet(); goo.happyUntil = goo.clock + 2.4; goo.spout(1) }
+            at(21.4) { [self] in log("showcase done") }
             return
         }
         at(0.2) { [self] in quiet(); say(title) }

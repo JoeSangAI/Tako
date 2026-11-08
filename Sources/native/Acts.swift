@@ -1,6 +1,7 @@
 // What Tako acts out while it works: a small scene for each kind of step, told by the panel in fixed words
 // (think, search, run, look, read, answer, write, file, operate, listen, wait, trouble). Every scene has a plain
-// version any outfit can use; an outfit plays some of them its own way (`costume.isCorgi` below).
+// version any outfit can use; an outfit plays some of them its own way (`costume.isCorgi` below; the whale girl plays hers
+// in Whale.swift, `whaleActs`).
 import AppKit
 import QuartzCore
 
@@ -34,6 +35,7 @@ extension Goo {
     /// How far the head tips over.
     func actTilt() -> CGFloat {
         switch acting {
+        case "think" where costume.isWhale: return 0                                             // she goes down still
         case "think": return costume.isCorgi ? 0.3 + 0.04 * sin(t * 1.7) : 0.12 * sin(t * 0.9)   // a dog's "hm?"
         case "listen": return 0.13 * sin(t * 3.4)                                                 // nodding to it
         case "search": return costume.isCorgi ? 0.08 * sin(t * 6) : 0
@@ -45,8 +47,9 @@ extension Goo {
     /// Where a limb goes to hold the scene's prop, if it needs one.
     func actHold() -> V? {
         let r = radius
+        if costume.isWhale && costume.dressed > 0.5 { return nil }   // her own hands hold her things (Whale.swift)
         switch acting {
-        case "search" where !costume.isCorgi: return c + V(facing * (r * 1.15 + sin(t * 1.8) * r * 0.22), -r * 0.05)
+        case "search" where !costume.isCorgi && !costume.isWhale: return c + V(facing * (r * 1.15 + sin(t * 1.8) * r * 0.22), -r * 0.05)
         case "answer", "write", "file": return c + V(facing * r * 1.05, r * 0.42) + scribble()
         default: return nil
         }
@@ -66,6 +69,7 @@ extension Goo {
         defer { propInk.path = ink; propLight.path = light; propLine.path = line; propLine.lineWidth = max(0.8, r * 0.055) }
         guard let a = acting else { actBeat = 0; return }
         actBeat += dt
+        if costume.isWhale && Goo.whaleActs.contains(a) { return }   // she plays it her own way (Whale.swift)
         let tip = armOut > 3 ? armTip : nil
         switch a {
         case "think":
@@ -146,7 +150,7 @@ extension Goo {
                 line.addLine(to: L(p + V(r * 0.09, -r * 0.34)))
                 line.addQuadCurve(to: L(p + V(r * 0.24, -r * 0.18)), control: L(p + V(r * 0.22, -r * 0.3)))
             }
-            guard !costume.isCorgi else { break }
+            guard !costume.isCorgi && !costume.isWhale else { break }
             let band = CGMutablePath()
             band.move(to: L(c + V(-r * 0.92, -r * 0.1)))
             band.addCurve(to: L(c + V(r * 0.92, -r * 0.1)), control1: L(c + V(-r * 0.95, -r * 1.45)), control2: L(c + V(r * 0.95, -r * 1.45)))

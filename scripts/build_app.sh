@@ -22,6 +22,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$WORK/Tako" "$APP/Contents/MacOS/Tako"
 # Everything the Python side is made of: a new module can't be left out by accident.
 cp "$ROOT/icon/TAKO.icns" "$ROOT"/Sources/brain/*.py "$ROOT/Sources/brain/side.html" "$ROOT/CHANGELOG.md" "$APP/Contents/Resources/"
+cp "$ROOT"/Sources/art/*.png "$APP/Contents/Resources/"   # pieces of outfits cut from drawings (the whale girl's apron, tail, spout)
 cp -R "$ROOT/Sources/brain/vendor" "$APP/Contents/Resources/vendor"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

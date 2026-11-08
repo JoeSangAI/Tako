@@ -47,6 +47,7 @@ final class GooView: NSView {
 }
 
 final class Goo {
+    static let ink = NSColor(srgbRed: 0.055, green: 0.055, blue: 0.06, alpha: 1).cgColor
     unowned let host: Controller
     let view: GooView
     // layers
@@ -108,7 +109,8 @@ final class Goo {
     var peekSide: CGFloat = 0, peekUntil = 0.0, ducking = false, lastNear = 0.0
     var puddle = false
     var pokes = 0
-    var stance: CGFloat { puddle ? 0.45 : 1.6 - trot * 0.3 }  // how high it stands above whatever is under it; a trotting corgi goes low
+    // how high it stands above whatever is under it; a trotting corgi goes low, the whale girl sits on her short fat legs
+    var stance: CGFloat { puddle ? 0.45 : 1.6 - trot * 0.3 - 0.08 * costume.dressed }
     var guilty: Bool { clock < guiltyUntil }
     var dizzy: Bool { clock < dizzyUntil }
     // bounds
@@ -145,7 +147,7 @@ final class Goo {
         ground.shadowOpacity = 0.32
         ground.shadowOffset = .zero
         root.addSublayer(ground)
-        let goo = NSColor(srgbRed: 0.055, green: 0.055, blue: 0.06, alpha: 1).cgColor
+        let goo = Goo.ink
         let blur = CIFilter(name: "CIGaussianBlur", parameters: [kCIInputRadiusKey: 2.6])!
         let edge = CIFilter(name: "CIColorMatrix", parameters: [
             "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 15),
@@ -218,8 +220,26 @@ final class Goo {
     func target(_ i: Int) -> V {
         let d = dir(i)
         let breathe = 1 + (sleeping ? 0.04 * sin(CGFloat(clock) * 1.1) : 0.018 * sin(CGFloat(clock) * 1.5))
-        let stretch = (1 + (trotting ? 0 : creep * 0.1 * sin(CGFloat(clock) * 7))) / (1 + tall * 0.28) * (1 + trot * 0.13)
+        let bob = trotting ? 0 : creep * (0.1 - 0.05 * costume.dressed) * sin(CGFloat(clock) * 7)   // the whale girl's big head bobs less
+        let stretch = (1 + bob) / (1 + tall * 0.28) * (1 + trot * 0.13)
         var shape = V(d.x * radius * breathe * stretch, d.y * radius * breathe / stretch)
+        if costume.isWhale {
+            // her head is a little wider than it is tall; drawn through the smoothed skin it comes out the full radius across
+            shape.x *= 1 + 0.025 * costume.dressed
+            shape.y *= 1 - 0.052 * costume.dressed
+            // gone down to think, swimming along, her manners; and the fish gag pulls and squashes her head, swings it at the
+            // fish and fills her cheeks (Whale.swift)
+            let k = costume
+            shape = V(shape.x * k.stretch.x + k.lunge, shape.y * k.stretch.y + k.sink)
+            if k.puff > 0.01 {
+                for (cheek, side) in [(CGFloat(0.5), CGFloat(1)), (.pi - 0.5, -1)] {
+                    var gap = atan2(d.y, d.x) - cheek
+                    gap = atan2(sin(gap), cos(gap))
+                    let full = k.puff * radius * 0.55 * (1 + 0.35 * k.wobble * (side == (facing > 0 ? 1 : -1) ? 1 : -0.5))
+                    shape = shape + d * (full * exp(-(gap / 0.45) * (gap / 0.45)))
+                }
+            }
+        }
         if splatAmount > 0.01 {
             // Flattened against whatever it hit: wide along the surface, thin across it.
             let across = d.x * splatNormal.x + d.y * splatNormal.y
@@ -323,9 +343,9 @@ final class Goo {
         host.log("sneaking to the edge")
     }
 
-    /// Just put something on: it shows it off, with a corgi's dash if it has the room, otherwise a happy hop.
+    /// Just put something on: it shows it off, with a corgi's dash if it has the room, the whale girl's splash and spout, otherwise a happy hop.
     func showOff() {
-        if costume.isCorgi && mode == .free && settled { startZoomies() } else { celebrate() }
+        if costume.isWhale { dressUp() } else if costume.isCorgi && mode == .free && settled { startZoomies() } else { celebrate() }
     }
 
     /// Zoomies: a few fast runs to and fro along whatever it stands on.
@@ -544,6 +564,7 @@ final class Goo {
         let path = CGMutablePath()
         let hasLegs = (mode == .free || mode == .grabbed || perch != nil) && !puddle && !sleeping
         let out = armOut > 3
+        var whaleReach: [V]? = nil   // the whale girl draws the reach as one of her tentacles (Whale.swift)
         var reaching: [V] = []   // the reaching leg's points, so it is kept from closing a pinhole with the others too
         // The limb that goes reaching: one of the legs, or one of the strands while it is stuck on.
         if out {
@@ -585,12 +606,19 @@ final class Goo {
                 taper(points, r * 0.36, max(2, r * 0.17 * slim), max(1.6, r * 0.12 * slim), into: limb)
                 limb.addPath(ellipse(tip, r * 0.19 * armThick, r * 0.19 * armThick))
             }
-            path.addPath(limb.normalized())
+            if costume.isWhale && costume.dressed > 0.5 && !puddle { whaleReach = points } else { path.addPath(limb.normalized()) }
         }
         // Each limb is made whole on its own and then joined: two legs crossing with their outlines running
         // opposite ways would otherwise cancel where they overlap and leave pinholes.
         var joined: CGPath = path
-        if hasLegs {
+        for layer in costume.tentacles { layer.path = nil }
+        costume.armsLine.path = nil
+        costume.hands.path = nil
+        costume.handLight.path = nil
+        if costume.isWhale && costume.dressed > 0.5 && !puddle {
+            // the whale girl's short fat arms and legs, in every state, drawn like her behind the head (Whale.swift)
+            whaleLimbs(reaching: out && (mode == .free || mode == .grabbed) ? armLeg : nil, reach: whaleReach)
+        } else if hasLegs {
             // the web between the legs where they leave the body, so no chink of background shows between two of them
             // (not on the move: then front and hind legs stand apart)
             // (on the move only a little at the very top, so front and hind legs still stand apart)
@@ -687,7 +715,7 @@ final class Goo {
         if sleeping {
             if clock - lastMoved < 0.05 { wake(startled: distance < 75) }
             nextZ -= Double(dt)
-            if nextZ <= 0 {
+            if nextZ <= 0 && !costume.isWhale {   // the whale girl breathes out bubbles instead (Whale.swift)
                 nextZ = 1.5
                 zs.append((c + V(radius * 0.7, -radius * 0.8), 2.2))
             }
@@ -729,7 +757,8 @@ final class Goo {
         lookTime = max(0, lookTime - Double(dt))
         if mode == .free && settled && !sleeping && !puddle && peekSide == 0 && wanderTo == nil && armOut < 3 && clock > nextAct {
             nextAct = clock + Double.random(in: 9...22)
-            switch Int.random(in: 0..<(costume.isCorgi ? 9 : 7)) {
+            switch Int.random(in: 0..<(costume.isCorgi || costume.isWhale ? 9 : 7)) {
+            case 7 where costume.isWhale, 8 where costume.isWhale: swishTail()   // the whale girl swishes her tail about
             case 7, 8: startZoomies()                       // a corgi's mad dash, back and forth
             case 0: tallTime = 1.3                               // yawn and stretch
             case 1: v.y = -210; settled = false; kick(70)        // a little hop

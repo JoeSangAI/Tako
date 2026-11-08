@@ -70,7 +70,18 @@ extension Goo {
             return streak
         }
         _ = arc
-        gloss.path = highlight(skin)
+        if costume.isWhale { whaleForm(skin) }
+        // the whale girl's black is the drawing's, a little lighter than Tako's own, flat, with a fine dark outline
+        let inked = costume.isWhale && costume.dressed > 0.5
+        if inked != costume.inked {
+            costume.inked = inked
+            for layer in [body, arms, lidL, lidR] + strands { layer.fillColor = inked ? Costume.whaleInk : Goo.ink }
+            shade.isHidden = inked
+        }
+        costume.headLine.path = inked ? path : nil
+        costume.headLine.lineWidth = max(0.5, radius * 0.016)
+        gloss.path = costume.isWhale && costume.dressed > 0.5 ? whaleGloss() : highlight(skin)
+        gloss.fillColor = NSColor(white: 1, alpha: costume.isWhale && costume.dressed > 0.5 ? 0.93 : 0.62).cgColor
 
 
         if mode == .free && settled {
@@ -151,6 +162,8 @@ extension Goo {
     }
 
     func drawFace() {
+        costume.faceOwn = false
+        if costume.isWhale && costume.dressed > 0.5 && drawWhaleFace() { return }   // the whale girl's own face (Whale.swift)
         let r = radius
         let wide = 1 + pop * 0.22 + (mode == .grabbed ? 0.12 : 0)
         // the whole face turns with the head when it tips it over

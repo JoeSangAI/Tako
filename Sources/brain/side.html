@@ -858,7 +858,14 @@ function showKeyForm(box, actions) {
   box.append(actions);
   if (!keyChecking && !keyDraft.key && !custom) setTimeout(() => input.focus());
 }
-function setSetup(next) { setup = next; showNotice(); }
+// Which service the owner's key is for ('' with a ChatGPT login), told to the goo: a DeepSeek key puts on the little whale.
+let gooService = null;
+function setSetup(next) {
+  setup = next; showNotice();
+  if (!['ready', 'key', 'login'].includes(next?.step)) return;
+  const service = next.service || '';
+  if (service !== gooService) { gooService = service; native?.postMessage({ service }); }
+}
 window.setUpdate = (next) => { update = next; showNotice(); };
 window.setStatistics = (on) => api('/feedback/choose', { on });
 async function checkStatistics() {

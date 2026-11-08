@@ -56,6 +56,11 @@ extension Controller: WKScriptMessageHandler, WKNavigationDelegate {
         }
         if let value = body["goo"] as? String { goo.state = value; enchant.setMood(value) }
         if let value = body["act"] as? String { goo.act = value }
+        // the service the owner's key is for: a DeepSeek key puts the whale on, if the outfit is left to Tako (a look only)
+        if let value = body["service"] as? String, !selfTest, value != Outfit.service {
+            Outfit.service = value
+            goo.costume.checkedAt = -100
+        }
         if body["done"] != nil { goo.celebrate() }
         if body["oops"] != nil { goo.fumble() }
         if let value = body["cardWidth"] as? Double { cardWidth = CGFloat(value); enchant.sync() }

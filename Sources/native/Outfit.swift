@@ -3,33 +3,11 @@
 // The choice is the owner's, in the right-click menu: follow the occasions (the default), one outfit, or none.
 // An outfit is worn, not stuck on: it is cut from the goo's own skin, moves with it and brings a few habits of its own.
 // The corgi is after a real one, so it has that dog's looks and no tail: it wags its back end instead.
+// The whale girl goes with a DeepSeek key (Wardrobe.swift, Whale.swift): her apron, tail and spout, taken from the drawing of her.
 import AppKit
 import QuartzCore
 
-struct Outfit {
-    let id: String, name: String
-    let debut: DateComponents          // first day it can be worn; before that nobody knows it exists
-    let wornOn: (DateComponents) -> Bool
-    let primary: NSColor, inner: NSColor, light: NSColor
-
-    static let all: [Outfit] = [
-        Outfit(id: "corgi", name: "柯基帽", debut: day(2026, 11, 4), wornOn: { within($0, from: day(2026, 11, 4), days: 14) },
-               primary: NSColor(srgbRed: 0.91, green: 0.6, blue: 0.29, alpha: 1), inner: NSColor(srgbRed: 0.99, green: 0.76, blue: 0.72, alpha: 1),
-               light: NSColor(srgbRed: 1, green: 0.97, blue: 0.91, alpha: 1)),
-        Outfit(id: "santa", name: "圣诞帽", debut: day(2026, 12, 20), wornOn: { $0.month == 12 && (20...26).contains($0.day ?? 0) },
-               primary: NSColor(srgbRed: 0.84, green: 0.12, blue: 0.14, alpha: 1), inner: .clear,
-               light: NSColor(srgbRed: 1, green: 0.99, blue: 0.97, alpha: 1)),
-    ]
-
-    static func day(_ y: Int, _ m: Int, _ d: Int) -> DateComponents { DateComponents(year: y, month: m, day: d) }
-    static func key(_ c: DateComponents) -> Int { (c.year ?? 0) * 10000 + (c.month ?? 0) * 100 + (c.day ?? 0) }
-    static func within(_ today: DateComponents, from start: DateComponents, days: Int) -> Bool {
-        let calendar = Calendar(identifier: .gregorian)
-        guard let a = calendar.date(from: start), let b = calendar.date(from: today) else { return false }
-        let gone = calendar.dateComponents([.day], from: a, to: b).day ?? -1
-        return gone >= 0 && gone < days
-    }
-
+extension Outfit {
     /// Today where the owner lives: the zone in config.json, never the device's (it may be set elsewhere on purpose).
     static func today() -> DateComponents {
         var zone = TimeZone.current
@@ -40,38 +18,36 @@ struct Outfit {
         calendar.timeZone = zone
         return calendar.dateComponents([.year, .month, .day], from: Date())
     }
-
-    static func wardrobe(on today: DateComponents) -> [Outfit] { all.filter { key($0.debut) <= key(today) } }
-
-    // The owner's choice: "occasions" (also when nothing was ever chosen), "none", or an outfit's id.
-    static let choiceKey = "outfit"
-    static var choice: String {
-        get { UserDefaults.standard.string(forKey: choiceKey) ?? "occasions" }
-        set { UserDefaults.standard.set(newValue, forKey: choiceKey) }
-    }
-
-    static func wearing(on today: DateComponents) -> Outfit? {
-        let owned = wardrobe(on: today)
-        switch choice {
-        case "none": return nil
-        case "occasions": return owned.first { $0.wornOn(today) }
-        case let id: return owned.first { $0.id == id } ?? owned.first { $0.wornOn(today) }
-        }
-    }
 }
 
 /// The outfit's layers and the little physics of its loose parts (ears, a hat's tip).
 final class Costume {
     // behind the goo: what grows out of it, with its root hidden under the skin
     let ears = CAShapeLayer(), earsInner = CAShapeLayer()
+    // the whale girl's apron, tail and spout: pieces cut from the drawing of her (Sources/art), hung on the goo
+    let apronArt = CALayer(), tailArt = CALayer(), spoutArt = CALayer()
+    // and, drawn like her: her legs and arms tucked in behind the head, the head's own fine dark outline
+    let armsLine = CAShapeLayer(), headLine = CAShapeLayer()
+    // her tentacles, back pair then front pair, each: the goo with its outline, the line round the inside of each curl,
+    // a soft light along the top
+    let tentacles = (0..<6).map { _ in CAShapeLayer() }
+    static let whaleInk = NSColor(srgbRed: 0.106, green: 0.1, blue: 0.1, alpha: 1).cgColor, whaleLine = NSColor(white: 0.025, alpha: 1).cgColor
+    var inked = false   // the goo is in her black just now
     // over the goo, under the face: a hood is shaded fur cut from the skin, a hat is a plain shape
     let hood = CAGradientLayer(), hoodMask = CAShapeLayer(), fur = CALayer(), furMask = CAShapeLayer()
     let cover = CAShapeLayer(), fold = CAShapeLayer(), stitch = CAShapeLayer(), trim = CAShapeLayer(), blush = CAShapeLayer()
     // over the face
     let tongue = CAShapeLayer(), tongueLine = CAShapeLayer()
-    var layers: [CAShapeLayer] { [ears, earsInner, hoodMask, furMask, cover, fold, stitch, trim, blush, tongue, tongueLine] }
+    // the whale girl's open mouth and the tongue in it
+    let mouthIn = CAShapeLayer(), mouthTongue = CAShapeLayer(), lip = CAShapeLayer()
+    // in front of everything, the whale girl's: what she holds (under her hands), her hands when they are in use, and her
+    // pictures in the air (water, a fish, twinkles, hearts), each frame from these pools
+    let props = (0..<2).map { _ in CALayer() }, hands = CAShapeLayer(), handLight = CAShapeLayer(), sprites = (0..<18).map { _ in CALayer() }
+    var handLights: [CGPath] = []
+    var propsUsed = 0, spritesUsed = 0, handPaths: [CGPath] = []
+    var layers: [CAShapeLayer] { [ears, earsInner, hoodMask, furMask, cover, fold, stitch, trim, blush, tongue, tongueLine, mouthIn, mouthTongue, lip, armsLine, headLine, hands, handLight] + tentacles }
     var furFor: CGFloat = 0   // the radius the fur pattern was made for
-    var outfit: Outfit? { didSet { if outfit?.id != oldValue?.id { paint() } } }
+    var outfit: Outfit? { didSet { if outfit?.id != oldValue?.id { clear(); paint() } } }
     var onWear: ((Outfit) -> Void)?
     var checkedAt = -100.0, checkedOnce = false, lastClock = 0.0
     var ear: [CGFloat] = [0, 0], earV: [CGFloat] = [0, 0], earLen: [CGFloat] = [1, 1], nextTwitch = 3.0
@@ -79,15 +55,53 @@ final class Costume {
     var pettedAt = -10.0
     var pinned = false   // set by hand (the showcase): the day does not change it
     var isCorgi: Bool { outfit?.id == "corgi" }
+    var isWhale: Bool { outfit?.id == "whale" }
+    // the whale girl's loose parts: her tail (how high, how hard it wags) and her water
+    var tailLift: CGFloat = 0, tailLiftV: CGFloat = 0, wag: CGFloat = 0, wagPhase: CGFloat = 0, swishAt = -10.0
+    var spoutAt = -10.0, spoutPower: CGFloat = 1, wasHappy = false, dressAt = -10.0
+    // how far into her shape it is (0 plain Tako, 1 dressed), and the head as it is this frame: its middle and how far the
+    // body is squashed across and down from her round head
+    var dressed: CGFloat = 0, mid = V(), sx: CGFloat = 1, sy: CGFloat = 1
+    var faceOwn = false   // this frame the face is hers, not one of Tako's own (startled, asleep…)
+    var tailRoot: V?      // where her right leg is: the tail goes in behind it
+    // her sea and her manners (Whale.swift): how far down she has gone or dips, the bubbles she breathes, the scene she was
+    // in, how long the last job ran, her rare tricks, the splashes and hearts in the air, her curtsey
+    var sink: CGFloat = 0, swim: CGFloat = 0
+    // the fish gag (Whale.swift `fishBeat`): where it is, and what it does to her head
+    var beat: Goo.FishBeat?, stretch = V(1, 1), lunge: CGFloat = 0, puff: CGFloat = 0, wobble: CGFloat = 0
+    var bubbles: [(p: V, v: V, r: CGFloat, life: CGFloat, full: CGFloat)] = []
+    var sputter: [(p: V, v: V, r: CGFloat, life: CGFloat)] = []
+    var lastAct = "", busySince: Double?, busyLength = 0.0, busyEndedAt = -100.0
+    var nextBubble = 0.0, nextDrip = 0.0, nextRare = 0.0, fishAt = -100.0, rainbowAt = -100.0, curtseyAt = -100.0, breaching = false, wasShy = false
+    var splashes: [(p: V, start: Double, width: CGFloat)] = [], hearts: [(p: V, start: Double)] = []
+    var drops: [(p: V, v: V, r: CGFloat, life: CGFloat)] = []
 
     func attach(behind goo: CALayer, over: CALayer) {
         guard let root = goo.superlayer else { return }
         for layer in [ears, earsInner] { root.insertSublayer(layer, below: goo) }
-        for layer in [blush, trim, stitch, fold, cover, fur, hood] { root.insertSublayer(layer, above: over) }
+        // behind the goo, back to front: the tail (its root goes in under the arm and the leg), the legs, the arms
+        for layer in [tailArt] + tentacles + [armsLine] { root.insertSublayer(layer, below: goo) }
+        for layer in [blush, trim, stitch, fold, cover, fur, hood, apronArt, headLine] { root.insertSublayer(layer, above: over) }
         hood.mask = hoodMask
         fur.mask = furMask
         root.addSublayer(tongue)
         root.addSublayer(tongueLine)
+        root.addSublayer(mouthIn)
+        root.addSublayer(mouthTongue)
+        root.addSublayer(lip)
+        for layer in [spoutArt] + props + [hands, handLight] + sprites { root.addSublayer(layer) }
+        handLight.fillColor = NSColor(white: 1, alpha: 0.3).cgColor   // the same soft light as on her tentacles
+        for layer in props + sprites { layer.contentsGravity = .resize; layer.isHidden = true }
+        hands.fillColor = Costume.whaleInk
+        hands.lineJoin = .round
+        for layer in [apronArt, tailArt, spoutArt] {
+            layer.contentsGravity = .resize
+            layer.isHidden = true
+        }
+        tailArt.shadowColor = NSColor.white.cgColor   // shown on dark windows only (Whale.swift)
+        tailArt.shadowRadius = 0.7
+        tailArt.shadowOffset = .zero
+        tailArt.shadowOpacity = 0
         for layer in [ears, cover] { layer.lineJoin = .round }
         tongueLine.lineCap = .round
         tongueLine.fillColor = nil
@@ -119,6 +133,20 @@ final class Costume {
         blush.shadowOffset = .zero
         tongue.fillColor = NSColor(srgbRed: 0.94, green: 0.46, blue: 0.54, alpha: 1).cgColor
         tongueLine.strokeColor = NSColor(srgbRed: 0.78, green: 0.3, blue: 0.39, alpha: 1).cgColor
+        guard outfit.id == "whale" else { return }
+        // The whale girl as Tako wears her, in the drawing's colours: pink blush strokes with a glow, a pink mouth and tongue,
+        // and her fine dark outline (the apron, tail, spout and all her things are pictures, Sources/art).
+        blush.fillColor = NSColor(srgbRed: 0.95, green: 0.6, blue: 0.59, alpha: 1).cgColor
+        blush.shadowColor = NSColor(srgbRed: 1, green: 0.45, blue: 0.45, alpha: 1).cgColor
+        blush.shadowOpacity = 0.5
+        trim.fillColor = NSColor(srgbRed: 0.95, green: 0.5, blue: 0.5, alpha: 0.05).cgColor
+        mouthIn.fillColor = NSColor(srgbRed: 0.85, green: 0.45, blue: 0.56, alpha: 1).cgColor
+        mouthTongue.fillColor = NSColor(srgbRed: 0.97, green: 0.66, blue: 0.73, alpha: 1).cgColor
+        for layer in [armsLine, tentacles[0], tentacles[3]] { layer.fillColor = Costume.whaleInk; layer.strokeColor = Costume.whaleLine; layer.lineJoin = .round }
+        tentacles[0].fillColor = NSColor(srgbRed: 0.085, green: 0.08, blue: 0.08, alpha: 1).cgColor   // the pair behind a shade deeper
+        for layer in [tentacles[1], tentacles[4]] { layer.fillColor = Costume.whaleLine }                              // the curl's inner line
+        for layer in [tentacles[2], tentacles[5]] { layer.fillColor = NSColor(white: 1, alpha: 0.3).cgColor }   // light along the top
+        for layer in [headLine, lip] { layer.fillColor = nil; layer.strokeColor = Costume.whaleLine; layer.lineCap = .round; layer.lineJoin = .round }
     }
 
     /// Once a minute (and at once after the menu): which outfit today. Putting one on is worth showing off; starting up is not.
@@ -131,7 +159,55 @@ final class Costume {
         checkedOnce = true
     }
 
-    func clear() { for layer in layers { layer.path = nil } }
+    func clear() {
+        for layer in layers { layer.path = nil }
+        for layer in [apronArt, tailArt, spoutArt] + props + sprites { layer.isHidden = true }
+        drops = []
+        splashes = []
+        hearts = []
+        bubbles = []
+        sputter = []
+        dressed = 0
+        sink = 0
+        beat = nil
+        stretch = V(1, 1)
+        lunge = 0
+        puff = 0
+    }
+
+    /// One of the pieces cut from the drawing of the whale girl, shipped in the app's resources.
+    static func art(_ name: String) -> CGImage? {
+        guard let url = Bundle.main.url(forResource: "whale-\(name)", withExtension: "png") else { return nil }
+        return NSImage(contentsOf: url)?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+    }
+
+    /// The piece made once at the pixel width it is shown at, averaged down with care: shrunk on the fly a thin blue outline
+    /// fades into what is next to it. Kept per size, and the size only changes with the goo's radius or the screen.
+    static var sized: [String: CGImage] = [:], aspects: [String: CGFloat] = [:]
+    /// A picture's height to its width.
+    static func aspect(_ name: String) -> CGFloat {
+        if let known = aspects[name] { return known }
+        let image = art(name), known = image.map { CGFloat($0.height) / CGFloat(max(1, $0.width)) } ?? 1
+        aspects[name] = known
+        return known
+    }
+    func dress(_ layer: CALayer, _ name: String, points: CGFloat, scale: CGFloat) {
+        let across = max(4, Int((points * scale).rounded())), key = "\(name)@\(across)"
+        guard layer.name != key else { return }
+        layer.name = key
+        if Costume.sized[key] == nil, let source = Costume.art(name) {
+            let tall = max(1, Int((CGFloat(source.height) * CGFloat(across) / CGFloat(source.width)).rounded()))
+            if across < source.width, let context = CGContext(data: nil, width: across, height: tall, bitsPerComponent: 8, bytesPerRow: 0,
+                                                              space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
+                context.interpolationQuality = .high
+                context.draw(source, in: CGRect(x: 0, y: 0, width: across, height: tall))
+                Costume.sized[key] = context.makeImage()
+            } else { Costume.sized[key] = source }
+        }
+        layer.contents = Costume.sized[key]
+        layer.contentsScale = scale
+    }
 
     /// Short plush fur, lying down the way it was brushed: a tile of fine light and dark strands, sized to the goo.
     func furPattern(_ r: CGFloat) {
@@ -171,19 +247,21 @@ extension Goo {
         k.check(clock)
         let dt = CGFloat(clamp(CGFloat(clock - k.lastClock), 0, 0.05))
         k.lastClock = clock
-        let wagging = k.isCorgi && !sleeping && (happy || clock - k.pettedAt < 0.35)
+        let wagging = k.isCorgi && !sleeping && (happy || clock - k.pettedAt < 0.35)   // the whale girl has her tail for that
         wiggle += ((wagging ? 1 : trotting ? 0.7 : 0) - wiggle) * min(1, dt * 8)
         guard let outfit = k.outfit, let skin = body.path else { return k.clear() }
         switch outfit.id {
         case "corgi": drawCorgi(skin, dt)
+        case "whale": drawWhale(skin, dt)
         default: drawSanta(dt)
         }
         k.lastV = v
     }
 
-    /// Being stroked on the head (the cursor resting on it): a corgi melts, eyes shut, ears back, tongue out, its back end going.
+    /// Being stroked on the head (the cursor resting on it): a corgi melts, eyes shut, ears back, tongue out, its back end going;
+    /// the whale girl shuts her eyes and spouts.
     func pet() {
-        guard costume.isCorgi, !sleeping, mode != .grabbed, !dizzy else { return }
+        guard costume.isCorgi || costume.isWhale, !sleeping, mode != .grabbed, !dizzy else { return }
         costume.pettedAt = clock
         happyUntil = max(happyUntil, clock + 0.3)
     }
