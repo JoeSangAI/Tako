@@ -173,6 +173,12 @@ def serve(companion, token, port, agent_token=None):
             if url.path == "/setup/cancel":
                 companion.setup.cancel()
                 return self.reply(companion.setup.state())
+            if url.path == "/setup/key":
+                companion.setup.use_key(str(body.get("service") or ""), str(body.get("key") or ""), str(body.get("base_url") or ""), str(body.get("model") or ""))
+                return self.reply(companion.setup.state())
+            if url.path == "/setup/login":
+                companion.setup.use_login()
+                return self.reply(companion.setup.state())
             if url.path == "/current" and isinstance(body.get("titles"), list):
                 if not HAS_WECHAT:
                     return self.reply({"ok": True})

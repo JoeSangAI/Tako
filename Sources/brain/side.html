@@ -129,6 +129,12 @@
   #notice { flex: none; display: none; margin: 0 12px 10px; padding: 10px 12px; background: var(--card); border-radius: 10px; font-size: 12px; }
   #notice.show { display: block; }
   #notice .title { font-weight: 650; margin-bottom: 3px; }
+  #notice .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 7px; }
+  #notice .chips button { border: 0; border-radius: 8px; background: var(--paper); color: var(--ink); font: inherit; font-size: 12px; padding: 3px 10px; cursor: pointer; box-shadow: inset 0 0 0 1px var(--line); }
+  #notice .chips button.on { background: var(--btn); color: var(--btn-ink); box-shadow: none; }
+  #notice .get { margin-top: 5px; opacity: .7; cursor: pointer; }
+  #notice .get:hover { opacity: 1; text-decoration: underline; }
+  #notice select, #notice input { width: 100%; box-sizing: border-box; margin-top: 6px; font: inherit; font-size: 12px; padding: 4px 6px; border: 0; border-radius: 6px; background: var(--paper); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); }
   #notice .notes { max-height: 200px; overflow: auto; user-select: text; line-height: 1.5; }
   #notice .notes h3 { font-size: 12px; margin: 8px 0 2px; }
   #notice .notes ul { margin: 2px 0; padding-left: 16px; }
@@ -601,6 +607,8 @@ $('log').append(empty);
 
 // ---- setting up, and new versions: the only things Tako ever shows on its own behalf ----
 let setup = null, update = null, noticeKey = '', noticeUp = false;
+// The owner chose to give a key of their own instead of logging in; what they typed survives a redraw.
+let keyForm = false, keyDraft = { service: '', key: '', base_url: '', model: '' }, keyChecking = false;
 const PERMISSION_WORDS = {
   accessibility: ['还差一步：打开“辅助功能”', '在系统设置的“辅助功能”列表里打开 Tako 的开关（不是“终端”），它才能操作这个窗口。打开后这张卡自己会消失。'],
   screen: ['还差一步：打开录屏权限', '在系统设置的“录屏与系统录音”列表里打开 Tako 的开关，它才能看见这个窗口。打开后 Tako 会自己重开一次。'],
@@ -621,9 +629,9 @@ let permissionState = { screen: '', adhoc: false, screenRepaired: null, accessRe
 window.setPermissionState = (state) => { permissionState = { ...permissionState, ...state }; showNotice(); };
 const ADHOC_HINT = '自己编译的 Tako 每次重新编译都会这样，用固定的证书签名就不会（见 docs/BUILDING.md）。';
 const SETUP_WORDS = {
-  install: ['还差一步：装上 Codex', 'Tako 的大脑是 OpenAI 的 Codex，用你自己的 ChatGPT 账号。', '安装 Codex', '正在安装 Codex，大约一分钟…'],
+  install: ['还差一步：装上 Codex', 'Tako 的大脑是 OpenAI 开源的 Codex，免费。装好后登录 ChatGPT，或者填 DeepSeek、千问、Kimi 等模型的 key。', '安装 Codex', '正在安装 Codex，大约一分钟…'],
   update: ['还差一步：更新 Codex', '这台电脑上的 Codex 太旧，Tako 连不上它。更新后不用重新登录。', '更新 Codex', '正在更新 Codex，大约一分钟…'],
-  login: ['还差一步：登录 ChatGPT', '浏览器会打开 OpenAI 的授权页。网页上已经登录的话，确认一下就好。Tako 粘在 ChatGPT 网页上不算登录。', '登录', '在浏览器里确认，好了这里会自动继续…'],
+  login: ['还差一步：接上一个模型', '有 ChatGPT 会员就登录它，浏览器会打开 OpenAI 的授权页；没有的话，用 DeepSeek、通义千问、Kimi 或智谱的 API key。', '登录 ChatGPT', '在浏览器里确认，好了这里会自动继续…'],
   config: ['还差一步：修好 Codex 的设置', 'Codex 读不了自己的设置文件，所以登录不上。可以把它改个名留在原处（不删），Codex 用默认设置继续。', '改名并继续'],
 };
 function noticeLine(cls, text) { const el = document.createElement('div'); el.className = cls; el.textContent = text; return el; }
@@ -633,7 +641,7 @@ function showNotice() {
   const permission = !canMove ? 'accessibility' : !canRead ? 'screen' : null;
   const stale = !!permission && !!permissionAsked[permission] && Date.now() - permissionAsked[permission] > STALE_AFTER
     && (permission === 'accessibility' || permissionState.screen === 'off');
-  const key = JSON.stringify([permission, stale, repaired, !!permissionAsked.screen, permissionState, pending ? setup : null, update, busy]);
+  const key = JSON.stringify([permission, stale, repaired, !!permissionAsked.screen, permissionState, pending ? setup : null, update, busy, keyForm, keyChecking]);
   if (key === noticeKey) return;
   noticeKey = key;
   box.replaceChildren();
@@ -670,11 +678,19 @@ function showNotice() {
     box.append(noticeLine('title', title), noticeLine('body', body), actions);
     return;
   }
+  if (pending && !updateFirst && (setup.step === 'key' || (setup.step === 'login' && keyForm && !setup.busy))) {
+    showKeyForm(box, actions);
+    return;
+  }
   if (pending && !updateFirst) {
     const words = SETUP_WORDS[setup.step];
     box.append(noticeLine('title', words[0]), noticeLine('body', setup.busy ? words[3] : words[1]));
     if (setup.error) box.append(noticeLine('why', setup.error));
-    if (!setup.busy) { actions.append(button(words[2], () => api('/setup/next', {}).then(setSetup), true)); box.append(actions); }
+    if (!setup.busy) {
+      if (setup.step === 'login') actions.append(button('用 API key', () => { keyForm = true; showNotice(); }));
+      actions.append(button(words[2], () => api('/setup/next', {}).then(setSetup), true));
+      box.append(actions);
+    }
     else if (setup.step === 'login') {
       if (setup.link) actions.append(button('浏览器没打开？', () => { if (native) native.postMessage({ openURL: setup.link }); else window.open(setup.link); }));
       actions.append(button('取消', () => api('/setup/cancel', {}).then(setSetup)));
@@ -716,6 +732,82 @@ function showNotice() {
     actions.append(button('知道了', () => say('dismiss'), true));
     box.append(actions);
   }
+}
+// Pick a service, paste its key, done: pasting checks and saves by itself. A key's shape picks the service when it can tell.
+function guessService(key) {
+  if (/^[0-9a-f]{32}\.[A-Za-z0-9]{16}$/.test(key)) return 'glm';
+  if (/^sk-[A-Za-z0-9]{40,}$/.test(key)) return 'kimi';
+  return '';
+}
+async function saveKey() {
+  if (!keyDraft.key.trim() || keyChecking) return;
+  keyChecking = true; showNotice();
+  try {
+    const next = await api('/setup/key', keyDraft);
+    if (next.step === 'ready') { keyForm = false; keyDraft = { service: '', key: '', base_url: '', model: '' }; }
+    else if (next.models?.length && !next.models.includes(keyDraft.model)) keyDraft.model = '';
+    setup = next;
+  } catch {}
+  keyChecking = false; showNotice();
+}
+function showKeyForm(box, actions) {
+  const services = setup.services || [];
+  if (!services.some((s) => s.id === keyDraft.service)) keyDraft.service = setup.service || services[0]?.id || '';
+  const chosen = services.find((s) => s.id === keyDraft.service) || {};
+  const custom = keyDraft.service === 'custom';
+  box.append(noticeLine('title', '用你自己的模型 key'), noticeLine('body', custom
+    ? '任何支持 OpenAI Responses 接口的服务商或中转站都行。填地址和 key，Tako 会列出能用的模型。'
+    : '选一家，粘贴它的 API key，Tako 会自己核对。按那一家的价格计费，key 只存在这台 Mac 上。'));
+  const chips = document.createElement('div');
+  chips.className = 'chips';
+  for (const s of services) {
+    const chip = button(s.name, () => { keyDraft.service = s.id; noticeKey = ''; showNotice(); });
+    if (s.id === keyDraft.service) chip.className = 'on';
+    chips.append(chip);
+  }
+  const field = (placeholder, name, type = 'text') => {
+    const input = document.createElement('input');
+    input.type = type; input.placeholder = placeholder; input.autocomplete = 'off'; input.spellcheck = false;
+    input.value = keyDraft[name]; input.disabled = keyChecking;
+    input.oninput = () => { keyDraft[name] = input.value.trim(); };
+    input.onkeydown = (e) => { if (e.key === 'Enter') saveKey(); };
+    return input;
+  };
+  box.append(chips);
+  if (custom) box.append(field('地址，比如 https://api.example.com/v1', 'base_url'));
+  const input = field(`粘贴 ${custom ? '' : (chosen.name || '') + ' 的 '}API key`, 'key', 'password');
+  input.onpaste = () => setTimeout(() => {
+    keyDraft.key = input.value.trim();
+    const guess = guessService(keyDraft.key);
+    if (!custom && guess && services.some((s) => s.id === guess)) keyDraft.service = guess;
+    saveKey();
+  });
+  box.append(input);
+  if (custom && (setup.models?.length || keyDraft.model)) {
+    const models = setup.models || [];
+    if (models.length) {
+      const pick = document.createElement('select');
+      pick.disabled = keyChecking;
+      for (const m of ['', ...models]) { const o = document.createElement('option'); o.value = m; o.textContent = m || '选一个模型（要能看图）'; pick.append(o); }
+      pick.value = models.includes(keyDraft.model) ? keyDraft.model : '';
+      pick.onchange = () => { keyDraft.model = pick.value; if (pick.value) saveKey(); };
+      box.append(pick);
+    } else box.append(field('模型名', 'model'));
+  } else if (custom && setup.error && !setup.models?.length && /模型名/.test(setup.error)) box.append(field('模型名', 'model'));
+  if (!custom) {
+    const get = noticeLine('get', `还没有 ${chosen.name || ''} 的 key？去创建一个 →`);
+    get.onclick = () => { if (native) native.postMessage({ openURL: chosen.page }); else window.open(chosen.page); };
+    box.append(get);
+  }
+  if (keyChecking) box.append(noticeLine('body', '核对中…'));
+  else if (setup.error) box.append(noticeLine('why', setup.error));
+  const back = setup.step === 'key' ? () => api('/setup/login', {}).then(setSetup) : () => { keyForm = false; showNotice(); };
+  actions.append(button('改用 ChatGPT 登录', back));
+  const save = button('保存', saveKey, true);
+  save.disabled = keyChecking;
+  actions.append(save);
+  box.append(actions);
+  if (!keyChecking && !keyDraft.key && !custom) setTimeout(() => input.focus());
 }
 function setSetup(next) { setup = next; showNotice(); }
 window.setUpdate = (next) => { update = next; showNotice(); };

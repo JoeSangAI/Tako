@@ -16,7 +16,8 @@ from first_run import codex_on_path, find_codex
 from guards import last_draft, named_paths, plain_command, pointable
 from outputs import make_output_dir, tidy_output_dir
 from prompts import BRAIN_CONFIG, PROMPT, READER_CONFIG, STEP_NAMES, TOOLS, pointed_at
-from settings import (COMPACT_AT, COMPACT_PICTURES_AT, LIGHT_MODEL, MODEL, OWNER, RUNTIME, WECHAT, WORKBENCH, local_now, local_today, note_metric, user_background, voice_block, voice_notes)
+from provider import current as provider_now, light_model, model as main_model
+from settings import (COMPACT_AT, COMPACT_PICTURES_AT, OWNER, RUNTIME, WECHAT, WORKBENCH, local_now, local_today, note_metric, user_background, voice_block, voice_notes)
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic"}
 
@@ -117,9 +118,10 @@ def plain_failure(exc):
     if code == "threadTooHeavy":
         return "这一轮传不上去：这个对话攒的窗口截图太多，网络又慢。我换了一条轻的思路，这个窗口最近说的还记得。可能只做了一半，说“继续”我接着看。"
     if code in QUOTA_ERRORS:
-        return "Codex 的额度暂时用完了，等一会儿再试。"
+        return f"{provider_now()['name']} 那边限流或余额不够了。等一会儿再试，还不行就看看账户余额。" if provider_now() else "Codex 的额度暂时用完了，等一会儿再试。"
     if code == "unauthorized":
-        return "Codex 需要登录。打开面板，按上面的提示登录后再试。"
+        own_key = provider_now()
+        return f"{own_key.get('name') or '模型服务商'}不认这个 key。打开面板换一个再试。" if own_key else "Codex 需要登录。打开面板，按上面的提示登录后再试。"
     if code in NETWORK_ERRORS:
         return "连不上模型，可能是网络问题，稍后再说一次。"
     if code == "contextWindowExceeded":
@@ -281,7 +283,7 @@ class Turns:
                     self.limb_news = [*self.limb_news, f"（你的另一条触手刚在「{job.name}」替 {OWNER} 做了一件事。TA说：{instruction[:200]}\n结果：{answer[:400]}）"][-5:]
             elif not answer and not job.stopping:
                 self._say_failed(job, "这一轮没有给出回答，再说一次试试。")
-            note_metric(kind="turn", model=MODEL, seconds=round(time.time() - began, 1), first_text=round(job.first_text - began, 1) if job.first_text else None, steps=len(job.steps), brain=job.brain, **usage_fields(job.usage))
+            note_metric(kind="turn", model=main_model(), seconds=round(time.time() - began, 1), first_text=round(job.first_text - began, 1) if job.first_text else None, steps=len(job.steps), brain=job.brain, **usage_fields(job.usage))
             self.feedback.count("turn", time.time() - began)
             self.feedback.count("job.left_a_step" if job.left_for_owner else "job.finished")
             for why in job.blocked:
@@ -392,13 +394,13 @@ class Turns:
         began = time.time()
         runtime = self.runtime
         result = await runtime.start_thread(str(RUNTIME), sandbox="read-only", approval_policy="never", developer_instructions=instructions,
-                                            model=LIGHT_MODEL, effort=effort, config=READER_CONFIG)
+                                            model=light_model(), effort=effort, config=READER_CONFIG)
         thread = result["thread"]["id"]
         try:
             answer, usage = await self._ask_reader(thread, text)
         finally:
             await runtime.let_go(thread)  # A long-running app makes many of these; none should stay loaded.
-        note_metric(kind=kind, model=LIGHT_MODEL, seconds=round(time.time() - began, 1), **usage_fields(usage))
+        note_metric(kind=kind, model=light_model(), seconds=round(time.time() - began, 1), **usage_fields(usage))
         return answer
 
     async def _ask_reader(self, thread, text):
@@ -470,7 +472,7 @@ class Turns:
         if not self.thread:
             result = await self.runtime.start_thread(
                 str(Path.home()), sandbox="read-only", approval_policy="never", dynamic_tools=TOOLS,
-                developer_instructions=f"{PROMPT}\n\n{user_background()}", model=MODEL, config=BRAIN_CONFIG)
+                developer_instructions=f"{PROMPT}\n\n{user_background()}", model=main_model(), config=BRAIN_CONFIG)
             self.thread, self.pictures = result["thread"]["id"], 0
             self.read_up_to = {}  # A new thread has seen none of it.
             jobs = await asyncio.to_thread(asked.memory, OWNER)
@@ -488,7 +490,7 @@ class Turns:
         await self._alive()
         result = await self.runtime.start_thread(
             str(Path.home()), sandbox="read-only", approval_policy="never", dynamic_tools=TOOLS,
-            developer_instructions=f"{PROMPT}\n\n{user_background()}", model=MODEL, config=BRAIN_CONFIG)
+            developer_instructions=f"{PROMPT}\n\n{user_background()}", model=main_model(), config=BRAIN_CONFIG)
         job.thread = result["thread"]["id"]
         lines = self._said_here(job.events, said)
         memory = f"这是这个窗口里说过的话，只是记忆，不是新要求：\n{lines}" if lines else "这个窗口还没说过别的。"

@@ -1,6 +1,7 @@
 """Getting a friend's Mac past the login step, against a stand-in for `codex login`: no browser, no network, no real account.
 Run: python3 tests/test_first_run.py
 """
+import json
 import os
 import pathlib
 import shutil
@@ -16,6 +17,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "Sources/brain"))
 sys.path.insert(0, str(ROOT / "Sources/brain/vendor"))
 import first_run  # noqa: E402
+import provider  # noqa: E402
 
 LINK = "https://auth.openai.com/oauth/authorize?response_type=code&state=abc"
 # What the real one prints, to stderr, as seen on 0.163.0: the page first, then it waits.
@@ -84,6 +86,10 @@ class LoginStep(unittest.TestCase):
         first_run._installed = lambda: [str(self.codex)]
         self.addCleanup(setattr, first_run, "_installed", real)
         first_run._serves.clear()
+        # Never this Mac's own key or settings.
+        for name, value in (("FILE", self.home / "provider.json"), ("CONFIG", {})):
+            self.addCleanup(setattr, provider, name, getattr(provider, name))
+            setattr(provider, name, value)
         self.companion = Companion()
         self.setup = first_run.Setup(self.companion)
         self.addCleanup(self.setup.cancel)
@@ -209,14 +215,107 @@ class LoginStep(unittest.TestCase):
         self.assertTrue(env["PATH"].startswith(f"{self.bin}{os.pathsep}"))
 
 
+class OwnKey(unittest.TestCase):
+    """Someone without ChatGPT gives Tako a DeepSeek or Qwen key instead. The service is never called: `check` stands in for it."""
+
+    def setUp(self):
+        LoginStep.setUp(self)
+        self.checked = []
+        real = provider.check
+        def check(service, key, base_url="", model=""):
+            self.checked.append((service, key))
+            if key == "wrong":
+                return "这个 key 不对，或者已经停用了。", []
+            if service == "custom" and not model:
+                return "选一个模型。", ["claude-sonnet-5-5", "gpt-6.1-sol"]
+            return "", []
+        provider.check = check
+        self.addCleanup(setattr, provider, "check", real)
+
+    def test_a_good_key_is_kept_for_the_owner_alone_and_the_server_starts_again(self):
+        self.assertEqual(self.setup.state()["step"], "login")
+        self.assertTrue(self.setup.use_key("deepseek", "  sk-good  "))
+        self.assertEqual(self.checked, [("deepseek", "sk-good")])
+        self.assertEqual(oct(provider.FILE.stat().st_mode & 0o777), "0o600")
+        self.assertEqual(self.companion.submitted, ["start_over"])
+        seen = self.setup.state()
+        self.assertEqual((seen["step"], seen["service"]), ("ready", "deepseek"))  # Not logged in to ChatGPT, and no need to be.
+        self.assertEqual(provider.model(), "deepseek-flash")
+
+    def test_a_wrong_key_says_so_and_keeps_nothing(self):
+        self.assertFalse(self.setup.use_key("qwen", "wrong"))
+        self.assertFalse(provider.FILE.exists())
+        self.assertEqual(self.companion.submitted, [])
+        self.assertEqual(self.setup.state()["error"], "这个 key 不对，或者已经停用了。")
+
+    def test_only_the_services_it_knows(self):
+        self.assertFalse(self.setup.use_key("somewhere", "sk-good"))
+        self.assertFalse(self.setup.use_key("deepseek", ""))
+        self.assertEqual(self.checked, [])
+
+    def test_a_key_the_service_stops_taking_asks_for_a_new_one(self):
+        self.setup.use_key("qwen", "sk-good")
+        self.setup.logged_out()  # What a turn does when the model says unauthorized.
+        seen = self.setup.state()
+        self.assertEqual((seen["step"], seen["service"]), ("key", "qwen"))
+        self.assertTrue(self.setup.use_key("qwen", "sk-new"))
+        self.assertEqual(self.setup.state()["step"], "ready")
+
+    def test_back_to_chatgpt_forgets_the_key(self):
+        self.setup.use_key("deepseek", "sk-good")
+        self.setup.use_login()
+        self.assertFalse(provider.FILE.exists())
+        self.assertEqual(self.setup.state()["step"], "login")
+
+    def test_a_key_kept_in_the_owners_own_env_file(self):
+        env = self.home / "keys.env"
+        env.write_text('OTHER=x\nexport DEEPSEEK_API_KEY="sk-from-file"\n')
+        provider.CONFIG = {"provider": {"preset": "deepseek", "key_file": f"{env}#DEEPSEEK_API_KEY", "model": "deepseek-v4-pro"}}
+        found = provider.current()
+        self.assertEqual((found["key"], found["model"], found["base_url"]), ("sk-from-file", "deepseek-v4-pro", "https://api.deepseek.com/v1"))
+        self.assertEqual(self.setup.state()["step"], "ready")
+        env.write_text("OTHER=x\n")
+        self.assertEqual(self.setup.state()["step"], "key")  # The line went away: ask for one rather than start a server that can't answer.
+
+    def test_codex_gets_the_service_but_never_the_key_as_an_argument(self):
+        self.setup.use_key("qwen", "sk-secret")
+        args = provider.codex_args()
+        self.assertNotIn("sk-secret", " ".join(args))
+        self.assertIn('model_providers.tako.wire_api="responses"', args)
+        self.assertIn('model_providers.tako.base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"', args)
+        self.assertEqual(provider.codex_env(), {"TAKO_PROVIDER_KEY": "sk-secret"})
+
+    def test_a_relay_lists_its_models_then_runs_the_one_picked(self):
+        self.assertFalse(self.setup.use_key("custom", "sk-relay", "relay.example.com"))
+        seen = self.setup.state()
+        self.assertEqual((seen["error"], seen["models"]), ("选一个模型。", ["claude-sonnet-5-5", "gpt-6.1-sol"]))
+        self.assertTrue(self.setup.use_key("custom", "sk-relay", "relay.example.com", "gpt-6.1-sol"))
+        found = provider.current()
+        self.assertEqual((found["base_url"], found["model"], found["key"]), ("https://relay.example.com/v1", "gpt-6.1-sol", "sk-relay"))
+        self.assertEqual(self.setup.state()["service"], "custom")
+        self.assertIn('model_providers.tako.base_url="https://relay.example.com/v1"', provider.codex_args())
+
+    def test_whatever_address_people_paste_becomes_the_api_root(self):
+        for pasted, root in (("relay.example.com", "https://relay.example.com/v1"), ("https://relay.example.com/", "https://relay.example.com/v1"),
+                             ("https://relay.example.com/v1/chat/completions", "https://relay.example.com/v1"), ("https://x.example.com/api/v3", "https://x.example.com/api/v3"),
+                             ("http://127.0.0.1:3000/v1/responses", "http://127.0.0.1:3000/v1")):
+            self.assertEqual(provider.address(pasted), root)
+
+    def test_without_a_key_nothing_changes(self):
+        self.assertEqual(provider.codex_args(), [])
+        self.assertEqual(provider.codex_env(), {})
+        self.assertEqual(provider.model(), provider.MODEL)
+
+
 class OnTheRealServer(unittest.TestCase):
     """The panel's doors, against the whole Python side."""
 
     def setUp(self):
         sys.path.insert(0, str(ROOT / "tests"))
         from test_turns import Tako
+        self.Tako = Tako
         self.tako = Tako()
-        self.addCleanup(self.tako.close)
+        self.addCleanup(lambda: self.tako.close())
 
     def until(self, wanted, what):
         deadline = time.time() + 8
@@ -245,6 +344,21 @@ class OnTheRealServer(unittest.TestCase):
         while self.started() == before and time.time() < deadline:
             time.sleep(0.02)
         self.assertEqual(self.started(), before + 1, "the Codex server from before the login is still the one running")
+
+
+    def test_with_a_key_the_server_is_started_for_that_service_and_no_login_is_asked(self):
+        self.tako.close()
+        self.tako = self.Tako({"provider": {"preset": "deepseek", "key": "sk-test"}})
+        (self.tako.home / "logged_out").write_text("")
+        self.assertEqual(self.tako.call("/setup")["step"], "ready")
+        deadline = time.time() + 8
+        while not self.started() and time.time() < deadline:
+            time.sleep(0.02)
+        first = [json.loads(line) for line in self.tako.log.read_text().splitlines() if '"started"' in line][0]
+        self.assertEqual(first["settings"].get("model_provider"), '"tako"')
+        self.assertEqual(first["settings"].get("web_search"), '"disabled"')
+        self.assertEqual(first["key"], "sk-test")
+        self.assertNotIn("sk-test", " ".join(first["args"]))
 
 
 if __name__ == "__main__":

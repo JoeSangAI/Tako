@@ -1,4 +1,4 @@
-"""What stands between a new install and its first answer: finding a Codex that works, installing or updating it, logging in."""
+"""What stands between a new install and its first answer: finding a Codex that works, installing or updating it, logging in or giving it a key."""
 from __future__ import annotations
 
 import collections
@@ -12,6 +12,8 @@ import threading
 import time
 from pathlib import Path
 
+import provider
+
 LOGIN_LINK = re.compile(r"https://auth\.openai\.com/\S+")
 COLOR = re.compile(r"\x1b\[[0-9;]*m")
 SETTINGS_ERROR = re.compile(r"Error loading configuration: (.+?config\.toml):(\d+):\d+: ")
@@ -19,7 +21,10 @@ SETTINGS_ERROR = re.compile(r"Error loading configuration: (.+?config\.toml):(\d
 
 class Setup:
     """What stands between a new install and its first answer. One step at a time, and the panel only ever shows the next one."""
-    INSTALL = "curl -fsSL https://chatgpt.com/codex/install.sh | sh"
+    # OpenAI's own installer. chatgpt.com doesn't open everywhere (mainland China), and the same script ships with every GitHub release;
+    # it fetches Codex itself from GitHub when OpenAI's servers don't answer.
+    INSTALL = ('f="$(mktemp)" && { curl -fsSL --max-time 30 https://chatgpt.com/codex/install.sh -o "$f" || '
+               'curl -fsSL --max-time 120 https://github.com/openai/codex/releases/latest/download/install.sh -o "$f"; } && sh "$f"; code=$?; rm -f "$f"; exit $code')
     LOGIN_PATIENCE = 600
 
     def __init__(self, companion):
@@ -33,17 +38,26 @@ class Setup:
         self.login = None      # The `codex login` still waiting for the browser
         self.cancelled = False
         self.starting = threading.Lock()
+        self.key_refused = False  # The service said no to the owner's own key; only a new key gets past that.
+        self.models = []          # What a relay offered when the owner hadn't picked a model yet.
 
     def state(self):
         if self.working:
             return {"step": self.working, "busy": True, "error": "", "link": self.link}
         if not find_codex():
             return {"step": "update" if _installed() else "install", "busy": False, "error": self.failed}
+        own_key = provider.current()
+        if own_key:
+            # No ChatGPT login needed: the key is the login.
+            if self.key_refused or not own_key["key"]:
+                return {"step": "key", "busy": False, "error": self.failed or ("这个 key 用不了了，换一个。" if own_key["key"] else ""), "service": own_key.get("preset") or "custom",
+                        "services": provider.services(), "models": self.models}
+            return {"step": "ready", "busy": False, "error": "", "service": own_key.get("preset") or "custom"}
         if self.logged_in or self._logged_in():
             return {"step": "ready", "busy": False, "error": ""}
         if self.broken:
             return {"step": "config", "busy": False, "error": self.broken}
-        return {"step": "login", "busy": False, "error": self.failed}
+        return {"step": "login", "busy": False, "error": self.failed, "services": provider.services(), "models": self.models}
 
     def _logged_in(self):
         # Asked at most every few seconds; a slow answer is not evidence of a missing login, and neither is no answer yet.
@@ -64,6 +78,30 @@ class Setup:
     def logged_out(self):
         """The model said so: ask again, so the panel can show the step."""
         self.logged_in, self.checked = False, 0.0
+        self.key_refused = bool(provider.current())
+
+    def use_key(self, service, key, base_url="", model=""):
+        """The owner's own key, only from the panel's button: a service in `provider.PRESETS`, or any address that speaks Responses (`custom`, a relay).
+        Checked first, at no cost, so a wrong one says so now; the models the service offers come back for the owner to pick from."""
+        key = (key or "").strip()
+        self.models = []
+        if (service not in provider.PRESETS and service != "custom") or not key:
+            self.failed = "选一家，再把 key 粘进来。"
+            return False
+        problem, self.models = provider.check(service, key, base_url, model)
+        if problem:
+            self.failed = problem
+            return False
+        provider.save(service, key, base_url, model)
+        self.failed, self.key_refused, self.models = "", False, []
+        self.companion.submit(self.companion.start_over())
+        return True
+
+    def use_login(self):
+        """Back to a ChatGPT login: the key Tako kept is gone from this Mac."""
+        provider.forget()
+        self.failed, self.key_refused, self.logged_in, self.checked = "", False, None, 0.0
+        self.companion.submit(self.companion.start_over())
 
     def next_step(self):
         """Only ever runs because the owner pressed the button."""

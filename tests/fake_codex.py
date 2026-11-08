@@ -174,7 +174,9 @@ def main():
     first = sys.stdin.readline()
     if not first:
         sys.exit(0)
-    note("started")
+    # Which service it was started for: a key of the owner's own arrives as `-c` settings and one environment variable, never as an argument.
+    settings = dict(arg.split("=", 1) for arg in sys.argv if "=" in arg and arg.split("=", 1)[0].startswith(("model_provider", "web_search")))
+    note("started", settings=settings, key=os.environ.get("TAKO_PROVIDER_KEY", ""), args=sys.argv[1:])
     for line in itertools.chain([first], sys.stdin):
         message = json.loads(line)
         if "method" in message:

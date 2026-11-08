@@ -1,6 +1,6 @@
 """The connection to the local Codex app-server: JSON lines over stdio.
 
-No credential files are read, no provider fallback is selected, and reconnecting
+No credential files are read, no provider fallback is selected (a key the owner gave goes in as `provider.py` says), and reconnecting
 never replays turns. What the server asks of us goes to `on_request`.
 """
 from __future__ import annotations
@@ -16,6 +16,7 @@ import tempfile
 from collections import defaultdict, deque
 from typing import Awaitable, Callable
 
+import provider
 from settings import CONFIG, RUNTIME
 
 CODEX_STATE = RUNTIME / "codex-state"
@@ -65,11 +66,12 @@ class CodexRuntime:
         if self.process is not None:
             raise RuntimeErrorCode("already_started")
         await asyncio.to_thread(fresh_codex_state, self.executable)
+        own_key = provider.current()  # A key of the owner's own instead of a ChatGPT login: read again on every start, the panel may just have saved one.
         self.process = await asyncio.create_subprocess_exec(
-            self.executable, "app-server", "--listen", "stdio://",
+            self.executable, "app-server", "--listen", "stdio://", *provider.codex_args(own_key),
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, limit=8 * 1024 * 1024,
-            env={**os.environ, "CODEX_SQLITE_HOME": str(CODEX_STATE)})
+            env={**os.environ, "CODEX_SQLITE_HOME": str(CODEX_STATE), **provider.codex_env(own_key)})
         self.closed = False
         self._reader = asyncio.create_task(self._read())
         self._stderr = asyncio.create_task(self._drain_stderr())

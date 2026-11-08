@@ -116,12 +116,13 @@ Chrome 要先打开它的辅助功能才看得到网页里的东西（`askForAcc
 | `guards.py` | 无状态的底线规则：脚本检查、工作台只收原话、标题核对 | 一条“不管模型怎么说都要成立”的规则 |
 | `webfill.py` | 填网页的固定页面代码，以及找到是浏览器的哪个窗口；把文件交给网页的上传框（`UPLOAD`：分块以数据传进页面，设成上传框的文件，不经过系统的选择框） | 网页里填不进的框、传不进的文件 |
 | `outputs.py` | 作品目录、备份、替换文件、文档转图片（`file_pictures`，沙箱外跑，不开应用不弹卡片）、窗口标题落到文件（`file_in_title`） | 文件写到哪、怎么看文件 |
-| `first_run.py` | 找 Codex、安装、登录 | 新用户第一次打开 |
+| `first_run.py` | 找 Codex、安装（chatgpt.com 打不开就从 GitHub 取同一个安装脚本）、登录或填 key | 新用户第一次打开 |
 | `asked.py` | 主人交代过的事，存一周，重启后的新线程靠它记得 | 只存主人原话 |
 | `feedback.py` | 回传给作者的数字和固定词 | 改了就要同步改 `docs/PRIVACY.md` |
 | `greetings.py` | 开场白 | 彩蛋 |
 | `wechat_reader.py` | 可选的本机微信读取 | 微信数据库 |
 | `codex_runtime.py` | 和 Codex 的连接；给它单独建状态库，日志不留行（`fresh_codex_state`） | 协议 |
+| `provider.py` | 主人自带的 key：DeepSeek、通义千问、Kimi、智谱的地址、模型和拿 key 的页面，或任何讲 Responses 的地址（中转站，`custom`），存在 `provider.json`（600），作为 `-c` 设置和一个环境变量交给 Codex；所有模型走同一套 Tako，不为某个模型加提示词或规则 | 换模型服务商 |
 | `settings.py` | 这台 Mac 的配置和路径，其他文件都从这里取 | 新增一项配置 |
 | `side.html` | 面板网页，每隔一会儿拉 `/state` 并画出来 | 面板界面 |
 

@@ -15,7 +15,7 @@
   <a href="CHANGELOG.md">更新日志</a>
 </p>
 
-<p align="center"><sub>现已开放内测 · Apple 芯片 · macOS 14+ · 用你自己的 ChatGPT 账号 · MIT 开源</sub></p>
+<p align="center"><sub>现已开放内测 · Apple 芯片 · macOS 14+ · 用你自己的 ChatGPT 账号，或 DeepSeek、千问、Kimi、智谱的 key · MIT 开源</sub></p>
 
 <p align="center">
   <a href="https://github.com/JoeSangAI/Tako/releases/download/promo-2026-11/Tako-promo-1080p.mp4">
@@ -117,7 +117,7 @@ Tako 省掉的就是这段来回。把它拖到窗口上，或者按 **⌃⌥T**
 ## 你的电脑还是你说了算
 
 - **本地优先。** 运行记录都在 `~/Library/Application Support/Tako/`，随时可以看或删。
-- **发给模型的内容。** 你问问题时，你的话和 Tako 需要看的窗口截图、文字会经 Codex 发给 OpenAI，遵守你 ChatGPT 账号的条款。窗口截图只在它需要看时才发，本机不落盘。
+- **发给模型的内容。** 你问问题时，你的话和 Tako 需要看的窗口截图、文字会经 Codex 发给你选的模型服务商（OpenAI，或你填了 key 的 DeepSeek、通义千问、Kimi、智谱），遵守你在那一家的账户条款。窗口截图只在它需要看时才发，本机不落盘。
 - **模型能碰的范围。** 和你平时用 Codex 一样：模型能读这台电脑上的文件和密钥配置、跑命令、联网，它读到的内容会发给模型服务商。这样它才有和主力助手一样的智能。要改别处的文件时，它先把原件备份到 `backups/` 再改，不弹卡片；只有删除、往外发送、改系统设置这类收不回来的事才问你。你在 Codex 里配置过的放行规则仍然生效。
 - **别人说的话不算数。** 窗口、网页、文件和聊天里的内容只是材料，不是指令，只有你在面板里说的话才能让它动手。
 - **测试版会回传匿名统计。** 只有错误类型、版本、用量，和从你说的话里归纳的任务类型（比如“表单｜填报销｜没做到”）。不含原话、窗口内容、文件和设备标识。默认开着，不会打扰你；不想要就右键小章鱼，把“帮助作者优化”的勾去掉。
@@ -149,12 +149,12 @@ Tako 省掉的就是这段来回。把它拖到窗口上，或者按 **⌃⌥T**
 curl -fsSL https://raw.githubusercontent.com/JoeSangAI/Tako/main/install.sh | bash
 ```
 
-需要能打开 GitHub 和 ChatGPT；靠代理上网时，先打开全局或 TUN 模式。下载约 20 MB，通常一到几分钟。
+需要能打开 GitHub；用 ChatGPT 登录的还要能打开 ChatGPT，靠代理上网时先打开全局或 TUN 模式。下载约 20 MB，通常一到几分钟。
 
 第一次打开，Tako 只会带你走这三步：
 
 1. **给权限。** 系统会先后问“辅助功能”和录屏权限，打开后 Tako 才能操作和看见窗口。没打开时，面板上会有一个按钮直接带你去系统设置。
-2. **装上 Codex、登录 ChatGPT。** 面板里按一下按钮就行；已经用 Codex 或 ChatGPT 桌面版登录过的，这一步通常会自动跳过；Codex 太旧时，面板会让你按一下更新。Tako 的大脑是 OpenAI 的 [Codex](https://github.com/openai/codex)，用的是你自己的 ChatGPT 账号和额度。
+2. **装上 Codex，登录 ChatGPT 或填一个 key。** 面板里按一下按钮就行；已经用 Codex 或 ChatGPT 桌面版登录过的，这一步通常会自动跳过；Codex 太旧时，面板会让你按一下更新。Tako 的大脑是 OpenAI 开源的 [Codex](https://github.com/openai/codex)：可以用你自己的 ChatGPT 账号和额度，没有 ChatGPT 会员的，点“用 API key”，选 DeepSeek、通义千问、Kimi 或智谱，粘贴那一家的 API key 就好，按那一家的价格计费；用中转站的，选“其他 / 中转站”，填地址和 key，再从它列出的模型里选一个（中转站要支持 OpenAI 的 Responses 接口，只支持 chat/completions 的接不上）。
 3. **到你想用的窗口按 ⌃⌥T，** 或者把小章鱼拖到那个窗口上松手。
 
 > 为什么用终端安装：Tako 还没有做 Apple 公证，直接下载的 app 会被系统拦下。安装脚本会校验文件哈希和签名，你也可以先[读一遍脚本](install.sh)。
