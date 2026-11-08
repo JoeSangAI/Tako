@@ -17,6 +17,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "Sources/brain"))
 sys.path.insert(0, str(ROOT / "Sources/brain/vendor"))
 import first_run  # noqa: E402
+import office  # noqa: E402
 import provider  # noqa: E402
 
 LINK = "https://auth.openai.com/oauth/authorize?response_type=code&state=abc"
@@ -87,9 +88,9 @@ class LoginStep(unittest.TestCase):
         self.addCleanup(setattr, first_run, "_installed", real)
         first_run._serves.clear()
         # Never this Mac's own key or settings.
-        for name, value in (("FILE", self.home / "provider.json"), ("CONFIG", {})):
-            self.addCleanup(setattr, provider, name, getattr(provider, name))
-            setattr(provider, name, value)
+        for module, name, value in ((provider, "FILE", self.home / "provider.json"), (provider, "CONFIG", {}), (office, "FILE", self.home / "office.json"), (office, "CONFIG", {})):
+            self.addCleanup(setattr, module, name, getattr(module, name))
+            setattr(module, name, value)
         self.companion = Companion()
         self.setup = first_run.Setup(self.companion)
         self.addCleanup(self.setup.cancel)
@@ -305,6 +306,150 @@ class OwnKey(unittest.TestCase):
         self.assertEqual(provider.codex_args(), [])
         self.assertEqual(provider.codex_env(), {})
         self.assertEqual(provider.model(), provider.MODEL)
+
+
+QODER = r'''#!/bin/sh
+here="$(dirname "$0")"
+[ "$1" = "status" ] || exit 0
+[ -f "$here/qoder_logged_in" ] && { echo "Version: 1.1.71"; echo "Username: someone"; exit 0; }
+echo "Account: Not logged in"
+'''
+
+
+class OfficeLogin(unittest.TestCase):
+    """Someone with WorkBuddy or Qoder and nothing else uses its login: no Codex, no key. Whether it is logged in is read from disk."""
+
+    def setUp(self):
+        LoginStep.setUp(self)
+        self.login = self.home / "workbuddy-desktop.info"
+        qoder = self.bin / "qoderclicn"
+        qoder.write_text(QODER)
+        qoder.chmod(qoder.stat().st_mode | stat.S_IEXEC)
+        for name, value in (("installed", lambda: ["workbuddy", "qoder"]), ("WORKBUDDY_LOGIN", self.login), ("_qoder_cli", lambda: qoder)):
+            self.addCleanup(setattr, office, name, getattr(office, name))
+            setattr(office, name, value)
+
+    def workbuddy_logged_in(self, days=20):
+        self.login.write_text(json.dumps({"auth": {"accessToken": "never read", "expiresAt": (time.time() + days * 86400) * 1000, "refreshExpiresAt": (time.time() + days * 86400) * 1000}}))
+
+    def test_the_login_step_offers_what_is_on_this_mac(self):
+        seen = self.setup.state()
+        self.assertEqual(seen["step"], "login")
+        self.assertEqual([o["id"] for o in seen["offices"]], ["workbuddy", "qoder"])
+
+    def test_without_codex_the_first_card_is_still_the_one_question(self):
+        first_run._installed = lambda: []
+        seen = self.setup.state()
+        self.assertEqual(seen["step"], "login", "no card about Codex before the owner has picked a way in")
+        self.assertEqual(seen["offices"][0]["name"], "WorkBuddy")
+
+    def test_an_office_agent_that_says_no_names_itself(self):
+        self.assertFalse(self.setup.use_office("qoder"))
+        seen = self.setup.state()
+        self.assertEqual(seen["error_for"], "qoder", "the error goes on that row")
+
+    def test_a_good_login_is_kept_and_the_brain_starts_again_without_codex(self):
+        self.workbuddy_logged_in()
+        provider.save("deepseek", "sk-old")
+        self.assertTrue(self.setup.use_office("workbuddy"))
+        self.assertEqual(self.companion.submitted, ["start_over"])
+        self.assertFalse(provider.FILE.exists(), "one brain at a time")
+        first_run._installed = lambda: []
+        seen = self.setup.state()
+        self.assertEqual((seen["step"], seen["service"]), ("ready", "workbuddy"))
+
+    def test_an_expired_login_says_what_to_do_and_keeps_nothing(self):
+        self.workbuddy_logged_in(days=-1)
+        self.assertFalse(self.setup.use_office("workbuddy"))
+        self.assertIn("打开一次 WorkBuddy", self.setup.state()["error"])
+        self.assertFalse(office.FILE.exists())
+        self.assertEqual(self.companion.submitted, [])
+
+    def test_never_logged_in_says_so(self):
+        self.assertFalse(self.setup.use_office("workbuddy"))
+        self.assertIn("还没登录", self.setup.state()["error"])
+        self.workbuddy_logged_in()
+        self.login.with_name(self.login.name + ".logged-out").write_text("")
+        self.assertFalse(self.setup.use_office("workbuddy"))
+
+    def test_qoder_asks_its_own_status(self):
+        self.assertFalse(self.setup.use_office("qoder"))
+        self.assertIn("Qoder 还没登录", self.setup.state()["error"])
+        (self.bin / "qoder_logged_in").write_text("")
+        self.assertTrue(self.setup.use_office("qoder"))
+        self.assertEqual(self.setup.state()["step"], "ready")
+
+    def test_not_on_this_mac_is_not_offered(self):
+        self.assertFalse(self.setup.use_office("qwenwork"))
+        self.assertFalse(office.FILE.exists())
+
+    def test_a_turn_turned_away_brings_the_step_back_and_trying_again_starts_afresh(self):
+        self.workbuddy_logged_in()
+        self.setup.use_office("workbuddy")
+        self.setup.logged_out()  # what a turn does when the agent says its login won't do
+        seen = self.setup.state()
+        self.assertEqual(seen["step"], "office")
+        self.assertIn("打开一次 WorkBuddy", seen["error"])
+        self.setup.next_step()  # 再试一次
+        self.assertEqual(self.setup.state()["step"], "ready")
+        self.assertEqual(self.companion.submitted, ["start_over", "start_over"])
+
+    def test_back_to_chatgpt_forgets_the_office_agent(self):
+        self.workbuddy_logged_in()
+        self.setup.use_office("workbuddy")
+        self.setup.use_login()
+        self.assertFalse(office.FILE.exists())
+        self.assertEqual(self.setup.state()["step"], "login")
+
+    def test_a_key_replaces_the_office_agent(self):
+        self.workbuddy_logged_in()
+        self.setup.use_office("workbuddy")
+        provider.check, real = (lambda *a, **k: ("", [])), provider.check
+        self.addCleanup(setattr, provider, "check", real)
+        self.setup.use_key("deepseek", "sk-good")
+        self.assertIsNone(office.current())
+
+
+class CodexOnlyWhenNeeded(unittest.TestCase):
+    """No Codex on this Mac: it is installed only once the owner picks a way in that needs it (ChatGPT or a key), and that way goes on by itself."""
+
+    def setUp(self):
+        LoginStep.setUp(self)
+        self.codex.rename(self.home / "codex.ready")
+        here = self.home
+        first_run._installed = lambda: [str(here / "bin/codex")] if (here / "bin/codex").exists() else []
+        self.setup.INSTALL = f'sleep 0.3; cp "{here}/codex.ready" "{here}/bin/codex"'
+        provider.check, real = (lambda *a, **k: ("", [])), provider.check
+        self.addCleanup(setattr, provider, "check", real)
+
+    def test_the_first_card_asks_first(self):
+        self.assertEqual(self.setup.state()["step"], "login")
+
+    def test_chatgpt_installs_codex_then_goes_straight_to_the_browser(self):
+        self.setup.next_step()
+        self.until(lambda s: s["busy"] and s["step"] == "install", "installing")
+        seen = self.until(lambda s: s.get("link"), "the login page after the install")
+        self.assertEqual(seen["step"], "login")
+        (self.bin / "authorized").write_text("")
+        self.assertEqual(self.until(lambda s: not s["busy"], "the end")["step"], "ready")
+
+    def test_a_key_is_kept_then_codex_goes_in_and_it_is_ready(self):
+        self.assertTrue(self.setup.use_key("deepseek", "sk-good"))
+        self.assertTrue(provider.FILE.exists(), "the key is kept first")
+        self.assertEqual(self.setup.state()["step"], "install")
+        seen = self.until(lambda s: not s["busy"], "the install done")
+        self.assertEqual((seen["step"], seen.get("service")), ("ready", "deepseek"))
+        self.until(lambda s: self.companion.submitted, "the brain started")
+
+    def test_a_failed_install_after_a_key_says_so_and_offers_it_again(self):
+        self.setup.INSTALL = "exit 1"
+        self.setup.use_key("deepseek", "sk-good")
+        seen = self.until(lambda s: not s["busy"], "the install over")
+        self.assertEqual(seen["step"], "install")
+        self.assertIn("Codex 没装上", seen["error"])
+
+    def until(self, wanted, what):
+        return LoginStep.until(self, wanted, what)
 
 
 class OnTheRealServer(unittest.TestCase):

@@ -11,9 +11,9 @@ Tako 是两个进程：**原生 app**（Swift）有系统权限，管小章鱼�
              ┌──────────────── 大脑（Sources/brain）────────────────────┐
              │ routes → Companion（chats + turns + hands + lecture）    │
              └───────────────────────┬──────────────────────────────────┘
-                            codex_runtime（标准输入输出）
+              codex_runtime 或 office（标准输入输出）
                                      ▼
-                              Codex app-server → 模型
+          Codex app-server → 模型，或办公智能体（WorkBuddy、Qoder）→ 它家的模型
 ```
 
 大脑永远不直接碰窗口：要点、要填、要看，都发一条命令给原生 app。原生 app 不判断该不该做这件事，只判断这一下能不能按。
@@ -116,15 +116,29 @@ Chrome 要先打开它的辅助功能才看得到网页里的东西（`askForAcc
 | `guards.py` | 无状态的底线规则：脚本检查、工作台只收原话、标题核对 | 一条“不管模型怎么说都要成立”的规则 |
 | `webfill.py` | 填网页的固定页面代码，以及找到是浏览器的哪个窗口；把文件交给网页的上传框（`UPLOAD`：分块以数据传进页面，设成上传框的文件，不经过系统的选择框） | 网页里填不进的框、传不进的文件 |
 | `outputs.py` | 作品目录、备份、替换文件、文档转图片（`file_pictures`，沙箱外跑，不开应用不弹卡片）、窗口标题落到文件（`file_in_title`） | 文件写到哪、怎么看文件 |
-| `first_run.py` | 找 Codex、安装（chatgpt.com 打不开就从 GitHub 取同一个安装脚本）、登录或填 key | 新用户第一次打开 |
+| `first_run.py` | 找 Codex、安装（chatgpt.com 打不开就从 GitHub 取同一个安装脚本）、登录或填 key，或者用这台 Mac 上的办公智能体 | 新用户第一次打开 |
 | `asked.py` | 主人交代过的事，存一周，重启后的新线程靠它记得 | 只存主人原话 |
 | `feedback.py` | 回传给作者的数字和固定词 | 改了就要同步改 `docs/PRIVACY.md` |
 | `greetings.py` | 开场白 | 彩蛋 |
 | `wechat_reader.py` | 可选的本机微信读取 | 微信数据库 |
 | `codex_runtime.py` | 和 Codex 的连接；给它单独建状态库，日志不留行（`fresh_codex_state`） | 协议 |
+| `codex_tools.py` | Codex 自带的命令（`shell`）和改文件（`apply_patch`），给没有 Codex 的大脑用：同一种 macOS 沙箱，出沙箱和沙箱外改文件都变成 Codex 那样的审批，交给 `Hands.on_server_request` | 命令、改文件的规矩 |
+| `tako_mcp.py` | 办公智能体每段会话启动的 MCP 服务器，只用标准库；列工具和调用都经一个只有主人能开的本机通道回到大脑，带这段会话的令牌 | 工具怎么到智能体手里 |
+| `office.py` | 办公智能体当大脑：这台 Mac 上有哪些（WorkBuddy、Qoder、千问办公）、怎么启动（关掉它们自己的工具）、登录还能不能用（只读磁盘，不花钱）；`AcpRuntime` 和 `CodexRuntime` 方法一样，里面讲 ACP，会话就是线程，它自己的工具请求一律拒绝；`brain_runtime` 决定用哪一个 | 加一个办公智能体 |
 | `provider.py` | 主人自带的 key：DeepSeek、通义千问、Kimi、智谱的地址、模型和拿 key 的页面，或任何讲 Responses 的地址（中转站，`custom`），存在 `provider.json`（600），作为 `-c` 设置和一个环境变量交给 Codex；所有模型走同一套 Tako，不为某个模型加提示词或规则 | 换模型服务商 |
 | `settings.py` | 这台 Mac 的配置和路径，其他文件都从这里取 | 新增一项配置 |
 | `side.html` | 面板网页，每隔一会儿拉 `/state` 并画出来 | 面板界面 |
+
+## 办公智能体当大脑
+
+主人只有 WorkBuddy、Qoder 或千问办公（2026-11-08，Joe：“让只有 workbuddy 的人能够用起来 tako”）：用它们自带的命令行智能体，走它们已有的登录和积分，不装 Codex。上面的一切照旧讲 Codex：`office.py` 的 `AcpRuntime` 把线程、一轮、事件和审批请求翻成 ACP（Agent Client Protocol）。
+
+- **只有 Tako 的工具。** 智能体启动时关掉它自己的全部工具（Qoder 用 `--tools`，WorkBuddy 按名字全列进 `--disallowedTools`，因为它的 `--tools` 不起作用），只留网页搜索；它的生图、视频、发消息、命令、写文件都没有，和 `BRAIN_CONFIG` 关掉 Codex 的插件一样。还有漏网的会来请求许可，`AcpRuntime.permission` 只放行 Tako 的工具和网页搜索。每个智能体进程有一个看门的小进程，大脑一走（哪怕被强杀）就结束它：WorkBuddy 的智能体输入关了也不退出（实测 2026-11-08）。
+- **Tako 的工具经 MCP 到它手里。** 每段主人的会话带一个 `tako_mcp.py`，它把调用经本机通道送回大脑，大脑像回答 Codex 一样回答（`Hands._tool`）。一次性线程不带它，智能体也不留任何工具，所以读到的话什么也动不了。
+- **命令和改文件是 Tako 的。** 智能体自己的命令不进沙箱（实测 2026-11-07），所以关掉，换成 `codex_tools.py`：同一种沙箱、同样的审批、同样的备份和卡片。
+- **一个提示词一个进程。** ACP 的系统提示是进程级的：大脑和触手共用一个进程（提示词相同），开场白、笔记这些一次性线程按各自的提示词各一个，用完让它删掉会话（Qoder），WorkBuddy 不存会话，在 Tako 自己的文件夹里跑。
+- **插话排队。** ACP 不能把话送进正在跑的一轮（`turn/steer`），所以和带文件的话一样排在后面。压缩由智能体自己做。
+- **登录。** 读它们放在磁盘上的登录（WorkBuddy 的到期时间、Qoder 的 `status`），不花钱；一轮被它以登录为由拒掉，面板就说那一件事：打开一次那个应用，再点“再试一次”。用的模型就是那个应用里设的，Tako 不另设。
 
 `Companion` 由 `Chats`、`Turns`、`Hands`、`Lectures` 四部分组成，共用一份状态，字段都在 `tako_server.py` 的 `__init__` 里写明了用途。每个任务自己的状态在 `Job` 里。
 

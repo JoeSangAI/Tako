@@ -11,8 +11,10 @@ from pathlib import Path
 import asked
 import feedback as fb
 from chats import render
-from codex_runtime import CodexRuntime, RuntimeErrorCode
-from first_run import codex_on_path, find_codex
+import office
+from office import brain_runtime
+from codex_runtime import RuntimeErrorCode
+from first_run import codex_on_path
 from guards import last_draft, named_paths, plain_command, pointable
 from outputs import make_output_dir, tidy_output_dir
 from prompts import BRAIN_CONFIG, PROMPT, READER_CONFIG, STEP_NAMES, TOOLS, pointed_at
@@ -117,9 +119,14 @@ def plain_failure(exc):
         return "Tako 刚才掉线了，这句可能只做了一半。再说一次就会重新连上。"
     if code == "threadTooHeavy":
         return "这一轮传不上去：这个对话攒的窗口截图太多，网络又慢。我换了一条轻的思路，这个窗口最近说的还记得。可能只做了一半，说“继续”我接着看。"
+    agent = office.current()
     if code in QUOTA_ERRORS:
+        if agent:
+            return f"{agent['name']} 那边限流或积分不够了。等一会儿再试，还不行就打开 {agent['app']} 看看积分。"
         return f"{provider_now()['name']} 那边限流或余额不够了。等一会儿再试，还不行就看看账户余额。" if provider_now() else "Codex 的额度暂时用完了，等一会儿再试。"
     if code == "unauthorized":
+        if agent:
+            return office.stale_login(agent)
         own_key = provider_now()
         return f"{own_key.get('name') or '模型服务商'}不认这个 key。打开面板换一个再试。" if own_key else "Codex 需要登录。打开面板，按上面的提示登录后再试。"
     if code in NETWORK_ERRORS:
@@ -459,8 +466,9 @@ class Turns:
             if not self.runtime.closed:
                 return
             await self.runtime.close()
-            self.runtime = CodexRuntime(find_codex() or "codex", on_request=self.on_server_request)
-            codex_on_path(self.runtime.executable)
+            self.runtime = brain_runtime(self.on_server_request)
+            if self.runtime.executable:
+                codex_on_path(self.runtime.executable)
             self.brain_lost = self.brain_lost or bool(self.thread)
             self.thread = None
             await self.runtime.start()

@@ -29,7 +29,9 @@ import greetings as greet
 import wechat_reader as reader
 from agents import Agents, open_door
 from chats import Chats
-from codex_runtime import CodexRuntime, RuntimeErrorCode
+import office
+from office import brain_runtime, end_agents
+from codex_runtime import RuntimeErrorCode
 from first_run import Setup, codex_on_path, find_codex
 from hands import Hands
 from lecture import Lectures
@@ -44,7 +46,7 @@ from turns import Turns
 class Companion(Chats, Turns, Hands, Lectures, Agents):
     def __init__(self, chat):
         self.loop = None
-        self.runtime = CodexRuntime(find_codex() or "codex", on_request=self.on_server_request)
+        self.runtime = brain_runtime(self.on_server_request)
         self.reviving = asyncio.Lock()
         self.brain_lost = False  # the thread went away with things said on it: the next turn gets them back as memory
         self.setup = Setup(self)
@@ -181,12 +183,17 @@ async def main():
         def leave_with_app():
             sys.stdin.buffer.read()
             companion.setup.cancel()
+            with contextlib.suppress(Exception):  # An office agent keeps a record of every session, and its process doesn't follow ours out: neither outlives the app.
+                end_agents()
+                office.clear_records(office.current())
             os._exit(0)
         threading.Thread(target=leave_with_app, daemon=True).start()
     # Pasted images and whatever else was handed over last time do not outlive the app.
     shutil.rmtree(INBOX, ignore_errors=True)
     with contextlib.suppress(OSError, RuntimeErrorCode):  # Not fatal: the next question tries again and says what is wrong.
-        if find_codex():
+        if office.current():
+            await companion.runtime.start()
+        elif find_codex():
             codex_on_path(find_codex())
             await companion.runtime.start()
     companion._later(companion.warm())

@@ -12,6 +12,7 @@ import threading
 import time
 from pathlib import Path
 
+import office
 import provider
 
 LOGIN_LINK = re.compile(r"https://auth\.openai\.com/\S+")
@@ -40,24 +41,51 @@ class Setup:
         self.starting = threading.Lock()
         self.key_refused = False  # The service said no to the owner's own key; only a new key gets past that.
         self.models = []          # What a relay offered when the owner hadn't picked a model yet.
+        self.office_refused = False  # The office agent turned a turn away for its login: only opening the app gets past that.
+        self.office_seen = (0.0, None, "")  # when its login was last read from disk, for which agent, and what stands in the way
+        self.failed_for = ""  # which way of logging in `failed` is about: an office agent's id, or "chatgpt"
+
+    def offices(self):
+        return [{"id": key, "name": office.AGENTS[key]["name"]} for key in office.installed()]
+
+    def office_problem(self, agent, fresh=False):
+        """Read from what the app keeps on disk, at most every half minute: the panel asks every two seconds while a step is open."""
+        when, which, problem = self.office_seen
+        if fresh or which != agent["id"] or time.time() - when > 30:
+            problem = office.problem(agent)
+            self.office_seen = (time.time(), agent["id"], problem)
+        return problem
 
     def state(self):
         if self.working:
             return {"step": self.working, "busy": True, "error": "", "link": self.link}
-        if not find_codex():
-            return {"step": "update" if _installed() else "install", "busy": False, "error": self.failed}
+        agent = office.current()
+        if agent:
+            # No Codex at all: the office agent is the brain, on the login its own app keeps.
+            problem = self.office_problem(agent)
+            if problem or self.office_refused:
+                return {"step": "office", "busy": False, "error": self.failed or problem or office.stale_login(agent).replace("然后再说一次", "然后点“再试一次”"),
+                        "office": agent["id"], "name": agent["name"], "offices": self.offices()}
+            return {"step": "ready", "busy": False, "error": "", "service": agent["id"]}
+        codex = find_codex()
+        if not codex and _installed():
+            return {"step": "update", "busy": False, "error": self.failed}
         own_key = provider.current()
+        if own_key and not codex:
+            # A key needs Codex: it goes on once Codex is in. Only here, after the owner chose a key, is installing a step of its own.
+            return {"step": "install", "busy": False, "error": self.failed, "service": own_key.get("preset") or "custom"}
         if own_key:
             # No ChatGPT login needed: the key is the login.
             if self.key_refused or not own_key["key"]:
                 return {"step": "key", "busy": False, "error": self.failed or ("这个 key 用不了了，换一个。" if own_key["key"] else ""), "service": own_key.get("preset") or "custom",
                         "services": provider.services(), "models": self.models}
             return {"step": "ready", "busy": False, "error": "", "service": own_key.get("preset") or "custom"}
-        if self.logged_in or self._logged_in():
+        if codex and (self.logged_in or self._logged_in()):
             return {"step": "ready", "busy": False, "error": ""}
         if self.broken:
             return {"step": "config", "busy": False, "error": self.broken}
-        return {"step": "login", "busy": False, "error": self.failed, "services": provider.services(), "models": self.models}
+        # The first card: an account (an office agent on this Mac, or ChatGPT, which Codex is installed for when it is picked) or a key.
+        return {"step": "login", "busy": False, "error": self.failed, "error_for": self.failed_for, "services": provider.services(), "models": self.models, "offices": self.offices()}
 
     def _logged_in(self):
         # Asked at most every few seconds; a slow answer is not evidence of a missing login, and neither is no answer yet.
@@ -79,6 +107,23 @@ class Setup:
         """The model said so: ask again, so the panel can show the step."""
         self.logged_in, self.checked = False, 0.0
         self.key_refused = bool(provider.current())
+        self.office_refused = bool(office.current())
+
+    def use_office(self, agent):
+        """An office agent on this Mac as the brain, only from the panel's button. Its login is read first, at no cost, and kept only if it is good."""
+        if agent not in office.installed():
+            self.failed = "这台 Mac 上没找到它。"
+            return False
+        found = {**office.AGENTS[agent], "id": agent}
+        problem = self.office_problem(found, fresh=True)
+        if problem:
+            self.failed, self.failed_for = problem, agent
+            return False
+        office.save(agent)
+        provider.forget()
+        self.failed, self.office_refused, self.key_refused = "", False, False
+        self.companion.submit(self.companion.start_over())
+        return True
 
     def use_key(self, service, key, base_url="", model=""):
         """The owner's own key, only from the panel's button: a service in `provider.PRESETS`, or any address that speaks Responses (`custom`, a relay).
@@ -93,24 +138,39 @@ class Setup:
             self.failed = problem
             return False
         provider.save(service, key, base_url, model)
+        office.forget()
         self.failed, self.key_refused, self.models = "", False, []
+        with self.starting:
+            if not find_codex() and not self.working:  # The key is kept; Codex goes in, and the brain starts once it is there.
+                self.working = "install"
+                threading.Thread(target=self._run, args=("install",), daemon=True).start()
+                return True
         self.companion.submit(self.companion.start_over())
         return True
 
     def use_login(self):
-        """Back to a ChatGPT login: the key Tako kept is gone from this Mac."""
+        """Back to a ChatGPT login: the key Tako kept is gone from this Mac, and so is the choice of an office agent."""
         provider.forget()
-        self.failed, self.key_refused, self.logged_in, self.checked = "", False, None, 0.0
+        office.forget()
+        self.failed, self.key_refused, self.office_refused, self.logged_in, self.checked = "", False, False, None, 0.0
         self.companion.submit(self.companion.start_over())
 
     def next_step(self):
         """Only ever runs because the owner pressed the button."""
         with self.starting:
             step = self.state()["step"]
-            if step == "config":
+            if step == "office":
+                # "再试一次": the login is read again, and a good one starts the agent afresh.
+                agent = office.current()
+                if agent and not self.office_problem(agent, fresh=True):
+                    self.failed, self.office_refused = "", False
+                    self.companion.submit(self.companion.start_over())
+                elif agent:
+                    self.failed = ""
+            elif step == "config":
                 self._set_settings_aside()
             elif step in ("install", "update", "login") and not self.working:
-                self.working, self.failed = step, ""
+                self.working, self.failed, self.failed_for = step, "", ""
                 threading.Thread(target=self._run, args=(step,), daemon=True).start()
 
     def cancel(self):
@@ -165,15 +225,28 @@ class Setup:
         self.logged_in, self.broken = True, ""
         return True
 
+    def _install(self):
+        if subprocess.run(["/bin/sh", "-c", self.INSTALL], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=600, env={**os.environ, "CODEX_NON_INTERACTIVE": "1"}).returncode:
+            self.failed = "Codex 没装上，检查网络后再试一次。"
+            return False
+        return True
+
     def _run(self, step):
         changed = False
         try:
             if step == "login":
+                # ChatGPT was picked on a Mac without Codex: it goes in first, then straight on to the browser.
+                if not find_codex():
+                    self.working = "install"
+                    if not self._install():
+                        self.failed_for = "chatgpt"
+                        return
+                    self.working = "login"
                 changed = self._log_in()
-            elif subprocess.run(["/bin/sh", "-c", self.INSTALL], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=600, env={**os.environ, "CODEX_NON_INTERACTIVE": "1"}).returncode:
-                self.failed = "Codex 没装上，检查网络后再试一次。"
+                if not changed:
+                    self.failed_for = "chatgpt"
             else:
-                changed = True
+                changed = self._install()
         except (OSError, subprocess.SubprocessError):
             self.failed = "这一步没有走通，检查网络后再试一次。"
         finally:

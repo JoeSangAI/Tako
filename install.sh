@@ -38,8 +38,14 @@ fi
 rm -rf "$DEST/Tako.app"
 mv "$WORK/unpacked/Tako.app" "$DEST/Tako.app"
 
-[ -n "${TAKO_NO_OPEN:-}" ] || open "$DEST/Tako.app"
-say "Tako $VERSION 装好了，在“$DEST”里。"
-echo "系统会问“辅助功能”和“屏幕录制”权限：打开它们，Tako 才能看见和操作窗口。"
-echo "接下来把屏幕上的小章鱼拖到任意窗口上松手，或者按 ⌃⌥T。以后的新版本它会自己告诉你。"
+if [ -n "${TAKO_NO_OPEN:-}" ]; then
+  say "Tako $VERSION 装好了，在“$DEST”里，打开它就能开始。"
+else
+  open "$DEST/Tako.app"
+  say "Tako $VERSION 装好了，已经打开。"
+fi
+echo "还剩两步要你自己点："
+echo "1. 系统问“辅助功能”和“屏幕录制”时，打开 Tako 的开关。"
+echo "2. Tako 的面板问用 AI 账号登录还是用 API key，选一个。"
+echo "之后把小章鱼拖到任意窗口上，或者按 ⌃⌥T，说一句要它做什么。"
 echo "测试版会回传匿名统计（只有数字和固定词表，没有你说的话），不想要就右键小章鱼去掉“帮助作者优化”的勾。"

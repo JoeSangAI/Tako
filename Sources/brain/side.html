@@ -122,8 +122,8 @@
   .ask .title { font-weight: 650; margin-bottom: 3px; }
   .ask .body { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 160px; overflow: auto; user-select: text; }
   .ask .body { max-height: 180px; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
-  .card-actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 7px; }
-  .card-actions button { padding: 3px 12px; }
+  .card-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; margin-top: 7px; }
+  .card-actions button { padding: 3px 12px; white-space: nowrap; }
 
   /* one thing at a time above the conversation: a step of setting up, or a new version */
   #notice { flex: none; display: none; margin: 0 12px 10px; padding: 10px 12px; background: var(--card); border-radius: 10px; font-size: 12px; }
@@ -142,6 +142,11 @@
   #notice .meter { height: 3px; margin-top: 8px; border-radius: 2px; background: var(--line); overflow: hidden; }
   #notice .meter i { display: block; height: 100%; background: var(--btn); transition: width .2s; }
   #notice .why { color: var(--accent); margin-top: 5px; }
+  #notice .choice { display: block; width: 100%; text-align: left; margin-top: 7px; padding: 7px 10px; border: 0; border-radius: 8px; background: var(--paper); color: var(--ink); font: inherit; cursor: pointer; box-shadow: inset 0 0 0 1px var(--line); }
+  #notice .choice:hover { box-shadow: inset 0 0 0 1px var(--muted); }
+  #notice .choice .name { font-weight: 600; }
+  #notice .choice .sub { color: var(--muted); margin-top: 1px; }
+  #notice .choice .why { margin-top: 1px; }
 
   #err { display: none; font-size: 12px; padding: 0 14px 6px; }
   #err { color: var(--accent); }
@@ -609,6 +614,8 @@ $('log').append(empty);
 let setup = null, update = null, noticeKey = '', noticeUp = false;
 // The owner chose to give a key of their own instead of logging in; what they typed survives a redraw.
 let keyForm = false, keyDraft = { service: '', key: '', base_url: '', model: '' }, keyChecking = false;
+// Or the office agent they already use (WorkBuddy, Qoder, 千问办公), on the login its app keeps: picked here when there are several.
+let accountForm = false, officeChecking = '';  // the second step after "用 AI 账号登录", and which agent's login is being read
 const PERMISSION_WORDS = {
   accessibility: ['还差一步：打开“辅助功能”', '在系统设置的“辅助功能”列表里打开 Tako 的开关（不是“终端”），它才能操作这个窗口。打开后这张卡自己会消失。'],
   screen: ['还差一步：打开录屏权限', '在系统设置的“录屏与系统录音”列表里打开 Tako 的开关，它才能看见这个窗口。打开后 Tako 会自己重开一次。'],
@@ -629,11 +636,47 @@ let permissionState = { screen: '', adhoc: false, screenRepaired: null, accessRe
 window.setPermissionState = (state) => { permissionState = { ...permissionState, ...state }; showNotice(); };
 const ADHOC_HINT = '自己编译的 Tako 每次重新编译都会这样，用固定的证书签名就不会（见 docs/BUILDING.md）。';
 const SETUP_WORDS = {
-  install: ['还差一步：装上 Codex', 'Tako 的大脑是 OpenAI 开源的 Codex，免费。装好后登录 ChatGPT，或者填 DeepSeek、千问、Kimi 等模型的 key。', '安装 Codex', '正在安装 Codex，大约一分钟…'],
+  install: ['还差一步：装上 Codex', 'key 已经存好了。用 key 要先装上 OpenAI 开源的 Codex，免费。', '安装 Codex', '正在装 Codex，大约一分钟…'],
   update: ['还差一步：更新 Codex', '这台电脑上的 Codex 太旧，Tako 连不上它。更新后不用重新登录。', '更新 Codex', '正在更新 Codex，大约一分钟…'],
-  login: ['还差一步：接上一个模型', '有 ChatGPT 会员就登录它，浏览器会打开 OpenAI 的授权页；没有的话，用 DeepSeek、通义千问、Kimi 或智谱的 API key。', '登录 ChatGPT', '在浏览器里确认，好了这里会自动继续…'],
+  login: ['还差一步：接上一个模型', '', '', '在浏览器里确认，好了这里会自动继续…'],
   config: ['还差一步：修好 Codex 的设置', 'Codex 读不了自己的设置文件，所以登录不上。可以把它改个名留在原处（不删），Codex 用默认设置继续。', '改名并继续'],
+  office: ['还差一步：接上 {name}', '', '再试一次'],
 };
+// The first card asks one thing: an account or a key. An account is an office agent found on this Mac, or ChatGPT last.
+function useName(name, tail = '') { const gap = /^[A-Za-z]/.test(name) ? ' ' : ''; return `用${gap}${name}${tail ? gap + tail : ''}`; }
+async function useOffice(agent) {
+  if (officeChecking) return;
+  officeChecking = agent; showNotice();
+  try { setup = await api('/setup/office', { agent }); } catch {}
+  officeChecking = ''; showNotice();
+}
+function choice(name, line, go, failed) {
+  const row = document.createElement('button');
+  row.className = 'choice';
+  row.append(noticeLine('name', name), noticeLine(failed ? 'why' : 'sub', line));
+  row.onclick = go;
+  return row;
+}
+function showLoginChoices(box) {
+  const offices = setup.offices || [];
+  box.append(noticeLine('title', SETUP_WORDS.login[0]));
+  if (!accountForm) {
+    box.append(choice('用 AI 账号登录', offices.length ? `这台 Mac 上有 ${offices.map((o) => o.name).join('、')}；也可以用 ChatGPT` : 'ChatGPT 会员', () => { accountForm = true; showNotice(); }),
+      choice('用 API key', 'DeepSeek、通义千问、Kimi、智谱，或中转站', () => { keyForm = true; showNotice(); }));
+    return;
+  }
+  const rows = [...offices.map((o) => ({ id: o.id, name: o.name, line: '用它在这台 Mac 上的登录和积分', go: () => useOffice(o.id) })),
+    { id: 'chatgpt', name: 'ChatGPT', line: 'ChatGPT 会员，在浏览器里确认', go: () => api('/setup/next', {}).then(setSetup) }];
+  for (const r of rows) {
+    const failed = !!setup.error && setup.error_for === r.id && officeChecking !== r.id;
+    box.append(choice(r.name, officeChecking === r.id ? '核对登录中…' : failed ? setup.error : r.line, r.go, failed));
+  }
+  if (setup.error && !rows.some((r) => r.id === setup.error_for)) box.append(noticeLine('why', setup.error));
+  const actions = document.createElement('div');
+  actions.className = 'card-actions';
+  actions.append(button('← 返回', () => { accountForm = false; showNotice(); }));
+  box.append(actions);
+}
 function noticeLine(cls, text) { const el = document.createElement('div'); el.className = cls; el.textContent = text; return el; }
 function showNotice() {
   const box = $('notice');
@@ -641,7 +684,7 @@ function showNotice() {
   const permission = !canMove ? 'accessibility' : !canRead ? 'screen' : null;
   const stale = !!permission && !!permissionAsked[permission] && Date.now() - permissionAsked[permission] > STALE_AFTER
     && (permission === 'accessibility' || permissionState.screen === 'off');
-  const key = JSON.stringify([permission, stale, repaired, !!permissionAsked.screen, permissionState, pending ? setup : null, update, busy, keyForm, keyChecking]);
+  const key = JSON.stringify([permission, stale, repaired, !!permissionAsked.screen, permissionState, pending ? setup : null, update, busy, keyForm, keyChecking, accountForm, officeChecking]);
   if (key === noticeKey) return;
   noticeKey = key;
   box.replaceChildren();
@@ -682,12 +725,18 @@ function showNotice() {
     showKeyForm(box, actions);
     return;
   }
+  if (pending && !updateFirst && setup.step === 'login' && !setup.busy) {
+    showLoginChoices(box);
+    return;
+  }
   if (pending && !updateFirst) {
     const words = SETUP_WORDS[setup.step];
-    box.append(noticeLine('title', words[0]), noticeLine('body', setup.busy ? words[3] : words[1]));
-    if (setup.error) box.append(noticeLine('why', setup.error));
+    const named = (text) => text.replace('{name}', setup.name || '');
+    box.append(noticeLine('title', named(words[0])));
+    if (setup.busy || words[1]) box.append(noticeLine('body', setup.busy ? named(words[3]) : words[1]));
+    if (setup.error && !setup.busy) box.append(noticeLine(setup.step === 'office' ? 'body' : 'why', setup.error));
     if (!setup.busy) {
-      if (setup.step === 'login') actions.append(button('用 API key', () => { keyForm = true; showNotice(); }));
+      if (setup.step === 'office') actions.append(button('改用 ChatGPT 登录', () => api('/setup/login', {}).then(setSetup)));
       actions.append(button(words[2], () => api('/setup/next', {}).then(setSetup), true));
       box.append(actions);
     }
@@ -744,7 +793,7 @@ async function saveKey() {
   keyChecking = true; showNotice();
   try {
     const next = await api('/setup/key', keyDraft);
-    if (next.step === 'ready') { keyForm = false; keyDraft = { service: '', key: '', base_url: '', model: '' }; }
+    if (next.step === 'ready' || next.busy) { keyForm = false; keyDraft = { service: '', key: '', base_url: '', model: '' }; }
     else if (next.models?.length && !next.models.includes(keyDraft.model)) keyDraft.model = '';
     setup = next;
   } catch {}
@@ -802,7 +851,7 @@ function showKeyForm(box, actions) {
   if (keyChecking) box.append(noticeLine('body', '核对中…'));
   else if (setup.error) box.append(noticeLine('why', setup.error));
   const back = setup.step === 'key' ? () => api('/setup/login', {}).then(setSetup) : () => { keyForm = false; showNotice(); };
-  actions.append(button('改用 ChatGPT 登录', back));
+  actions.append(button('← 返回', back));
   const save = button('保存', saveKey, true);
   save.disabled = keyChecking;
   actions.append(save);

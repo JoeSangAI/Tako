@@ -4,6 +4,7 @@ Each test is a thing an owner would see. No model, no network, no real window; e
 Run: python3 tests/test_turns.py
 """
 import asyncio
+import base64
 import json
 import os
 import pathlib
@@ -30,12 +31,15 @@ def steps(*items):
 class Tako:
     """A running server with a temporary home. `native` answers for the app side, by command name."""
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, env=None):
         self.home = pathlib.Path(tempfile.mkdtemp(prefix="tako-test-"))
         self.output = self.home / "works"
         self.config = {"name": "Alex", "timezone": "Asia/Shanghai", "output_root": str(self.output), **(config or {})}
-        (self.home / "config.json").write_text(json.dumps(self.config))
+        (self.home / "config.json").write_text(json.dumps(self.config).replace("{home}", str(self.home)))
         (self.home / "bin").mkdir()
+        agent = self.home / "bin/agent"  # an office agent's command line, for a brain that isn't Codex
+        agent.write_text(f'#!/bin/sh\nexec "{sys.executable}" -B "{ROOT / "tests/fake_acp.py"}" "$@"\n')
+        agent.chmod(agent.stat().st_mode | stat.S_IEXEC)
         self.log = self.home / "codex.log"
         codex = self.home / "bin/codex"
         codex.write_text(f'#!/bin/sh\nexec "{sys.executable}" -B "{ROOT / "tests/fake_codex.py"}" "$@"\n')
@@ -45,7 +49,11 @@ class Tako:
                        "step": lambda c: {"ok": True, "did": "点了"}, "windows": lambda c: {"ok": True, "windows": []}, "fill": lambda c: {"ok": True, "message": "已填入"}}
         self.commands = []
         environment = {**os.environ, "TAKO_HOME": str(self.home), "PATH": f"{self.home / 'bin'}{os.pathsep}{os.environ['PATH']}",
-                       "FAKE_CODEX_LOG": str(self.log), "FAKE_CODEX_HOME": str(self.home), "PYTHONDONTWRITEBYTECODE": "1"}
+                       "FAKE_CODEX_LOG": str(self.log), "FAKE_CODEX_HOME": str(self.home), "PYTHONDONTWRITEBYTECODE": "1",
+                       **{k: v.replace("{home}", str(self.home)) for k, v in (env or {}).items()}}
+        for value in (env or {}).values():
+            if value.startswith("{home}"):
+                pathlib.Path(value.replace("{home}", str(self.home))).mkdir(parents=True, exist_ok=True)
         self.errors = open(self.home / "server.err", "w")
         self.process = subprocess.Popen([sys.executable, "-B", str(SERVER), "--port", "0"], stdout=subprocess.PIPE, stderr=self.errors, text=True, env=environment)
         self.url = self.process.stdout.readline().strip()
@@ -153,9 +161,10 @@ class Tako:
 
 class Base(unittest.TestCase):
     config = None
+    env = None
 
     def setUp(self):
-        self.tako = Tako(self.config)
+        self.tako = Tako(self.config, self.env)
         self.addCleanup(self.tako.close)
         self.tako.stick()
 
@@ -1549,6 +1558,218 @@ class Inside(unittest.IsolatedAsyncioTestCase):
         beating.cancel()
         self.assertLess(max(b - a for a, b in zip(beats, beats[1:])), 0.25)
         self.assertEqual(source.read_text(), "副")
+
+
+class AnOfficeAgentAsTheBrain(Base):
+    """The owner's WorkBuddy, Qoder or 千问办公 instead of Codex: the same Tako, its tools, its cards, its stop, on their login."""
+    config = {"office": {"agent": "workbuddy", "cli": "{home}/bin/agent"}}
+    env = {"TMPDIR": "{home}/tmp"}  # so the test's own files are not in the folder every command may write to
+
+    def agent(self, kind):
+        return [row for row in self.tako.codex(kind) if row.get("agent")]
+
+    def answered(self, text, timeout=10):
+        return self.tako.until(lambda s: text in "".join(self.tako.said(s)), f"answer {text}", timeout)
+
+    def test_answers_with_only_takos_tools_and_no_codex(self):
+        self.tako.ask("你好")
+        self.answered("好的")
+        self.assertFalse([row for row in self.tako.codex("started") if not row.get("agent")], "Codex never starts")
+        brains = [row for row in self.agent("started") if row["keep"]]
+        self.assertTrue(brains and "Tako" in brains[0]["system"], "the brain is told it is Tako")
+        self.assertEqual({tuple(row["keep"]) for row in self.agent("started")} - {()}, {("WebSearch",)}, "of its own tools only the web search stays")
+        names = self.agent("tools")[0]["names"]
+        for name in ("look_at_window", "fill_input", "shell", "apply_patch"):
+            self.assertIn(name, names)
+
+    def test_a_throwaway_thread_gets_no_tools_at_all(self):
+        self.tako.ask("你好")
+        self.answered("好的")
+        brain_pids = {row["pid"] for row in self.agent("started") if row["keep"]}
+        for row in self.agent("request"):
+            if row["method"] == "session/new" and row["pid"] not in brain_pids:
+                self.assertEqual(row["params"]["mcpServers"], [], "no tools for a thread that only reads and talks")
+        for row in self.agent("started"):
+            if row["pid"] not in brain_pids:
+                self.assertEqual(row["keep"], [], "and none of the agent's own")
+
+    def test_a_tool_call_goes_through_tako(self):
+        self.tako.ask(steps({"say": "我先看一眼。"}, {"call": "look_at_window"}, {"say": "看过了"}))
+        seen = self.answered("看过了")
+        self.assertNotIn("我先看一眼", self.tako.said(seen)[-1], "what it said on the way is not the answer")
+        self.assertIn("look", [c["command"] for c in self.tako.commands])
+        reply = self.agent("tool_reply")[0]["reply"]
+        self.assertFalse(reply["isError"])
+        self.assertIn("看了窗口", seen["events"][-1].get("steps") or [], "the step shows as it does with Codex")
+
+    def test_its_own_tools_are_refused_and_takos_let_through(self):
+        self.tako.ask(steps({"permission": "Bash"}, {"permission": "WeChatReply"}, {"permission": "mcp__tako__look_at_window"}, {"say": "问完了"}))
+        self.answered("问完了")
+        told = {row["tool"]: row["reply"]["outcome"].get("optionId") for row in self.agent("permission")}
+        self.assertEqual(told, {"Bash": "no", "WeChatReply": "no", "mcp__tako__look_at_window": "once"})
+
+    def test_a_command_writes_only_where_the_turn_may(self):
+        outside = pathlib.Path.home() / f".tako-sandbox-test-{os.getpid()}"
+        self.addCleanup(lambda: outside.unlink(missing_ok=True))
+        self.tako.ask(steps({"call": "shell", "args": {"command": f"echo hi > a.txt && cat a.txt; echo no > '{outside}'"}}, {"say": "跑完了"}))
+        seen = self.answered("跑完了")
+        said = self.agent("tool_reply")[0]["reply"]["content"][0]["text"]
+        self.assertIn("hi", said)
+        self.assertIn("沙箱拦下了写入", said)
+        self.assertFalse(outside.exists(), "nothing written outside the sandbox")
+        self.assertTrue(any(step.startswith("跑了：echo hi") for step in seen["events"][-1].get("steps") or []))
+
+    def test_leaving_the_sandbox_to_delete_asks_the_owner_first(self):
+        victim = self.tako.home / "keep.txt"
+        victim.write_text("留着")
+        self.tako.ask(steps({"call": "shell", "args": {"command": f"rm '{victim}'", "with_escalated_permissions": True, "justification": "清理"}}, {"say": "处理完了"}))
+        card = self.tako.until(lambda s: s["pending"], "the card")["pending"][0]
+        self.assertIn("rm", card["text"])
+        self.tako.call("/decide", {"id": card["id"], "accepted": False})
+        self.answered("处理完了")
+        self.assertTrue(victim.exists(), "a no keeps the file")
+        self.assertIn("没有同意", self.agent("tool_reply")[0]["reply"]["content"][0]["text"])
+
+    def test_an_ordinary_command_outside_the_sandbox_just_runs(self):
+        self.tako.ask(steps({"call": "shell", "args": {"command": "echo 外面", "with_escalated_permissions": True}}, {"say": "好了"}))
+        self.answered("好了")
+        self.assertFalse(self.tako.state().get("pending"))
+        self.assertIn("外面", self.agent("tool_reply")[0]["reply"]["content"][0]["text"])
+
+    def test_a_file_change_elsewhere_is_backed_up_first_and_asks_nobody(self):
+        doc = self.tako.home / "elsewhere/稿子.txt"
+        doc.parent.mkdir()
+        doc.write_text("第一行\n第二行\n")
+        patch = f"*** Begin Patch\n*** Update File: {doc}\n 第一行\n-第二行\n+改过的第二行\n*** End Patch"
+        hidden = base64.b64encode(json.dumps({"input": patch}).encode()).decode()  # a path in the owner's own words would be theirs to change
+        self.tako.ask(steps({"call": "apply_patch", "args_b64": hidden}, {"say": "改好了"}))
+        self.answered("改好了")
+        self.assertEqual(doc.read_text(), "第一行\n改过的第二行\n")
+        backups = list((self.tako.home / "backups").rglob("*稿子*"))
+        self.assertTrue(backups and "第二行" in backups[0].read_text(), "what was there is kept")
+        self.assertFalse(self.tako.state().get("pending"))
+
+    def test_a_file_in_the_turns_folder_is_just_written(self):
+        patch = "*** Begin Patch\n*** Add File: 笔记.md\n+# 笔记\n+第一条\n*** End Patch"
+        self.tako.ask(steps({"call": "apply_patch", "args": {"input": patch}}, {"say": "写好了"}))
+        self.answered("写好了")
+        self.assertIn("A ", self.agent("tool_reply")[0]["reply"]["content"][0]["text"])
+        self.assertEqual(list(self.tako.output.rglob("笔记.md"))[0].read_text(), "# 笔记\n第一条\n")
+
+    def test_stop_stops_it(self):
+        self.tako.ask(steps({"hang": True}))
+        deadline = time.time() + 8
+        while not [row for row in self.agent("request") if row["method"] == "session/prompt" and "hang" in row["params"]["text"]] and time.time() < deadline:
+            time.sleep(0.03)
+        self.tako.call("/stop", {})
+        self.tako.idle()
+        self.assertTrue([row for row in self.agent("request") if row["method"] == "session/cancel"])
+
+    def test_stop_before_it_went_out_sends_nothing(self):
+        self.tako.ask(steps({"hang": True}))
+        self.tako.call("/stop", {})
+        self.tako.idle()
+        time.sleep(0.3)
+        self.assertFalse([row for row in self.agent("request") if row["method"] == "session/prompt" and "hang" in row["params"]["text"]])
+
+    def test_a_login_that_needs_refreshing_says_the_one_thing_to_do(self):
+        self.tako.ask(steps({"refuse": True}))
+        seen = self.tako.until(lambda s: s.get("error"), "the reason")
+        self.assertIn("打开一次 WorkBuddy", seen["error"])
+        step = self.tako.call("/setup")
+        self.assertEqual(step["step"], "office")
+        self.assertIn("WorkBuddy", step["error"])
+
+    def test_its_own_error_reads_like_the_others(self):
+        self.tako.ask(steps({"fail": "Insufficient credits for this request"}))
+        seen = self.tako.until(lambda s: s.get("error"), "the reason")
+        self.assertIn("积分", seen["error"])
+
+    def test_agents_left_behind_by_a_killed_brain_are_ended_on_the_next_start(self):
+        self.tako.ask("你好")
+        self.answered("好的")
+        pids = json.loads((self.tako.home / "office-agents.json").read_text())
+        self.assertTrue(pids)
+        self.tako.process.kill()  # no goodbye: what a crash or a kill -9 leaves
+        self.tako.process.wait(5)
+        deadline = time.time() + 8  # nothing else needs to start: what watched over them ends them
+        while time.time() < deadline and any(subprocess.run(["ps", "-o", "stat=", "-p", str(p)], capture_output=True, text=True).stdout.strip() not in ("", "Z") for p in pids):
+            time.sleep(0.1)
+        self.assertEqual([p for p in pids if subprocess.run(["ps", "-o", "stat=", "-p", str(p)], capture_output=True, text=True).stdout.strip() not in ("", "Z")], [],
+                         "the agents go with the brain")
+        # A new brain on the same home ends them before starting its own.
+        environment = {**os.environ, "TAKO_HOME": str(self.tako.home), "PATH": f"{self.tako.home / 'bin'}{os.pathsep}{os.environ['PATH']}", "FAKE_CODEX_LOG": str(self.tako.log),
+                       "FAKE_CODEX_HOME": str(self.tako.home), "TMPDIR": str(self.tako.home / "tmp")}
+        restarted = subprocess.Popen([sys.executable, "-B", str(SERVER), "--port", "0"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=environment)
+        try:
+            restarted.stdout.readline()
+            deadline = time.time() + 10
+            while time.time() < deadline and any(subprocess.run(["kill", "-0", str(p)], capture_output=True).returncode == 0 for p in pids):
+                time.sleep(0.1)
+            alive = [p for p in pids if subprocess.run(["ps", "-o", "stat=", "-p", str(p)], capture_output=True, text=True).stdout.strip() not in ("", "Z")]
+            self.assertEqual(alive, [], "no agent outlives the brain that started it")
+        finally:
+            restarted.terminate()
+            restarted.wait(5)
+
+    def test_the_agent_going_away_comes_back_on_the_next_sentence(self):
+        self.tako.ask(steps({"die": True}))
+        self.tako.until(lambda s: s.get("error"), "the loss said")
+        self.tako.ask("还在吗")
+        self.answered("好的")
+
+    def test_words_during_a_turn_get_a_turn_of_their_own(self):
+        self.tako.ask(steps({"pause": 1}, {"say": "第一件"}))
+        self.tako.until(lambda s: s["busy"], "working")
+        self.tako.ask("再加一件")
+        self.answered("第一件")
+        self.answered("好的")
+
+    def test_another_window_gets_a_limb_of_its_own_meanwhile(self):
+        self.tako.ask(steps({"hang": True}))
+        deadline = time.time() + 8
+        while not [row for row in self.agent("request") if row["method"] == "session/prompt" and "hang" in row["params"]["text"]] and time.time() < deadline:
+            time.sleep(0.03)
+        self.tako.stick("Safari", "com.apple.Safari", "另一个页面", "2")
+        self.tako.ask(steps({"call": "look_at_window"}, {"say": "另一个窗口答了"}))
+        seen = self.answered("另一个窗口答了")
+        self.assertEqual(seen["others"][0]["state"], "working", "the first one is still going")
+        prompts = [row["params"]["sessionId"] for row in self.agent("request") if row["method"] == "session/prompt" and "@@" in row["params"]["text"]]
+        self.assertEqual(len(set(prompts)), 2, "a session of its own")
+        self.assertEqual([c.get("window") for c in self.tako.commands if c["command"] == "look"], ["2"])
+        self.tako.stick()
+        self.tako.call("/stop", {})
+        self.tako.idle()
+
+    def test_a_picture_the_owner_hands_over_reaches_the_model(self):
+        picture = self.tako.home / "图.png"
+        picture.write_bytes(bytes.fromhex("89504e470d0a1a0a") + b"0" * 32)
+        self.tako.call("/ask", {"text": "看这个", "files": [str(picture)]})
+        self.answered("好的")
+        prompt = [row for row in self.agent("request") if row["method"] == "session/prompt" and "看这个" in row["params"]["text"]][0]
+        self.assertEqual(prompt["params"]["images"], 1)
+
+
+class QoderAsTheBrain(Base):
+    config = {"office": {"agent": "qoder", "cli": "{home}/bin/agent"}}
+
+    def test_a_finished_thread_leaves_no_record_with_the_agent(self):
+        self.tako.ask("你好")
+        self.tako.until(lambda s: "好的" in "".join(self.tako.said(s)), "an answer")
+        deleted = lambda: [row for row in self.tako.codex("request") if row.get("agent") and row["method"] == "session/delete"]
+        news = [row for row in self.tako.codex("request") if row.get("agent") and row["method"] == "session/new"]
+        if len(news) > 1:  # a greeting's throwaway thread was made: it is let go of
+            deadline = time.time() + 8
+            while not deleted() and time.time() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(deleted())
+
+    def test_not_logged_in_says_how(self):
+        (self.tako.home / "agent_logged_out").write_text("")
+        self.tako.call("/ask", {"text": "你好"})
+        seen = self.tako.until(lambda s: s.get("error"), "the reason")
+        self.assertIn("Qoder", seen["error"])
+        self.assertIn("登录", seen["error"])
 
 
 if __name__ == "__main__":

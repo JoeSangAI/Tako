@@ -768,13 +768,13 @@ class FirstRun(unittest.TestCase):
         self.assertFalse(self.first_run._can_serve(str(self.home / ".local/bin/codex")))
         self.assertTrue(self.first_run._can_serve(works))
 
-    def test_only_an_old_one_asks_to_update_and_none_asks_to_install(self):
+    def test_only_an_old_one_asks_to_update_and_none_asks_which_way_in_first(self):
         real = self.first_run._installed
         setup = self.first_run.Setup(None)
         # This Mac may have its own Codex in the fixed places: only the one made here counts.
         self.first_run._installed = lambda: [path for path in real() if path.startswith(str(self.home))]
         self.addCleanup(setattr, self.first_run, "_installed", real)
-        self.assertEqual(setup.state()["step"], "install")
+        self.assertEqual(setup.state()["step"], "login", "no Codex: the owner picks a way in first, and only ChatGPT or a key installs it")
         self.codex(".local/bin/codex", serves=False)
         self.assertEqual(setup.state()["step"], "update")
 
@@ -845,6 +845,80 @@ class WhatTheGooActsOut(unittest.TestCase):
         self.assertTrue(set(turns.TOOL_ACTS.values()) | set(turns.ACTS.values()) <= words)
         page = (BRAIN / "side.html").read_text()
         self.assertIn("native?.postMessage({ act })", page)
+
+
+class AnOfficeAgentsOwnTools(unittest.TestCase):
+    """With WorkBuddy or Qoder as the brain, only Tako's tools run: the agent's own are refused, and Codex's two are Tako's, sandboxed."""
+
+    def setUp(self):
+        import codex_tools, office
+        self.acp, self.tools, self.office = office, codex_tools, office
+
+    def ask(self, tool, meta_key="codebuddy.ai/toolName"):
+        options = [{"optionId": "a", "kind": "allow_always"}, {"optionId": "o", "kind": "allow_once"}, {"optionId": "r", "kind": "reject_once"}]
+        runtime = self.acp.AcpRuntime({"id": "workbuddy", "name": "WorkBuddy"})
+        return runtime.permission({"toolCall": {"title": tool, "_meta": {meta_key: tool}}, "options": options})["outcome"]["optionId"]
+
+    def test_its_own_tools_are_refused_whatever_they_are_called(self):
+        for tool in ("Bash", "Write", "WeChatReply", "WeComReply", "ImageGen", "SendMessage", "SomethingNew"):
+            self.assertEqual(self.ask(tool), "r", tool)
+        self.assertEqual(self.ask("mcp__tako__fill_input"), "o")
+        self.assertEqual(self.ask("WebSearch"), "o")
+
+    def test_workbuddy_is_started_with_every_tool_of_its_own_refused(self):
+        argv, env, _ = self.office.command({"id": "workbuddy"}, tools=True)
+        refused = argv[argv.index("--disallowedTools") + 1:]
+        for tool in ("Bash", "Write", "Edit", "WeChatReply", "WeComReply", "PowerShell", "ImageGen", "VideoGen", "SendMessage", "ToolSearch"):
+            self.assertIn(tool, refused)
+        self.assertNotIn("WebSearch", refused)
+        argv, _, _ = self.office.command({"id": "workbuddy"}, tools=False)
+        self.assertIn("WebSearch", argv, "a throwaway thread keeps nothing at all")
+        self.assertEqual(env["CODEBUDDY_DEFER_TOOL_LOADING"], "false")
+        self.assertIn("--setting-sources", argv)
+
+    def test_qoder_keeps_only_the_search_and_a_throwaway_thread_nothing(self):
+        argv, _, _ = self.office.command({"id": "qoder"}, tools=True)
+        self.assertEqual(argv[argv.index("--tools") + 1:], ["WebSearch"])
+        argv, _, _ = self.office.command({"id": "qoder"}, tools=False)
+        self.assertEqual(argv[argv.index("--tools") + 1:], [""])
+
+    def test_the_sandbox_writes_only_where_it_is_told(self):
+        inside = tempfile.mkdtemp(prefix="tako-inside-")
+        outside = pathlib.Path.home() / f".tako-guard-{os.getpid()}"
+        self.addCleanup(lambda: outside.unlink(missing_ok=True))
+        profile = self.tools.profile([os.path.realpath(inside)])
+        done = subprocess.run(["/usr/bin/sandbox-exec", "-p", profile, "/bin/sh", "-c", f"echo a > '{inside}/a'; echo b > '{outside}'"], capture_output=True, text=True)
+        self.assertTrue(pathlib.Path(inside, "a").exists())
+        self.assertFalse(outside.exists())
+
+    def test_a_patch_that_cannot_go_in_changes_nothing(self):
+        folder = tempfile.mkdtemp(prefix="tako-patch-")
+        first, second = pathlib.Path(folder, "1.txt"), pathlib.Path(folder, "2.txt")
+        first.write_text("a\nb\n")
+        second.write_text("x\ny\n")
+        patch = "*** Begin Patch\n*** Update File: 1.txt\n a\n-b\n+B\n*** Update File: 2.txt\n-not there\n+z\n*** End Patch"
+
+        class Runtime:
+            owner, emitted = "Alex", []
+            def turn_context(self, thread): return {"cwd": folder}
+            def emit(self, *a, **k): self.emitted.append(a)
+        import asyncio
+        said, ok = asyncio.run(self.tools.apply_patch(Runtime(), "t", "u", {"input": patch}))
+        self.assertFalse(ok)
+        self.assertEqual(first.read_text(), "a\nb\n", "the first file is untouched too")
+        patch = "*** Begin Patch\n*** Update File: 1.txt\n@@ a\n a\n-b\n+B\n*** Add File: 新.txt\n+新的\n*** Delete File: 2.txt\n*** End Patch"
+        said, ok = asyncio.run(self.tools.apply_patch(Runtime(), "t", "u", {"input": patch}))
+        self.assertTrue(ok, said)
+        self.assertEqual(first.read_text(), "a\nB\n")
+        self.assertEqual(pathlib.Path(folder, "新.txt").read_text(), "新的\n")
+        self.assertFalse(second.exists())
+
+    def test_what_the_agent_says_went_wrong_is_sorted_like_codex_errors(self):
+        self.assertEqual(self.acp.failure_info("Authentication required: Authentication is required."), "unauthorized")
+        self.assertEqual(self.acp.failure_info("401 Unauthorized"), "unauthorized")
+        self.assertEqual(self.acp.failure_info("积分不足"), "usageLimitExceeded")
+        self.assertEqual(self.acp.failure_info("fetch failed: ECONNRESET"), "httpConnectionFailed")
+        self.assertEqual(self.acp.failure_info("something odd"), "other")
 
 
 if __name__ == "__main__":

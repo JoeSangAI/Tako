@@ -179,6 +179,9 @@ def serve(companion, token, port, agent_token=None):
             if url.path == "/setup/login":
                 companion.setup.use_login()
                 return self.reply(companion.setup.state())
+            if url.path == "/setup/office":
+                companion.setup.use_office(str(body.get("agent") or ""))
+                return self.reply(companion.setup.state())
             if url.path == "/current" and isinstance(body.get("titles"), list):
                 if not HAS_WECHAT:
                     return self.reply({"ok": True})
