@@ -44,6 +44,7 @@ class Setup:
         self.office_refused = False  # The office agent turned a turn away for its login: only opening the app gets past that.
         self.office_seen = (0.0, None, "")  # when its login was last read from disk, for which agent, and what stands in the way
         self.failed_for = ""  # which way of logging in `failed` is about: an office agent's id, or "chatgpt"
+        self.choosing = False  # The owner opened 模型设置 from the menu: the first card again, over a model that already works.
 
     def offices(self):
         return [{"id": key, "name": office.AGENTS[key]["name"]} for key in office.installed()]
@@ -59,6 +60,9 @@ class Setup:
     def state(self):
         if self.working:
             return {"step": self.working, "busy": True, "error": "", "link": self.link}
+        if self.choosing:
+            return {"step": "login", "busy": False, "choosing": True, "current": self.current_name(), "error": self.failed, "error_for": self.failed_for,
+                    "services": provider.services(), "models": self.models, "offices": self.offices()}
         agent = office.current()
         if agent:
             # No Codex at all: the office agent is the brain, on the login its own app keeps.
@@ -86,6 +90,24 @@ class Setup:
             return {"step": "config", "busy": False, "error": self.broken}
         # The first card: an account (an office agent on this Mac, or ChatGPT, which Codex is installed for when it is picked) or a key.
         return {"step": "login", "busy": False, "error": self.failed, "error_for": self.failed_for, "services": provider.services(), "models": self.models, "offices": self.offices()}
+
+    def current_name(self):
+        """What the turns run on now, in the words of the first card."""
+        agent = office.current()
+        if agent:
+            return agent["name"]
+        own_key = provider.current()
+        if own_key:
+            return provider.PRESETS.get(own_key.get("preset"), {}).get("name") or own_key.get("name") or "中转站"
+        return "ChatGPT" if find_codex() and self.logged_in else ""
+
+    def choose(self):
+        """Only from 模型设置 in the menu: the first card comes back, and what works now keeps working until something else is picked."""
+        if not self.working:
+            self.choosing, self.failed, self.failed_for, self.models = True, "", "", []
+
+    def close(self):
+        self.choosing, self.failed, self.failed_for, self.models = False, "", "", []
 
     def _logged_in(self):
         # Asked at most every few seconds; a slow answer is not evidence of a missing login, and neither is no answer yet.
@@ -121,7 +143,7 @@ class Setup:
             return False
         office.save(agent)
         provider.forget()
-        self.failed, self.office_refused, self.key_refused = "", False, False
+        self.failed, self.office_refused, self.key_refused, self.choosing = "", False, False, False
         self.companion.submit(self.companion.start_over())
         return True
 
@@ -139,7 +161,7 @@ class Setup:
             return False
         provider.save(service, key, base_url, model)
         office.forget()
-        self.failed, self.key_refused, self.models = "", False, []
+        self.failed, self.key_refused, self.models, self.choosing = "", False, [], False
         with self.starting:
             if not find_codex() and not self.working:  # The key is kept; Codex goes in, and the brain starts once it is there.
                 self.working = "install"
@@ -152,12 +174,21 @@ class Setup:
         """Back to a ChatGPT login: the key Tako kept is gone from this Mac, and so is the choice of an office agent."""
         provider.forget()
         office.forget()
-        self.failed, self.key_refused, self.office_refused, self.logged_in, self.checked = "", False, False, None, 0.0
+        self.failed, self.key_refused, self.office_refused, self.logged_in, self.checked, self.choosing = "", False, False, None, 0.0, False
         self.companion.submit(self.companion.start_over())
 
     def next_step(self):
         """Only ever runs because the owner pressed the button."""
         with self.starting:
+            if self.choosing and not self.working:
+                # ChatGPT picked from 模型设置: a key or an office agent kept from before would win over it, so they go first.
+                # A Codex already logged in is used as it is; otherwise the browser login, as on the first day.
+                provider.forget()
+                office.forget()
+                self.choosing, self.failed, self.failed_for, self.key_refused, self.office_refused, self.checked = False, "", "", False, False, 0.0
+                if find_codex() and self._logged_in():
+                    self.companion.submit(self.companion.start_over())
+                    return
             step = self.state()["step"]
             if step == "office":
                 # "再试一次": the login is read again, and a good one starts the agent afresh.

@@ -179,6 +179,12 @@ def serve(companion, token, port, agent_token=None):
             if url.path == "/setup/login":
                 companion.setup.use_login()
                 return self.reply(companion.setup.state())
+            if url.path == "/setup/choose":
+                companion.setup.choose()
+                return self.reply(companion.setup.state())
+            if url.path == "/setup/close":
+                companion.setup.close()
+                return self.reply(companion.setup.state())
             if url.path == "/setup/office":
                 companion.setup.use_office(str(body.get("agent") or ""))
                 return self.reply(companion.setup.state())

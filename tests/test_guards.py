@@ -819,8 +819,9 @@ class FirstRun(unittest.TestCase):
 
     def test_an_update_reaches_someone_stuck_on_a_step(self):
         page = (BRAIN / "side.html").read_text()
-        self.assertIn("const updateFirst = update && !(pending && setup.busy);", page)
-        self.assertIn("if (permission && !updateFirst) {", page)
+        # Only a login open in the browser, or 模型设置 the owner opened from the menu, goes before an update.
+        self.assertIn("const updateFirst = update && !(pending && (setup.busy || setup.choosing));", page)
+        self.assertIn("if (permission && !updateFirst && !(pending && setup.choosing)) {", page)
         self.assertIn("if (pending && !updateFirst) {", page)
 
     def test_the_panel_shows_one_next_step_and_opens_only_two_settings_pages(self):

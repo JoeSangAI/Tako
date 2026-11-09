@@ -659,10 +659,17 @@ function choice(name, line, go, failed) {
 }
 function showLoginChoices(box) {
   const offices = setup.offices || [];
-  box.append(noticeLine('title', SETUP_WORDS.login[0]));
+  box.append(noticeLine('title', setup.choosing ? '模型设置' : SETUP_WORDS.login[0]));
+  if (setup.choosing) box.append(noticeLine('body', setup.current ? `现在用的是 ${setup.current}。选一个换上，不选就照旧。` : '选一个接上。'));
   if (!accountForm) {
     box.append(choice('用 AI 账号登录', offices.length ? `这台 Mac 上有 ${offices.map((o) => o.name).join('、')}；也可以用 ChatGPT` : 'ChatGPT 会员', () => { accountForm = true; showNotice(); }),
       choice('用 API key', 'DeepSeek、通义千问、Kimi、智谱，或中转站', () => { keyForm = true; showNotice(); }));
+    if (setup.choosing) {
+      const actions = document.createElement('div');
+      actions.className = 'card-actions';
+      actions.append(button('关闭', closeModelSettings));
+      box.append(actions);
+    }
     return;
   }
   const rows = [...offices.map((o) => ({ id: o.id, name: o.name, line: '用它在这台 Mac 上的登录和积分', go: () => useOffice(o.id) })),
@@ -676,6 +683,16 @@ function showLoginChoices(box) {
   actions.className = 'card-actions';
   actions.append(button('← 返回', () => { accountForm = false; showNotice(); }));
   box.append(actions);
+}
+// 模型设置 in the menu: the same first card, over a model that already works. Closing it changes nothing.
+window.chooseModel = async () => {
+  accountForm = false; keyForm = false;
+  try { setSetup(await api('/setup/choose', {})); } catch {}
+  window.setOpen(true);
+};
+async function closeModelSettings() {
+  accountForm = false; keyForm = false;
+  try { setSetup(await api('/setup/close', {})); } catch {}
 }
 function noticeLine(cls, text) { const el = document.createElement('div'); el.className = cls; el.textContent = text; return el; }
 function showNotice() {
@@ -694,8 +711,9 @@ function showNotice() {
   const actions = document.createElement('div');
   actions.className = 'card-actions';
   // Stuck on a step is just when a newer Tako may be what gets them past it, and the menu's check answers here too. Only a login open in the browser goes on first; 稍后 brings the step back.
-  const updateFirst = update && !(pending && setup.busy);
-  if (permission && !updateFirst) {
+  // 模型设置 was asked for by name: it comes before an update or a permission, which come back once it is closed.
+  const updateFirst = update && !(pending && (setup.busy || setup.choosing));
+  if (permission && !updateFirst && !(pending && setup.choosing)) {
     const words = PERMISSION_WORDS[permission];
     let title = words[0], body = words[1];
     const why = permission === 'screen' ? permissionState.screen : '';

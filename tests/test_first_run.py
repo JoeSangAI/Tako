@@ -452,6 +452,57 @@ class CodexOnlyWhenNeeded(unittest.TestCase):
         return LoginStep.until(self, wanted, what)
 
 
+class ModelSettings(unittest.TestCase):
+    """模型设置 in the menu: the first card again over a model that already works, so the owner can log in or bring a key whenever they like."""
+
+    def setUp(self):
+        LoginStep.setUp(self)
+        provider.check, real = (lambda *a, **k: ("", [])), provider.check
+        self.addCleanup(setattr, provider, "check", real)
+
+    def until(self, wanted, what):
+        return LoginStep.until(self, wanted, what)
+
+    def test_a_codex_already_logged_in_can_still_open_the_first_card_and_close_it_unchanged(self):
+        (self.bin / "logged_in").write_text("")
+        self.assertEqual(self.setup.state()["step"], "ready")
+        self.setup.choose()
+        seen = self.setup.state()
+        self.assertEqual((seen["step"], seen["choosing"], seen["current"]), ("login", True, "ChatGPT"))
+        self.assertTrue(seen["services"], "the key choices are on the card")
+        self.setup.close()
+        self.assertEqual(self.setup.state()["step"], "ready")
+        self.assertEqual(self.companion.submitted, [], "closing it restarts nothing")
+
+    def test_a_key_picked_there_replaces_the_chatgpt_login(self):
+        (self.bin / "logged_in").write_text("")
+        self.setup.choose()
+        self.assertTrue(self.setup.use_key("deepseek", "sk-good"))
+        seen = self.setup.state()
+        self.assertEqual((seen["step"], seen.get("service"), seen.get("choosing")), ("ready", "deepseek", None))
+
+    def test_chatgpt_picked_there_forgets_the_key_and_uses_the_login_codex_has(self):
+        (self.bin / "logged_in").write_text("")
+        self.setup.use_key("deepseek", "sk-good")
+        self.setup.choose()
+        self.assertEqual(self.setup.state()["current"], "DeepSeek")
+        self.companion.submitted.clear()
+        self.setup.next_step()
+        self.assertFalse(provider.FILE.exists())
+        seen = self.setup.state()
+        self.assertEqual((seen["step"], seen.get("service")), ("ready", None))
+        self.assertEqual(self.companion.submitted, ["start_over"])
+
+    def test_chatgpt_picked_there_without_a_login_opens_the_browser(self):
+        self.setup.use_key("deepseek", "sk-good")
+        self.setup.choose()
+        self.setup.next_step()
+        self.assertFalse(provider.FILE.exists())
+        self.until(lambda s: s.get("link"), "the login page")
+        (self.bin / "authorized").write_text("")
+        self.assertEqual(self.until(lambda s: not s["busy"], "the end")["step"], "ready")
+
+
 class OnTheRealServer(unittest.TestCase):
     """The panel's doors, against the whole Python side."""
 

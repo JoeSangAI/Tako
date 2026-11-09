@@ -88,6 +88,11 @@ final class Controller: NSObject, NSApplicationDelegate {
     }
 
     @objc func checkForUpdate() { updater.showOrCheck() }
+    /// 模型设置…: the panel's first card again (account or key), wherever the goo is.
+    @objc func chooseModel() {
+        if !sideOpen { summon() }
+        web.evaluateJavaScript("chooseModel()")
+    }
     var statistics: Bool?   // nil where there is nothing to switch: a development build
     @objc func toggleStatistics() {
         let on = !(statistics ?? true)
@@ -349,6 +354,10 @@ final class Controller: NSObject, NSApplicationDelegate {
         menu.addItem(shortcut)
         menu.addItem(outfitMenu())
         menu.addItem(.separator())
+        let model = NSMenuItem(title: "模型设置…", action: #selector(chooseModel), keyEquivalent: "")
+        model.target = self
+        model.toolTip = "用 AI 账号登录，或者换成 API key。"
+        menu.addItem(model)
         if let statistics {
             let item = NSMenuItem(title: "帮助作者优化", action: #selector(toggleStatistics), keyEquivalent: "")
             item.target = self

@@ -166,6 +166,7 @@ curl -fsSL https://raw.githubusercontent.com/JoeSangAI/Tako/main/install.sh | ba
 2. **接上一个模型。** 面板先问：用 AI 账号登录，还是用 API key。
    - **账号：** 列出这台 Mac 上的 WorkBuddy、Qoder、千问办公，最后是 ChatGPT。点 WorkBuddy 这类，什么都不用装，用你在那里的登录和积分，规矩和别处一样。选 ChatGPT，Tako 会先自己装上 OpenAI 开源、免费的 [Codex](https://github.com/openai/codex)。
    - **API key：** 选 DeepSeek、通义千问、Kimi、智谱，或“其他 / 中转站”（要支持 OpenAI 的 Responses 接口），粘贴 key，按那一家的价格计费。
+   - 以后想登录或换一家，右键小章鱼 →“模型设置…”。
 3. **到你想用的窗口按 ⌃⌥T，** 或者把小章鱼拖到那个窗口上松手。
 
 > 为什么用终端安装：Tako 还没有做 Apple 公证，直接下载的 app 会被系统拦下。安装脚本会校验文件哈希和签名，你也可以先[读一遍脚本](install.sh)。
