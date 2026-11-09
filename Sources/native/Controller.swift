@@ -63,6 +63,7 @@ final class Controller: NSObject, NSApplicationDelegate {
     var expectedX: CGFloat = 0, expectedWidth: CGFloat = 0 // where we last put it; anything else means the owner moved it
     var ownMoveAt: CFTimeInterval = 0, resettle = false
     var fullHome: CGRect?      // the window's frame behind native full screen, while the panel has brought it out
+    var leavingFull = false    // Tako itself is taking the window out of full screen: the move that follows is ours, not the owner's
     var glide: (from: CGFloat, to: CGFloat, step: Int)?
     var last: CFTimeInterval = 0
     var spill: CGFloat = 0

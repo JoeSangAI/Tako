@@ -66,6 +66,8 @@ extension Controller {
     func shareScreen() {
         guard sideOpen, let frame = target?.frame, let visible = visibleFrame(of: frame),
               frame.width + min(wanted, sidePanelWidth) > visible.width + 1 else { return }
+        // Tako is taking it out of full screen itself; on a slow display AXFullScreen still reads true for a while (issue #1).
+        guard !leavingFull else { return }
         // The owner has just asked for native full screen: don't pull it back out. The panel steps aside until they call it.
         if let window = axWindow(), isFullScreen(window) { closeSide(); return }
         makeRoom(animated: false)
@@ -96,6 +98,7 @@ extension Controller {
     /// brings it out to fill the desktop with the panel, and closing the panel sends it back in.
     func leaveFullScreen(_ window: AXUIElement) {
         log("leaving full screen for the panel")
+        leavingFull = true
         AXUIElementSetAttributeValue(window, "AXFullScreen" as CFString, kCFBooleanFalse)
         settleOut(of: window, last: nil, left: 40)
     }
@@ -108,11 +111,18 @@ extension Controller {
                 self.settleOut(of: window, last: now, left: left - 1)
                 return
             }
+            self.leavingFull = false
             guard self.sideOpen else {
                 AXUIElementSetAttributeValue(window, "AXFullScreen" as CFString, kCFBooleanTrue)
                 return
             }
-            guard let now, !self.isFullScreen(window), let primary = NSScreen.screens.first?.frame, let visible = self.visibleFrame(of: now) else { return }
+            guard let now, !self.isFullScreen(window), let primary = NSScreen.screens.first?.frame, let visible = self.visibleFrame(of: now) else {
+                // It never came out: the panel stays over it rather than vanishing with nothing on screen.
+                self.log("full screen didn't let go; the panel stays over it")
+                self.placeSide()
+                self.side.makeKeyAndOrderFront(nil)
+                return
+            }
             self.fullHome = now
             self.homeX = visible.minX
             self.homeWidth = visible.width

@@ -110,6 +110,11 @@ NOT_MOVING = {"error", "warning", "thread/status/changed", "thread/settings/upda
 HEAVY_RETRIES = 2  # Failed uploads of a thread full of screenshots before it is given up on. Each takes over a minute to fail.
 
 
+def too_old(exc):
+    """OpenAI turns a turn away when the model Codex is set to needs a newer Codex than this one."""
+    return isinstance(exc, TurnFailed) and "requires a newer version of codex" in exc.message.lower()
+
+
 def plain_failure(exc):
     """What the owner reads in the panel when a turn fails. It may have done part of the work, so nothing is retried for them."""
     code = str(getattr(exc, "code", "") or "")
@@ -135,6 +140,8 @@ def plain_failure(exc):
         return "这段对话太长了，我换了一条新的思路，这个窗口最近说的还记得。再说一次吧。"
     if code.startswith("rpc_") or code == "thread_not_found":
         return "模型那边没有回应，这句可能没说到。再说一次试试。"
+    if too_old(exc):
+        return "这台电脑上的 Codex 版本太旧，用不了现在设的模型。点面板上的“更新 Codex”，更新好再说一次。"
     detail = getattr(exc, "message", None) if isinstance(exc, TurnFailed) else str(exc)
     return f"Tako 暂时没能回答：{detail[:120]}" if detail else "Tako 暂时没能回答，再说一次试试。"
 
@@ -364,6 +371,8 @@ class Turns:
         code = getattr(exc, "code", "")
         if code == "unauthorized":
             self.setup.logged_out()
+        elif too_old(exc):
+            self.setup.too_old()
         elif code in ("contextWindowExceeded", "threadTooHeavy") and job.brain:
             # This thread can't take another word, or can't get them there. A new one starts from what was said in this window.
             self._leave_thread()

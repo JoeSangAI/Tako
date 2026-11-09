@@ -165,6 +165,10 @@ def handle(message):
 def main():
     if sys.argv[1:3] == ["login", "status"]:
         sys.exit(1 if os.path.exists(os.path.join(HOME, "logged_out")) else 0)
+    if sys.argv[1:2] == ["--version"]:
+        # Newer than any real one, so a real Codex on this Mac is never picked over the stand-in.
+        print("codex-cli 999.0.0")
+        sys.exit(0)
     if sys.argv[1:3] == ["app-server", "--help"]:
         print("--listen <URL>")
         sys.exit(0)

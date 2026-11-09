@@ -45,6 +45,7 @@ class Setup:
         self.office_seen = (0.0, None, "")  # when its login was last read from disk, for which agent, and what stands in the way
         self.failed_for = ""  # which way of logging in `failed` is about: an office agent's id, or "chatgpt"
         self.choosing = False  # The owner opened 模型设置 from the menu: the first card again, over a model that already works.
+        self.outdated = False  # A turn was refused because this Codex is older than the model it is set to needs: only an update gets past that.
 
     def offices(self):
         return [{"id": key, "name": office.AGENTS[key]["name"]} for key in office.installed()]
@@ -72,7 +73,7 @@ class Setup:
                         "office": agent["id"], "name": agent["name"], "offices": self.offices()}
             return {"step": "ready", "busy": False, "error": "", "service": agent["id"]}
         codex = find_codex()
-        if not codex and _installed():
+        if (not codex and _installed()) or (codex and self.outdated):
             return {"step": "update", "busy": False, "error": self.failed}
         own_key = provider.current()
         if own_key and not codex:
@@ -124,6 +125,10 @@ class Setup:
         except OSError:
             self.logged_in = False
         return self.logged_in
+
+    def too_old(self):
+        """The model said this Codex is too old for it: the update card comes up, and the update clears it."""
+        self.outdated = True
 
     def logged_out(self):
         """The model said so: ask again, so the panel can show the step."""
@@ -278,6 +283,10 @@ class Setup:
                     self.failed_for = "chatgpt"
             else:
                 changed = self._install()
+                if changed:
+                    self.outdated = False
+                    _serves.clear()
+                    _versions.clear()
         except (OSError, subprocess.SubprocessError):
             self.failed = "这一步没有走通，检查网络后再试一次。"
         finally:
@@ -362,6 +371,27 @@ def _can_serve(path):
     return _serves[key]
 
 
+_versions = {}
+
+
+def _version(path):
+    """`codex --version` as numbers, asked once per file; () when it won't say."""
+    try:
+        key = (path, os.stat(path).st_mtime)
+    except OSError:
+        return ()
+    if key not in _versions:
+        try:
+            done = subprocess.run([path, "--version"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10, env=_with_its_folder(path))
+            found = re.search(r"(\d+(?:\.\d+)+)", done.stdout + done.stderr)
+            _versions[key] = tuple(int(n) for n in found[1].split(".")) if found else ()
+        except (OSError, subprocess.TimeoutExpired):
+            _versions[key] = ()
+    return _versions[key]
+
+
 def find_codex():
-    """The first Codex that can run Tako. Found fresh each time: it may have just been installed."""
-    return next((path for path in _installed() if _can_serve(path)), None)
+    """The newest Codex that can run Tako, the first of them on a tie. An old one on the PATH must not hide the one the ChatGPT app
+    or an update just put in: the model Codex is set to may need the newer one. Found fresh each time: it may have just been installed."""
+    usable = [path for path in _installed() if _can_serve(path)]
+    return max(usable, key=_version) if usable else None

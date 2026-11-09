@@ -26,6 +26,7 @@ CODEX = r'''#!/bin/sh
 here="$(dirname "$0")"
 case "$1 $2" in
   "app-server --help") echo "--listen <URL>"; exit 0 ;;
+  "--version ") cat "$here/version" 2>/dev/null || echo "codex-cli 0.163.0"; exit 0 ;;
   "login status")
     [ -f "$here/settings_error" ] && { cat "$here/settings_error" >&2; exit 1; }
     [ -f "$here/logged_in" ] && { echo "Logged in using ChatGPT"; exit 0; }
@@ -408,6 +409,47 @@ class OfficeLogin(unittest.TestCase):
         self.addCleanup(setattr, provider, "check", real)
         self.setup.use_key("deepseek", "sk-good")
         self.assertIsNone(office.current())
+
+
+class TooOldForTheModel(unittest.TestCase):
+    """The model Codex is set to needs a newer Codex (issue #1): the newest one on this Mac is used, and the update card brings one in."""
+
+    def setUp(self):
+        LoginStep.setUp(self)
+        (self.bin / "logged_in").write_text("")
+        first_run._versions.clear()
+
+    def another(self, version):
+        folder = self.home / f"other-{version}"
+        folder.mkdir()
+        other = folder / "codex"
+        shutil.copy(self.codex, other)
+        (folder / "version").write_text(f"codex-cli {version}\n")
+        return other
+
+    def test_the_newest_codex_wins_over_the_first_one_on_the_path(self):
+        newer = self.another("0.200.1")
+        older = self.another("0.9.0")
+        first_run._installed = lambda: [str(older), str(self.codex), str(newer)]
+        self.assertEqual(first_run.find_codex(), str(newer))
+
+    def test_one_that_wont_say_its_version_is_still_used(self):
+        quiet = self.another("none")
+        first_run._installed = lambda: [str(quiet)]
+        self.assertEqual(first_run.find_codex(), str(quiet))
+
+    def test_a_refused_model_brings_the_update_card_and_the_update_clears_it(self):
+        self.assertEqual(self.setup.state()["step"], "ready")
+        self.setup.too_old()
+        self.assertEqual(self.setup.state()["step"], "update")
+        newer = self.another("0.300.0")
+        self.setup.INSTALL = "true"
+        first_run._installed = lambda: [str(self.codex), str(newer)]
+        self.setup.next_step()
+        self.assertEqual(LoginStep.until(self, lambda s: not s["busy"], "the update done")["step"], "ready")
+        self.assertEqual(first_run.find_codex(), str(newer))
+        LoginStep.until(self, lambda s: self.companion.submitted, "the brain started again")
+        self.assertEqual(self.companion.submitted, ["start_over"])
 
 
 class CodexOnlyWhenNeeded(unittest.TestCase):

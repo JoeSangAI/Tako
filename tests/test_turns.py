@@ -360,6 +360,14 @@ class WhenTheModelFails(Base):
         error = self.tako.until(lambda s: s["error"], "an error")["error"]
         self.assertNotIn("None", error)
 
+    def test_a_codex_too_old_for_the_model_says_so_and_offers_the_update(self):
+        # Issue #1: the raw JSON, cut off mid-sentence, was all the owner saw.
+        error = self.failing("other", "{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'gpt-6-astra' model "
+                                      "requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.\"}}")
+        self.assertIn("更新 Codex", error)
+        self.assertNotIn("{", error)
+        self.tako.until(lambda s: self.tako.call("/setup")["step"] == "update", "the update card")
+
     def test_logging_out_brings_the_login_step_back(self):
         self.assertEqual(self.tako.call("/setup")["step"], "ready")
         (self.tako.home / "logged_out").write_text("")

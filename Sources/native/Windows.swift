@@ -175,6 +175,8 @@ extension Controller {
         placeSide()
         if goo.mode != .free && goo.mode != .grabbed {
             gooPanel.orderFront(nil)
+            // The panel left with the window (out of full screen, another Space): it comes back with it, still open.
+            if sideOpen { side.orderFront(nil) }
             reportStuck(title: info[kCGWindowName as String] as? String ?? "")
             sampleSkin()
             enchant.attach(contact: nil)
