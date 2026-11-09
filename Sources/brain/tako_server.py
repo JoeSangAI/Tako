@@ -17,6 +17,7 @@ import os
 import platform
 import queue
 import secrets
+import signal
 import shutil
 import sys
 import threading
@@ -180,13 +181,24 @@ async def main():
     companion = Companion(None)
     companion.loop = asyncio.get_running_loop()
     if args.with_app:
-        def leave_with_app():
-            sys.stdin.buffer.read()
+        leaving = threading.Lock()
+
+        def leave(*_):
+            """The app quitting (SIGTERM) or gone (stdin closed): whichever comes first, once."""
+            if not leaving.acquire(blocking=False):
+                return
             companion.setup.cancel()
+            with contextlib.suppress(Exception):  # A day of trying Tako out, sent as it quits if nothing went out today. Never holds the quit up for long.
+                companion.feedback.send_due(timeout=3)
             with contextlib.suppress(Exception):  # An office agent keeps a record of every session, and its process doesn't follow ours out: neither outlives the app.
                 end_agents()
                 office.clear_records(office.current())
             os._exit(0)
+
+        def leave_with_app():
+            sys.stdin.buffer.read()
+            leave()
+        signal.signal(signal.SIGTERM, leave)
         threading.Thread(target=leave_with_app, daemon=True).start()
     # Pasted images and whatever else was handed over last time do not outlive the app.
     shutil.rmtree(INBOX, ignore_errors=True)

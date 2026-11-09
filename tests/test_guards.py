@@ -304,6 +304,32 @@ class FeedbackLeavesOnlyFixedShapes(unittest.TestCase):
         self.clock[0] += fb.DAY
         self.assertTrue(self.tako.stats_due())
 
+    def test_numbers_wait_for_something_to_say_then_go_once_a_day(self):
+        self.tako.send = lambda packet, timeout=15: self.sent.append(packet)
+        # Starting is not the moment: the loop waits before it ever looks, and a job ending or quitting sends what is due.
+        body = TURNS[TURNS.index("async def feedback_forever"):TURNS.index("async def _reader")]
+        self.assertLess(body.index("asyncio.sleep(3600)"), body.index("send_due"))
+        self.assertIn("self._later(asyncio.to_thread(self.feedback.send_due))", TURNS)
+        self.assertIn("companion.feedback.send_due(timeout=3)", MAIN[MAIN.index("def leave(*_)"):MAIN.index("os._exit(0)")])
+        self.assertIn("signal.signal(signal.SIGTERM, leave)", MAIN)
+        self.tako.count("launch")
+        self.tako.count("setup.saw.login")
+        self.assertTrue(self.tako.send_due())
+        self.assertTrue(receiver.valid(self.sent[-1]))
+        self.tako.count("turn", 3.0)
+        self.assertFalse(self.tako.send_due())
+        self.clock[0] += fb.DAY
+        self.assertTrue(self.tako.send_due())
+        self.assertEqual(len(self.sent), 2)
+
+    def test_offline_keeps_the_numbers_for_next_time(self):
+        def offline(packet, timeout=15):
+            raise OSError("no network")
+        self.tako.send = offline
+        self.tako.count("setup.failed.install")
+        self.assertFalse(self.tako.send_due())
+        self.assertEqual(self.tako.state["counts"], {"setup.failed.install": 1})
+
     def test_an_error_keeps_its_type_and_place_not_its_message(self):
         try:
             raise ValueError("王总的合同 /Users/" "alex/报价.xlsx 打不开")

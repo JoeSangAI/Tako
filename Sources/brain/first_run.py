@@ -45,6 +45,7 @@ class Setup:
         self.office_seen = (0.0, None, "")  # when its login was last read from disk, for which agent, and what stands in the way
         self.failed_for = ""  # which way of logging in `failed` is about: an office agent's id, or "chatgpt"
         self.choosing = False  # The owner opened 模型设置 from the menu: the first card again, over a model that already works.
+        self.seen = set()  # The steps shown since Tako started, each counted once (`_count`).
         self.outdated = False  # A turn was refused because this Codex is older than the model it is set to needs: only an update gets past that.
 
     def offices(self):
@@ -58,7 +59,21 @@ class Setup:
             self.office_seen = (time.time(), agent["id"], problem)
         return problem
 
+    def _count(self, name):
+        """Fixed words only (`setup.saw.<step>`, `setup.failed.<what>`, `setup.ok.<way>`): where a new install gets stuck, never what was typed or said."""
+        feedback = getattr(self.companion, "feedback", None)
+        if feedback:
+            feedback.count(f"setup.{name}")
+
     def state(self):
+        seen = self._state()
+        step = "settings" if seen.get("choosing") else seen["step"]  # 模型设置 from the menu is not a new install stuck at login
+        if not seen["busy"] and step not in self.seen:
+            self.seen.add(step)
+            self._count(f"saw.{step}")
+        return seen
+
+    def _state(self):
         if self.working:
             return {"step": self.working, "busy": True, "error": "", "link": self.link}
         if self.choosing:
@@ -145,8 +160,10 @@ class Setup:
         problem = self.office_problem(found, fresh=True)
         if problem:
             self.failed, self.failed_for = problem, agent
+            self._count("failed.office")
             return False
         office.save(agent)
+        self._count("ok.office")
         provider.forget()
         self.failed, self.office_refused, self.key_refused, self.choosing = "", False, False, False
         self.companion.submit(self.companion.start_over())
@@ -163,8 +180,10 @@ class Setup:
         problem, self.models = provider.check(service, key, base_url, model)
         if problem:
             self.failed = problem
+            self._count("failed.key")
             return False
         provider.save(service, key, base_url, model)
+        self._count("ok.key")
         office.forget()
         self.failed, self.key_refused, self.models, self.choosing = "", False, [], False
         with self.starting:
@@ -250,6 +269,7 @@ class Setup:
             self.cancel()
             self.login.wait()
             self.failed = "等了十分钟，浏览器那边没有完成。再点一次登录。"
+            self._count("failed.login.timeout")
             return False
         listening.join(1)
         if self.cancelled:
@@ -257,13 +277,16 @@ class Setup:
         if code:
             self.broken = _unreadable_settings("\n".join(said))
             self.failed = _why_login_failed(said)
+            self._count(f"failed.login.{_login_failure_kind(said)}")
             return False
         self.logged_in, self.broken = True, ""
+        self._count("ok.chatgpt")
         return True
 
     def _install(self):
         if subprocess.run(["/bin/sh", "-c", self.INSTALL], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=600, env={**os.environ, "CODEX_NON_INTERACTIVE": "1"}).returncode:
             self.failed = "Codex 没装上，检查网络后再试一次。"
+            self._count("failed.install")
             return False
         return True
 
@@ -289,6 +312,7 @@ class Setup:
                     _versions.clear()
         except (OSError, subprocess.SubprocessError):
             self.failed = "这一步没有走通，检查网络后再试一次。"
+            self._count(f"failed.{step}")
         finally:
             self.working, self.login, self.link = None, None, ""
             self.checked = 0.0
@@ -310,6 +334,16 @@ def _unreadable_settings(said):
     if not found or os.path.realpath(found[1]) != os.path.realpath(_codex_home() / "config.toml"):
         return ""
     return f"{found[1].replace(str(Path.home()), '~', 1)} 的第 {found[2]} 行 Codex 读不懂。"
+
+
+def _login_failure_kind(said):
+    """The same reasons as `_why_login_failed`, as fixed words for counting."""
+    text = "\n".join(line for line in said if line and not LOGIN_LINK.search(line) and not line.startswith("WARNING"))
+    for words, kind in (("ChatGPT login is disabled", "disabled"), ("already in use", "port"), ("Token exchange failed", "network"),
+                        ("error sending request", "network"), ("not completed", "browser"), ("timed out", "browser"), ("cancelled", "browser")):
+        if words in text:
+            return kind
+    return "silent" if not text else "other"
 
 
 def _why_login_failed(said):

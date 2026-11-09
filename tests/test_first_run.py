@@ -411,6 +411,46 @@ class OfficeLogin(unittest.TestCase):
         self.assertIsNone(office.current())
 
 
+class Counted:
+    def __init__(self):
+        self.names = []
+
+    def count(self, name, seconds=None):
+        self.names.append(name)
+
+
+class WhereANewInstallGetsStuck(unittest.TestCase):
+    """Only fixed words leave: which card was shown, which step failed and of what kind, which way in worked."""
+
+    def setUp(self):
+        LoginStep.setUp(self)
+        self.companion.feedback = Counted()
+
+    def test_each_card_counts_once_and_a_login_that_works_says_how(self):
+        for _ in range(3):
+            self.setup.state()
+        self.assertEqual(self.companion.feedback.names, ["setup.saw.login"])
+        self.setup.next_step()
+        LoginStep.until(self, lambda s: s.get("link"), "the login page")
+        (self.bin / "authorized").write_text("")
+        LoginStep.until(self, lambda s: not s["busy"] and s["step"] == "ready", "ready")
+        self.assertEqual(self.companion.feedback.names, ["setup.saw.login", "setup.ok.chatgpt", "setup.saw.ready"])
+
+    def test_a_failed_login_counts_its_kind_never_its_words(self):
+        (self.bin / "fails_with").write_text("Error logging in: Port 1455 is already in use by alex@example.com\n")
+        self.setup.next_step()
+        LoginStep.until(self, lambda s: not s["busy"] and s["error"], "the failure")
+        self.assertIn("setup.failed.login.port", self.companion.feedback.names)
+        self.assertNotIn("alex", " ".join(self.companion.feedback.names))
+
+    def test_model_settings_from_the_menu_is_not_a_stuck_install(self):
+        (self.bin / "logged_in").write_text("")
+        self.setup.state()
+        self.setup.choose()
+        self.setup.state()
+        self.assertEqual(self.companion.feedback.names, ["setup.saw.ready", "setup.saw.settings"])
+
+
 class TooOldForTheModel(unittest.TestCase):
     """The model Codex is set to needs a newer Codex (issue #1): the newest one on this Mac is used, and the update card brings one in."""
 

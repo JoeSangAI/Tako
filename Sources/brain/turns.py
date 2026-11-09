@@ -300,6 +300,7 @@ class Turns:
             note_metric(kind="turn", model=main_model(), seconds=round(time.time() - began, 1), first_text=round(job.first_text - began, 1) if job.first_text else None, steps=len(job.steps), brain=job.brain, **usage_fields(job.usage))
             self.feedback.count("turn", time.time() - began)
             self.feedback.count("job.left_a_step" if job.left_for_owner else "job.finished")
+            self._later(asyncio.to_thread(self.feedback.send_due))
             for why in job.blocked:
                 self.feedback.count(f"blocked.{why}")
             if job.blocked:  # The scene of it, on this Mac only: enough to write the failing test, nothing anyone said.
@@ -392,17 +393,13 @@ class Turns:
         self.feedback.take_extract(answer)
 
     async def feedback_forever(self):
-        """Numbers go out at most once a day, and only once the owner has seen the notice."""
+        """Numbers go out at most once a day: after the first hour, after a job, or on quitting, whichever comes first."""
         self.feedback.count("launch")
         with contextlib.suppress(Exception):  # A crash report it can't read is no reason to stop counting.
             self.feedback.note_crashes()
         while True:
-            if self.feedback.stats_due():
-                packet = self.feedback.stats_packet()
-                with contextlib.suppress(OSError, ValueError):  # Offline: the numbers wait for tomorrow.
-                    await asyncio.to_thread(self.feedback.send, packet)
-                    self.feedback.sent_stats(packet)
-            await asyncio.sleep(3600)
+            await asyncio.sleep(3600)  # Not at the start: see `send_due`.
+            await asyncio.to_thread(self.feedback.send_due)
 
     async def _reader(self, instructions, text, *, effort="medium", kind):
         """A throwaway thread with no tools and no network: it can only read what it is given and talk."""

@@ -6,6 +6,7 @@ import json
 import os
 import re
 import secrets
+import threading
 import time
 import traceback
 import urllib.request
@@ -99,6 +100,7 @@ class Feedback:
 
     def __init__(self, runtime, version, macos, url=URL, crash_folder=Path.home() / "Library/Logs/DiagnosticReports", now=time.time):
         self.path, self.version, self.macos, self.url, self.crash_folder, self.now = Path(runtime) / "feedback.json", version, macos, url, crash_folder, now
+        self.sending = threading.Lock()  # The hourly look, a job ending and quitting can all reach for the same numbers.
         self.words = []  # (app, the owner's words, whether the turn failed); memory only, gone once read
         self.state = {"consent": None, "counts": {}, "seconds": {}, "errors": {}, "tags": {}, "crashes": [], "last_send": 0, "last_extract": 0}
         try:
@@ -206,13 +208,27 @@ class Feedback:
             self.state["tags"][tag] = self.state["tags"].get(tag, 0) + 1
         self.save()
 
+    def send_due(self, timeout=15):
+        """At most once a day. Never as Tako starts, when it has nothing to say yet but that it started: the first numbers wait for
+        the first job, the first hour or quitting, so a day of trying it out reaches the author even if Tako is never opened again."""
+        with self.sending:
+            if not self.stats_due():
+                return False
+            packet = self.stats_packet()
+            try:
+                self.send(packet, timeout)
+            except (OSError, ValueError):  # Offline: the numbers wait for the next chance.
+                return False
+            self.sent_stats(packet)
+            return True
+
     def say_packet(self, kind, text):
         return {"type": "say", "kind": kind, "text": text, "version": self.version, "macos": self.macos}
 
-    def send(self, packet):
+    def send(self, packet, timeout=15):
         if not self.url:
             raise ValueError("no receiver")
         request = urllib.request.Request(self.url, data=json.dumps(packet, ensure_ascii=False).encode(), headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(request, timeout=15) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             if response.status >= 300:
                 raise ValueError(response.status)
