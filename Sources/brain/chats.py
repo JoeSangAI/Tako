@@ -152,6 +152,11 @@ class Chats:
                 self.generation += 1
             return
         key = f"window:{window.get('bundle')}:{window.get('id')}"
+        # A window a job worked shows that job's conversation, wherever it was asked: the owner finds it where it was done.
+        if (worked := self.worked.get(key)) is not None:
+            if (self.chat or {}).get("username") != worked["username"]:
+                await self.attach(worked)
+            return
         name = window.get("title") or window.get("app") or "这个窗口"
         if self.chat and self.chat["username"] == key:
             self.chat["name"] = name
@@ -183,7 +188,7 @@ class Chats:
 
     def _park(self):
         if self.chat:
-            self.saved[self.chat["username"]] = {"events": self.events}
+            self.saved[self.chat["username"]] = {"events": self.events, "chat": self.chat}
 
     async def attach(self, chat):
         """Bind to one conversation. Nothing is read until the owner speaks."""

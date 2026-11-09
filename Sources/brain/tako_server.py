@@ -1,7 +1,7 @@
 """Tako beside whichever window it is stuck to. It may fill an input or change a document
 when the owner asks; it never sends a message.
 
-History lives in memory only. What arrives by itself (a new WeChat message) runs read-only and
+What the panel showed is kept on this Mac for a week (`conversations.py`); everything else lives in memory. What arrives by itself (a new WeChat message) runs read-only and
 cannot touch anything; the owner's own words run with a narrow writable folder and approval cards.
 Every window shares one Codex thread: one brain, a limb on each window.
 The app itself is driven through the native side (`/native/next`), the only process with the permissions.
@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 from urllib.parse import unquote
 
+import conversations
 import feedback as fb
 import greetings as greet
 import wechat_reader as reader
@@ -49,7 +50,6 @@ class Companion(Chats, Turns, Hands, Lectures, Agents):
         self.loop = None
         self.runtime = brain_runtime(self.on_server_request)
         self.reviving = asyncio.Lock()
-        self.brain_lost = False  # the thread went away with things said on it: the next turn gets them back as memory
         self.setup = Setup(self)
         self.turns = asyncio.Lock()
         self.feedback = fb.Feedback(RUNTIME, app_version(), platform.mac_ver()[0])
@@ -63,7 +63,9 @@ class Companion(Chats, Turns, Hands, Lectures, Agents):
         self.signature = None
         self.generation = 0
         self.watching = True  # peeled off the window, it stops reading altogether
-        self.saved = {}        # conversations already visited, so returning to one keeps its thread
+        self.saved = conversations.load()  # conversations already visited, so returning to one keeps its thread; a week of them outlives a restart
+        self.brain_lost = bool(self.saved)  # the thread went away (or the app restarted) with things said: the next window with something said tells it (`_brain`)
+        self.keeping = False   # a save of the conversations is on its way
         self.offered = set()   # files the owner dragged or picked, which the panel may preview before they send them
         self.last_header = ""
         self.wanted_titles = None
@@ -75,6 +77,7 @@ class Companion(Chats, Turns, Hands, Lectures, Agents):
         self.settling = False  # the brain's thread is being got ready or summarized: wait for it rather than go round it
         self.limb_news = []    # what limbs did while the brain was busy, for its next turn
         self.finished = {}     # conversation -> its name and window, for jobs that ended while the owner was elsewhere
+        self.worked = {}       # another window a job's hands worked -> that job's conversation, which the window then shows (Hands._hands_on)
         self.rings = {}        # window -> the latest ring to draw again when the owner gets there
         self.held = {}         # conversation -> a job's last step, waiting for the owner to get to the window it needs; ("fill", conversation) -> a hand-over that finishes by itself
         self.picked_up = {}    # conversation -> turns a waiting step has started by itself since the owner last spoke there
@@ -110,7 +113,31 @@ class Companion(Chats, Turns, Hands, Lectures, Agents):
     # ---- state shown to the panel ----
     def add(self, role, text, events=None, **extra):
         events = self.events if events is None else events
-        events.append({"id": len(events), "role": role, "text": text, "time": clock(time.time()), **extra})
+        events.append({"id": len(events), "role": role, "text": text, "time": clock(time.time()), "at": time.time(), **extra})
+        self._keep_soon()
+
+    def _keep_soon(self):
+        """Written a second after the last thing said, from the loop, so a burst of steps is one write."""
+        if self.keeping or not self.loop:
+            return
+        self.keeping = True
+        self.loop.call_soon_threadsafe(lambda: self._later(self._keep()))
+
+    async def _keep(self):
+        await asyncio.sleep(1)
+        self.keeping = False
+        await asyncio.to_thread(conversations.save, self._every_conversation())
+
+    def _every_conversation(self):
+        every = {key: (item.get("chat") or {"name": key}, list(item["events"])) for key, item in list(self.saved.items())}
+        if self.chat:
+            every[self.chat["username"]] = (self.chat, list(self.events))
+        return every
+
+    def keep_now(self):
+        """On the way out: what was said in the last second is kept too."""
+        with contextlib.suppress(Exception):
+            conversations.save(self._every_conversation())
 
     def snapshot(self, after=0):
         job = self._here()
@@ -188,6 +215,7 @@ async def main():
             if not leaving.acquire(blocking=False):
                 return
             companion.setup.cancel()
+            companion.keep_now()
             with contextlib.suppress(Exception):  # A day of trying Tako out, sent as it quits if nothing went out today. Never holds the quit up for long.
                 companion.feedback.send_due(timeout=3)
             with contextlib.suppress(Exception):  # An office agent keeps a record of every session, and its process doesn't follow ours out: neither outlives the app.
@@ -200,6 +228,8 @@ async def main():
             leave()
         signal.signal(signal.SIGTERM, leave)
         threading.Thread(target=leave_with_app, daemon=True).start()
+    else:
+        signal.signal(signal.SIGTERM, lambda *_: (companion.keep_now(), os._exit(0)))
     # Pasted images and whatever else was handed over last time do not outlive the app.
     shutil.rmtree(INBOX, ignore_errors=True)
     with contextlib.suppress(OSError, RuntimeErrorCode):  # Not fatal: the next question tries again and says what is wrong.

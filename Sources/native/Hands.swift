@@ -297,7 +297,9 @@ extension Controller {
         case "isBack":
             // Their words going into the panel: the input box is about to be clicked out from under them.
             let typing = side.isKeyWindow && CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown) < 3
-            return ["ok": ownerIsAway(from: win) && !typing, "front": isFront(win) && !coveredByItsOwn(win), "app": win.app]
+            // How long since the owner last clicked or held ⌘/⌃ (⌘Tab): typing on is not going anywhere. Hardware only, so what Tako posts to an app doesn't count.
+            let input = min(CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .leftMouseDown), CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .flagsChanged))
+            return ["ok": ownerIsAway(from: win) && !typing, "front": isFront(win) && !coveredByItsOwn(win), "app": win.app, "input": input]
         case "followTo": return followTo(win)
         case "bringForward":
             // Only ever for a button the owner pressed: everything else works without being in front.

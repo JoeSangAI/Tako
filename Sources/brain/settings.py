@@ -78,6 +78,7 @@ CONTEXT_MESSAGES = 30
 MAX_MESSAGE_CHARS = 2000
 VOICE = RUNTIME / "voice.md"      # Habits learned from the owner's edits, never their sentences. Plain text they can read or change.
 METRICS = RUNTIME / "metrics.jsonl"  # Numbers only, never chat content.
+CONVERSATIONS = RUNTIME / "conversations.json"  # What each panel showed, a week of it, so a restart doesn't empty them (conversations.py).
 ASKED = RUNTIME / "asked.json"      # What the owner asked and how it ended, a week of it: their words, never a window's.
 AGENT_DOOR = RUNTIME / "agent.json"  # Where the owner's other agents find Tako: port and their own token, readable by the owner alone.
 

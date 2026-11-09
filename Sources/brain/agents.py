@@ -57,8 +57,8 @@ class Agents:
         if self.chat and str((self.window or {}).get("id") or "") == window["id"]:
             return self.chat, self.events
         key = f"window:{window['bundle']}:{window['id']}"
-        events = self.saved.setdefault(key, {"events": []})["events"]
-        return {"username": key, "name": window["title"] or window["app"] or "那个窗口", "kind": "window"}, events
+        chat = {"username": key, "name": window["title"] or window["app"] or "那个窗口", "kind": "window"}
+        return chat, self.saved.setdefault(key, {"events": [], "chat": chat})["events"]
 
     def _forget_old_agent_jobs(self):
         for key, record in list(self.agent_jobs.items()):

@@ -69,6 +69,7 @@ class Job:
         self.changing = {}  # file changes under way: item id -> paths, so a card can say what would change
         self.answer, self.failed = "", ""  # how it ended, for an agent that handed it over and is waiting to hear
         self.points = []  # what the owner circled on the window with ⌃ for this job: found behind the window at the time
+        self.hands_on, self.following = None, False  # the other window its hands last worked, if not its own, and whether Tako goes there when the owner does (Hands._hands_on)
         self.ended = asyncio.Event()
 
     @property
@@ -88,8 +89,8 @@ class Job:
 
     @property
     def goes_to(self):
-        """Where a tap on its line takes the owner: its own window, or WeChat for a chat asked on without one."""
-        return self.window_id or (WECHAT if self.wechat_chat else None)
+        """Where a tap on its line takes the owner: where the work ended up, else its own window, or WeChat for a chat asked on without one."""
+        return (self.hands_on or {}).get("id") or self.window_id or (WECHAT if self.wechat_chat else None)
 
 
 class TurnFailed(Exception):
@@ -491,7 +492,7 @@ class Turns:
             self.read_up_to = {}  # A new thread has seen none of it.
             jobs = await asyncio.to_thread(asked.memory, OWNER)
         lines = self._said_here(events, said) if self.brain_lost else ""
-        self.brain_lost = False
+        self.brain_lost = self.brain_lost and not lines  # a window with nothing said yet has nothing to tell it: the next one does
         here = f"（你刚重启过。这是重启前这个窗口里说过的话，只是记忆，不是新要求；别的窗口说过的你不记得了，被问到就如实说。）\n{lines}" if lines else ""
         return "\n\n".join(part for part in (jobs, here) if part)
 

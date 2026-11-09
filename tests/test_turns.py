@@ -54,12 +54,28 @@ class Tako:
         for value in (env or {}).values():
             if value.startswith("{home}"):
                 pathlib.Path(value.replace("{home}", str(self.home))).mkdir(parents=True, exist_ok=True)
-        self.errors = open(self.home / "server.err", "w")
-        self.process = subprocess.Popen([sys.executable, "-B", str(SERVER), "--port", "0"], stdout=subprocess.PIPE, stderr=self.errors, text=True, env=environment)
+        self.environment = environment
+        self._start()
+
+    def _start(self):
+        self.errors = open(self.home / "server.err", "a")
+        self.process = subprocess.Popen([sys.executable, "-B", str(SERVER), "--port", "0"], stdout=subprocess.PIPE, stderr=self.errors, text=True, env=self.environment)
         self.url = self.process.stdout.readline().strip()
         self.base, self.token = self.url.split("/?t=")
         self.alive = True
         threading.Thread(target=self._play_the_app, daemon=True).start()
+
+    def restart(self, meanwhile=None):
+        """What an update or a restart does: the same home, a new process. `meanwhile` runs while none is running."""
+        self.alive = False
+        self.process.terminate()
+        self.process.wait(5)
+        self.process.stdout.close()
+        self.errors.close()
+        time.sleep(0.3)  # the old app player gives up on its long poll
+        if meanwhile:
+            meanwhile()
+        self._start()
 
     def close(self):
         self.alive = False
@@ -741,6 +757,116 @@ class TheOwnerMovesOn(Base):
         self.assertNotIn("job", seen["pending"][0])
         self.tako.call("/decide", {"id": seen["pending"][0]["id"], "accepted": True})
         self.tako.until(lambda s: s["others"] and s["others"][0]["state"] == "done", "finished", 4)
+
+
+class WhereItsHandsAre(Base):
+    """Asked on one window, working another (Joe 2026-11-09: asked in Finder to mail a file, Tako worked the mailbox while it stayed on Finder).
+    Going to the window it is working brings Tako and the job there; the line about it goes where the work ended up."""
+    CHROME = {"ok": True, "id": 5, "app": "Google Chrome", "bundle": "com.google.Chrome", "title": "QQ邮箱", "stuck": False}
+
+    def setUp(self):
+        super().setUp()
+        keynote = self.tako.native["resolve"]
+        self.tako.native["resolve"] = lambda c: self.CHROME if str(c.get("window")) in ("5", "Google Chrome") else keynote(c)
+        self.front, self.by_itself = threading.Event(), False
+        self.tako.native["isBack"] = lambda c: {"ok": False, "front": self.front.is_set() and str(c.get("window")) == "5", "app": "Google Chrome", "input": 60 if self.by_itself else 0.5}
+        self.tako.native["followTo"] = lambda c: (self.tako.call("/stuck", {"app": "Google Chrome", "bundle": "com.google.Chrome", "title": "QQ邮箱", "id": "5"}), {"ok": True})[1]
+
+    def work_the_mailbox(self, then):
+        self.tako.ask(steps({"call": "operate_window", "args": {"window": "Google Chrome", "steps": [{"action": "click", "text": "写信"}]}}, *then, {"say": "邮件写好了，没发"}))
+
+    def sent(self, command):
+        return [c for c in self.tako.commands if c["command"] == command]
+
+    def test_going_to_the_window_it_works_brings_tako_and_the_job(self):
+        self.work_the_mailbox([{"pause": 1.2}])
+        self.tako.until(lambda s: self.sent("step"), "working the mailbox", 4)
+        self.front.set()
+        self.tako.until(lambda s: self.sent("followTo"), "goes along", 4)
+        self.assertEqual(str(self.sent("followTo")[0]["window"]), "5")
+        seen = self.tako.until(lambda s: s["app"] == "Google Chrome", "the panel there", 3)
+        self.assertTrue(seen["busy"], "the job is shown where the owner went, with its stop button")
+        self.assertEqual(seen["others"], [])
+        seen = self.tako.until(lambda s: "邮件写好了，没发" in self.tako.said(s), "the answer there", 4)
+        self.assertEqual(seen["others"], [])
+        time.sleep(1.2)
+        self.assertEqual(len(self.sent("followTo")), 1, "once: moved off by the owner, it stays where they put it")
+
+    def test_tako_doesnt_move_while_the_owner_isnt_looking(self):
+        self.work_the_mailbox([{"pause": 0.6}])
+        self.tako.idle(5)
+        self.assertEqual(self.sent("followTo"), [])
+        self.assertEqual(self.tako.state()["app"], "Keynote")
+
+    def test_a_window_that_comes_up_by_itself_isnt_followed(self):
+        """Joe 2026-11-09: a PPT opened behind a WeChat job is not somewhere they want to watch; they want the result where they asked."""
+        self.by_itself = True
+        self.work_the_mailbox([{"pause": 1.2}])
+        self.tako.until(lambda s: self.sent("step"), "working the mailbox", 4)
+        self.front.set()
+        seen = self.tako.until(lambda s: "邮件写好了，没发" in self.tako.said(s), "the answer where it was asked", 5)
+        self.assertEqual(seen["app"], "Keynote")
+        self.assertEqual(self.sent("followTo"), [])
+
+    def test_only_a_look_leaves_it_where_it_was_asked(self):
+        self.tako.native["look"] = lambda c: {"ok": True, "id": 5, "app": "Google Chrome", "bundle": "com.google.Chrome", "title": "QQ邮箱", "elements": ""}
+        self.tako.ask(steps({"call": "look_at_window", "args": {"window": "Google Chrome"}}, {"pause": 0.6}, {"say": "那边是邮箱"}))
+        self.tako.until(lambda s: self.tako.commands and any(c["command"] == "look" for c in self.tako.commands), "the look", 4)
+        self.tako.stick("Safari", "com.apple.Safari", "另一个页面", "2")
+        seen = self.tako.until(lambda s: s["others"] and s["others"][0]["state"] == "done", "told it's done", 5)
+        self.assertEqual(seen["others"][0]["window"], "1", "the answer is where it was asked")
+
+    def test_the_line_about_it_goes_where_the_work_ended_up(self):
+        self.work_the_mailbox([{"pause": 0.6}])
+        self.tako.until(lambda s: self.sent("step"), "working the mailbox", 4)
+        self.tako.stick("Safari", "com.apple.Safari", "另一个页面", "2")
+        seen = self.tako.until(lambda s: s["others"] and s["others"][0]["state"] == "done", "told it's done", 5)
+        self.assertEqual(seen["others"][0]["window"], "5")
+
+    def test_the_window_it_worked_shows_that_conversation_later(self):
+        self.work_the_mailbox([])
+        self.tako.idle(5)
+        self.tako.stick("Google Chrome", "com.google.Chrome", "QQ邮箱", "5")
+        self.tako.until(lambda s: "邮件写好了，没发" in self.tako.said(s), "the conversation there", 3)
+
+
+class ARestart(Base):
+    """Joe 2026-11-09: two restarts emptied every panel and the answer he went back for was gone. A week of each conversation stays on this Mac."""
+
+    def test_what_was_said_in_a_window_is_still_there_after_a_restart(self):
+        self.tako.ask(steps({"say": "给刘珊总的话写好了"}))
+        self.tako.until(lambda s: "给刘珊总的话写好了" in self.tako.said(s), "the answer", 4)
+        self.tako.restart()
+        self.tako.stick()
+        seen = self.tako.until(lambda s: "给刘珊总的话写好了" in self.tako.said(s), "the answer after the restart", 4)
+        self.assertEqual([e["role"] for e in seen["events"]], ["owner", "tako"])
+        kept = self.tako.home / "conversations.json"
+        self.assertEqual(stat.S_IMODE(kept.stat().st_mode), 0o600)
+
+    def test_the_model_is_told_what_was_said_here(self):
+        self.tako.ask(steps({"say": "封面改成月亮"}))
+        self.tako.until(lambda s: "封面改成月亮" in self.tako.said(s), "the answer", 4)
+        self.tako.restart()
+        self.tako.stick()
+        self.tako.until(lambda s: self.tako.said(s), "the conversation back", 4)
+        self.tako.ask("刚才改成什么了")
+        self.tako.until(lambda s: len(self.tako.said(s)) == 2, "the next answer", 4)
+        self.assertIn("封面改成月亮", self.tako.owner_turns()[-1]["input"][0]["text"])
+
+    def test_a_week_old_conversation_is_gone(self):
+        self.tako.ask("老话")
+        self.tako.until(lambda s: self.tako.said(s), "the answer", 4)
+        kept = self.tako.home / "conversations.json"
+
+        def a_week_later():
+            old = json.loads(kept.read_text())
+            for conversation in old.values():
+                conversation["at"] -= 8 * 86400
+            kept.write_text(json.dumps(old))
+        self.tako.restart(a_week_later)
+        self.tako.stick()
+        time.sleep(0.5)
+        self.assertEqual(self.tako.state()["events"], [])
 
 
 class NeedingTheRealPointer(Base):

@@ -21,6 +21,7 @@ from settings import CONFIG, HAS_WECHAT, OWNER, WECHAT, WORKBENCH, WORKBENCH_CAR
 
 FEEDBACK_KINDS = {"bug": "出了问题", "rough": "不好用", "wish": "想用的场景"}
 COMING_BACK_SECONDS = 1800  # How long the last step of a job waits for the owner to come back to its window.
+OWNER_WENT_SECONDS = 3  # A window coming to the front this soon after the owner's own click or key is them going there.
 PICK_UPS = 2  # Turns a step that needs the window in front may start by itself before it stops asking the model.
 
 
@@ -163,6 +164,39 @@ class Hands:
         finally:
             if self.held.get(key) is mark:
                 del self.held[key]
+
+    def _hands_on(self, job, window):
+        """A job's hands on a window other than its own, doing something there; a look is not that, and the result of one belongs where it was asked (Joe 2026-11-09: asked in Finder to mail a file, Tako worked the mailbox and stayed on Finder).
+        That window now shows the job's conversation, its line goes there, and the owner going to it brings Tako along."""
+        found = str((window or {}).get("id") or "")
+        if not job or found in ("", "0", job.window_id or "") or window.get("bundle") == WECHAT:
+            return
+        job.hands_on = {"id": found, "app": window.get("app"), "bundle": window.get("bundle")}
+        if job.chat:
+            self.worked[f"window:{window.get('bundle')}:{found}"] = job.chat
+        if not job.following:
+            job.following = True
+            self._later(self._follow_hands(job))
+
+    async def _follow_hands(self, job):
+        """While it works, the owner going to the window its hands are on finds Tako there, once each time they go: put somewhere else, it stays put."""
+        was_front = False
+        try:
+            while job in self.active:
+                window = job.hands_on["id"]
+                seen = await self.native("isBack", timeout=5, window=window)
+                if seen.get("error") and not seen.get("noAnswer"):  # the window has gone
+                    return
+                front = bool(seen.get("front"))
+                # Only the owner's own going there: a window that came up by itself (an app opened for the job) is no reason, and they get only the result (Joe 2026-11-09).
+                went = front and not was_front and float(seen.get("input", 99)) < OWNER_WENT_SECONDS
+                if went and job in self.active and (await self.native("followTo", timeout=5, window=window)).get("ok"):
+                    await asyncio.sleep(0.4)  # the panel moves over with the goo before it opens there
+                    await self.native("followDone", timeout=5)
+                was_front = front
+                await asyncio.sleep(1)
+        finally:
+            job.following = False
 
     def _hold_fill(self, text, files, window, chat, job, app, why=None):
         """The hand-over itself is known exactly, so no model is needed to finish it: the owner getting to that window is enough. Asked again, the newest one stands."""
@@ -367,6 +401,7 @@ class Hands:
         if not target.get("ok"):
             return self._reply(target.get("error", "没找到窗口"), ok=False)
         window = str(target.get("id") or "") or window  # Named once, the same window for every step, whatever comes to the front.
+        self._hands_on(job, target)
         done = []
         fell_short = False
         run = job.running
@@ -638,6 +673,7 @@ class Hands:
         if job and not chat:
             shown = await self.native("resolve", window=window)
             if shown.get("ok") and shown.get("bundle") in webfill.BROWSERS:
+                self._hands_on(job, shown)
                 if files:  # a page's upload box takes the files from inside too: the system's file chooser is never opened (GitHub issue 3)
                     result, why = await self._upload_page(files, field, shown, str(shown.get("id") or window or ""), job)
                     if result is not None:
@@ -667,6 +703,7 @@ class Hands:
         window = str(shown.get("id") or "") or window
         if not job:
             await self.native("bringForward", window=window)
+        self._hands_on(job, shown)
         asked = job.chat if job else self.chat
         waiting = {"needsFront": True, "app": shown.get("app"), "bundle": shown.get("bundle"), "id": shown.get("id")}
         if shown.get("bundle") == WECHAT:
