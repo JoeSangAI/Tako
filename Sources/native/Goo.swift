@@ -75,6 +75,7 @@ final class Goo {
     var drops: [(p: V, v: V, r: CGFloat, life: CGFloat)] = []
     var stains: [(p: V, r: CGFloat, life: CGFloat)] = []
     // face
+    var turn: CGFloat = 0   // how far the head is turned to one side (`turnGoal`)
     var eye = V(), slosh = V(), sloshV = V(), lastV = V(), gaze = V(), lid: CGFloat = 1, blink: CGFloat = 0, nextBlink = 2.5, pop: CGFloat = 0
     var state = "idle"
     var clock = 0.0, lastMoved = 0.0
@@ -109,8 +110,8 @@ final class Goo {
     var peekSide: CGFloat = 0, peekUntil = 0.0, ducking = false, lastNear = 0.0
     var puddle = false
     var pokes = 0
-    // how high it stands above whatever is under it; a trotting corgi goes low, the whale girl sits on her short fat legs
-    var stance: CGFloat { puddle ? 0.45 : 1.6 - trot * 0.3 - 0.08 * costume.dressed }
+    // how high it stands above whatever is under it; a trotting corgi goes low
+    var stance: CGFloat { puddle ? 0.45 : 1.6 - trot * 0.3 }
     var guilty: Bool { clock < guiltyUntil }
     var dizzy: Bool { clock < dizzyUntil }
     // bounds
@@ -227,18 +228,6 @@ final class Goo {
             // her head is a little wider than it is tall; drawn through the smoothed skin it comes out the full radius across
             shape.x *= 1 + 0.025 * costume.dressed
             shape.y *= 1 - 0.052 * costume.dressed
-            // gone down to think, swimming along, her manners; and the fish gag pulls and squashes her head, swings it at the
-            // fish and fills her cheeks (Whale.swift)
-            let k = costume
-            shape = V(shape.x * k.stretch.x + k.lunge, shape.y * k.stretch.y + k.sink)
-            if k.puff > 0.01 {
-                for (cheek, side) in [(CGFloat(0.5), CGFloat(1)), (.pi - 0.5, -1)] {
-                    var gap = atan2(d.y, d.x) - cheek
-                    gap = atan2(sin(gap), cos(gap))
-                    let full = k.puff * radius * 0.55 * (1 + 0.35 * k.wobble * (side == (facing > 0 ? 1 : -1) ? 1 : -0.5))
-                    shape = shape + d * (full * exp(-(gap / 0.45) * (gap / 0.45)))
-                }
-            }
         }
         if splatAmount > 0.01 {
             // Flattened against whatever it hit: wide along the surface, thin across it.
@@ -564,7 +553,6 @@ final class Goo {
         let path = CGMutablePath()
         let hasLegs = (mode == .free || mode == .grabbed || perch != nil) && !puddle && !sleeping
         let out = armOut > 3
-        var whaleReach: [V]? = nil   // the whale girl draws the reach as one of her tentacles (Whale.swift)
         var reaching: [V] = []   // the reaching leg's points, so it is kept from closing a pinhole with the others too
         // The limb that goes reaching: one of the legs, or one of the strands while it is stuck on.
         if out {
@@ -606,19 +594,12 @@ final class Goo {
                 taper(points, r * 0.36, max(2, r * 0.17 * slim), max(1.6, r * 0.12 * slim), into: limb)
                 limb.addPath(ellipse(tip, r * 0.19 * armThick, r * 0.19 * armThick))
             }
-            if costume.isWhale && costume.dressed > 0.5 && !puddle { whaleReach = points } else { path.addPath(limb.normalized()) }
+            path.addPath(limb.normalized())
         }
         // Each limb is made whole on its own and then joined: two legs crossing with their outlines running
         // opposite ways would otherwise cancel where they overlap and leave pinholes.
         var joined: CGPath = path
-        for layer in costume.tentacles { layer.path = nil }
-        costume.armsLine.path = nil
-        costume.hands.path = nil
-        costume.handLight.path = nil
-        if costume.isWhale && costume.dressed > 0.5 && !puddle {
-            // the whale girl's short fat arms and legs, in every state, drawn like her behind the head (Whale.swift)
-            whaleLimbs(reaching: out && (mode == .free || mode == .grabbed) ? armLeg : nil, reach: whaleReach)
-        } else if hasLegs {
+        if hasLegs {
             // the web between the legs where they leave the body, so no chink of background shows between two of them
             // (not on the move: then front and hind legs stand apart)
             // (on the move only a little at the very top, so front and hind legs still stand apart)
@@ -776,6 +757,25 @@ final class Goo {
     }
 
     var isAttachedLike: Bool { mode == .attached }
+
+    /// Holding on to a window's edge it turns its head part way to the window, to show itself side on (Joe 2026-11-08);
+    /// anywhere else it faces out. Radians, negative toward the left.
+    static let sideTurn: CGFloat = 0.55
+    var turnGoal: CGFloat { mode == .attached && perch == nil && hop == nil && leap == nil && latch == nil ? -Goo.sideTurn : 0 }
+
+    /// Where a point drawn on the front of the head (x, y in radii from its middle) comes to across as the head turns, and
+    /// how much narrower anything drawn there looks: the face, and whatever an outfit puts on the head, turn with it.
+    func turned(_ x: CGFloat, _ y: CGFloat) -> (x: CGFloat, squeeze: CGFloat) {
+        guard abs(turn) > 0.001 else { return (x, 1) }
+        let z = max(0.3, max(0, 1 - x * x - y * y).squareRoot())
+        return (x * cos(turn) + z * sin(turn), clamp(cos(turn) - x * sin(turn) / z, 0.3, 1.3))
+    }
+
+    /// A point on the screen on the front of the head, moved to where the turn takes it.
+    func onFront(_ p: V) -> V {
+        let q = (p - c) * (1 / radius)
+        return V(c.x + turned(q.x, q.y).x * radius, p.y)
+    }
 
     // MARK: pointer
 

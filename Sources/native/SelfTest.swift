@@ -309,6 +309,60 @@ extension Controller {
         enchant.hide()   // it started out on a window: that window's ink border goes, so a recording holds only the goo
         fakeMouse = V(middle + 170, floor - 150)
         func quiet() { goo.nextAct = goo.clock + 600; goo.nextWander = goo.clock + 600; goo.lastMoved = goo.clock }
+        if asked.contains("stuck") {
+            // ",stuck": where it spends most of its day, which the floor scenes never show: stuck on a window (idle, reading,
+            // working it), then sitting at the top left of its panel. A throwaway window of its own to stick to, and a drawn
+            // stand-in for the panel; nothing real is moved or opened.
+            let scale = goo.radius / 15
+            let size = NSSize(width: 360 * min(scale, 1.4), height: 260 * min(scale, 1.4))
+            let window = NSWindow(contentRect: NSRect(x: middle - size.width / 2 - 160, y: 0, width: size.width, height: size.height),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+            // its top left, in the goo's coordinates (down from the top of the screen), well above the floor
+            let top = max(goo.visible.minY + 40, floor - size.height - 220)
+            window.setFrameTopLeftPoint(NSPoint(x: middle - size.width / 2 - 160, y: (NSScreen.screens.first?.frame.maxY ?? 900) - top))
+            window.isReleasedWhenClosed = false
+            window.title = "Tako 展示，马上关闭"
+            window.orderFrontRegardless()
+            testWindow = window
+            let panel = CAShapeLayer(), bar = CAShapeLayer()
+            panel.fillColor = NSColor(white: 0.985, alpha: 1).cgColor
+            panel.strokeColor = NSColor(white: 0.82, alpha: 1).cgColor
+            bar.fillColor = NSColor(white: 0.93, alpha: 1).cgColor
+            for layer in [bar, panel] { layer.isHidden = true; root.insertSublayer(layer, at: 0) }
+            at(0.3) { [self] in
+                // its own window becomes the one it serves, as `adopt` would make it, without sampling its skin (that asks for
+                // Screen Recording) or inking it
+                let id = window.windowNumber
+                guard let info = (CGWindowListCopyWindowInfo(.optionIncludingWindow, CGWindowID(id)) as? [[String: Any]])?.first,
+                      let raw = info[kCGWindowBounds as String] as? NSDictionary, let w = CGRect(dictionaryRepresentation: raw) else { log("showcase window not seen"); return }
+                target = (id, w)
+                goo.place(at: V(w.maxX + goo.radius + 7, w.minY + 66 + goo.radius))
+                goo.mode = .attached
+                for i in 0..<3 { goo.stuck[i] = true; goo.reach[i] = 0.15; goo.reachV[i] = 16 }
+                quiet(); say("黏在窗口上")
+            }
+            at(4.0) { [self] in quiet(); goo.state = "reading"; say("读窗口") }
+            at(7.5) { [self] in quiet(); goo.state = "working"; say("在窗口里干活") }
+            at(11.0) { [self] in
+                quiet(); goo.state = "idle"; say("面板打开：坐在左上角")
+                guard let w = target?.frame else { return }
+                barHeight = 52 * scale
+                sideX = w.maxX
+                CATransaction.begin(); CATransaction.setDisableActions(true)
+                let box = CGRect(origin: goo.L(V(w.maxX, w.maxY)), size: CGSize(width: 328 * min(scale, 1.6), height: w.height))
+                panel.path = CGPath(rect: box, transform: nil)
+                bar.path = CGPath(rect: CGRect(x: box.minX, y: box.maxY - barHeight, width: box.width, height: barHeight), transform: nil)
+                panel.isHidden = false; bar.isHidden = false
+                CATransaction.commit()
+                goo.mode = .open
+            }
+            at(14.5) { [self] in quiet(); goo.state = "working"; say("面板开着，在干活") }
+            at(18.0) { [self] in
+                quiet(); goo.state = "idle"; goo.mode = .attached; panel.isHidden = true; bar.isHidden = true; say("面板收起")
+            }
+            at(21.0) { [self] in window.close(); testWindow = nil; log("showcase done") }
+            return
+        }
         if asked.contains("acts") {
             // what it does while it works, one scene after another
             let scenes: [(String, String)] = [("think", "在想"), ("search", "上网查"), ("run", "跑命令"), ("look", "看窗口"), ("read", "读微信"),
@@ -323,17 +377,8 @@ extension Controller {
             at(end + 5.0) { [self] in log("showcase done") }
             return
         }
-        if goo.costume.isWhale && asked.contains("fish") {
-            // ",fish": her fish gag, twice, nothing else
-            fakeMouse = V(middle + 230, floor - 230)
-            at(0.2) { [self] in quiet(); say("吃小鱼") }
-            at(1.0) { [self] in quiet(); goo.whaleSnack() }
-            at(5.0) { [self] in quiet(); goo.whaleSnack() }
-            at(9.0) { [self] in log("showcase done") }
-            return
-        }
         if goo.costume.isWhale && asked.contains("eggs") {
-            // ",eggs": the whale girl's own moves that are not scenes of work: swimming along, stroked, her leap, the fish,
+            // ",eggs": the whale girl's own moves that are not scenes of work: swimming along, stroked, her tail swished,
             // a long job's rainbow, held up dripping and dropped with a splash, asleep breathing bubbles
             fakeMouse = V(middle + 230, floor - 230)
             at(0.2) { [self] in quiet(); say("游一游") ; goo.wanderTo = middle - 3 * goo.radius }
@@ -341,8 +386,7 @@ extension Controller {
             at(6.4) { [self] in say("摸摸头"); quiet(); glide(to: goo.c + V(2, -goo.radius * 0.7), seconds: 0.5) }
             at(7.2) { [self] in glide(to: goo.c + V(-6, -goo.radius * 0.5), seconds: 0.9) }
             at(8.1) { [self] in glide(to: V(middle + 230, floor - 230), seconds: 0.6) }
-            at(9.6) { [self] in say("鲸跃"); quiet(); goo.whaleBreach() }
-            at(12.6) { [self] in say("吃小鱼"); quiet(); goo.whaleSnack() }
+            at(9.6) { [self] in say("甩尾巴"); quiet(); goo.swishTail() }
             at(16.0) { [self] in say("长任务做完：彩虹"); quiet(); goo.act = "run"; goo.costume.busySince = goo.clock - 70 }
             at(18.0) { [self] in goo.act = ""; goo.celebrate() }
             at(21.4) { [self] in say("拎起来，滴水"); quiet(); glide(to: goo.c, seconds: 0.4) }

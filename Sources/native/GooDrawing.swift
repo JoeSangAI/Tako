@@ -71,17 +71,10 @@ extension Goo {
         }
         _ = arc
         if costume.isWhale { whaleForm(skin) }
-        // the whale girl's black is the drawing's, a little lighter than Tako's own, flat, with a fine dark outline
-        let inked = costume.isWhale && costume.dressed > 0.5
-        if inked != costume.inked {
-            costume.inked = inked
-            for layer in [body, arms, lidL, lidR] + strands { layer.fillColor = inked ? Costume.whaleInk : Goo.ink }
-            shade.isHidden = inked
-        }
-        costume.headLine.path = inked ? path : nil
-        costume.headLine.lineWidth = max(0.5, radius * 0.016)
-        gloss.path = costume.isWhale && costume.dressed > 0.5 ? whaleGloss() : highlight(skin)
-        gloss.fillColor = NSColor(white: 1, alpha: costume.isWhale && costume.dressed > 0.5 ? 0.93 : 0.62).cgColor
+        // the goo is Tako's own in every outfit; the whale girl's light is broader and brighter, as in the drawing of her
+        let broad = costume.isWhale ? costume.dressed : 0
+        gloss.path = highlight(skin, thick: 0.11 + 0.03 * broad)
+        gloss.fillColor = NSColor(white: 1, alpha: 0.62 + 0.2 * broad).cgColor
 
 
         if mode == .free && settled {
@@ -107,7 +100,7 @@ extension Goo {
     }
 
     /// The wet highlight: a thin crescent just inside the upper-left skin, swelling in the middle and fading to points.
-    func highlight(_ skin: [V]) -> CGPath {
+    func highlight(_ skin: [V], thick: CGFloat = 0.11) -> CGPath {
         let n = CGFloat(Goo.count)
         func at(_ f: CGFloat, _ inset: CGFloat) -> V {
             let x = (f * n).truncatingRemainder(dividingBy: n), i = Int(x), t = x - CGFloat(i)
@@ -118,7 +111,7 @@ extension Goo {
         for k in 0...steps {
             let s = CGFloat(k) / CGFloat(steps), f = mix(a, b, s)
             outer.append(L(at(f, 0.86)))
-            inner.append(L(at(f, 0.86 - 0.11 * sin(s * .pi))))
+            inner.append(L(at(f, 0.86 - thick * sin(s * .pi))))
         }
         path.addLines(between: outer + inner.reversed())
         path.closeSubpath()
@@ -162,15 +155,19 @@ extension Goo {
     }
 
     func drawFace() {
-        costume.faceOwn = false
-        if costume.isWhale && costume.dressed > 0.5 && drawWhaleFace() { return }   // the whale girl's own face (Whale.swift)
         let r = radius
+        // The looks are Tako's, when and why; an outfit may draw them in its own manner. The whale girl's are softened
+        // (Joe 2026-11-08: a sly look is not her): lined eyes with a lift at the outer corner where Tako's lids drop, a
+        // second catch of light, her cat's mouth where Tako smirks or bares its teeth.
+        let soft = costume.isWhale && costume.dressed > 0.5
         let wide = 1 + pop * 0.22 + (mode == .grabbed ? 0.12 : 0)
         // the whole face turns with the head when it tips it over
         let tilt = actTilt()
         func tipped(_ p: V) -> V { V(p.x * cos(tilt) - p.y * sin(tilt), p.x * sin(tilt) + p.y * cos(tilt)) }
-        let left = eye + tipped(V(-r * 0.33, -r * 0.02)), right = eye + tipped(V(r * 0.33, r * 0.05))
-        let lRX = r * 0.3 * wide, lRY = r * 0.37 * wide, rRX = r * 0.25 * wide, rRY = r * 0.32 * wide
+        // turned side on, each eye comes round with the head and the far one narrows
+        func across(_ p: V) -> (V, CGFloat) { let q = (p - c) * (1 / r), t = turned(q.x, q.y); return (V(c.x + t.x * r, p.y), t.squeeze) }
+        let (left, squeezeL) = across(eye + tipped(V(-r * 0.33, -r * 0.02))), (right, squeezeR) = across(eye + tipped(V(r * 0.33, r * 0.05)))
+        let lRX = r * 0.3 * wide * squeezeL, lRY = r * 0.37 * wide, rRX = r * 0.25 * wide * squeezeR, rRY = r * 0.32 * wide
         if happy && !dizzy {
             // pleased: eyes squeezed into two upward arcs
             let arc = { (p: V, w: CGFloat) -> CGPath in
@@ -208,8 +205,12 @@ extension Goo {
         pupilL.path = showing ? ellipse(pL, prL, prL) : nil
         pupilR.path = showing ? ellipse(pR, prR, prR) : nil
         // a catch of light in each eye, so they look wet too
-        sparkleL.path = showing ? ellipse(pL + V(-prL * 0.32, -prL * 0.36), prL * 0.27, prL * 0.27) : nil
-        sparkleR.path = showing ? ellipse(pR + V(-prR * 0.32, -prR * 0.36), prR * 0.27, prR * 0.27) : nil
+        func shine(_ p: V, _ pr: CGFloat) -> CGPath {
+            let big = ellipse(p + V(-pr * 0.32, -pr * 0.36), pr * 0.27, pr * 0.27)
+            return soft ? big.union(ellipse(p + V(pr * 0.34, pr * 0.3), pr * 0.13, pr * 0.13)) : big
+        }
+        sparkleL.path = showing ? shine(pL, prL) : nil
+        sparkleR.path = showing ? shine(pR, prR) : nil
 
         // dizzy: the pupils become spirals, slowly turning
         if dizzy {
@@ -240,15 +241,23 @@ extension Goo {
             return q
         }
         // only where it covers the white: anywhere else it would be a flat patch on the shaded body
-        lidL.path = lidShape(left, lRX, lRY)?.intersection(ellipse(left, lRX + 0.8, max(0.7, lRY * lid) + 0.8))
-        lidR.path = lidShape(right, rRX, rRY)?.intersection(ellipse(right, rRX + 0.8, max(0.7, rRY * lid) + 0.8))
+        // her line: along the top of the white, thickening toward the outer corner, where it lifts
+        let liner = { (p: V, rx: CGFloat, ry: CGFloat, out: CGFloat) -> CGPath? in
+            guard open, !self.dizzy, self.lid > 0.3 else { return nil }
+            let white = self.ellipse(p, rx, max(0.7, ry * self.lid))
+            return white.subtracting(self.ellipse(p + V(-out * r * 0.035, r * 0.06), rx * 1.03, max(0.7, ry * self.lid)))
+        }
+        lidL.path = soft ? liner(left, lRX, lRY, -1) : lidShape(left, lRX, lRY)?.intersection(ellipse(left, lRX + 0.8, max(0.7, lRY * lid) + 0.8))
+        lidR.path = soft ? liner(right, rRX, rRY, 1) : lidShape(right, rRX, rRY)?.intersection(ellipse(right, rRX + 0.8, max(0.7, rRY * lid) + 0.8))
 
         // A small smile; surprised while dragged; the venom teeth when it has something to say.
-        let m = eye + tipped(V(0, r * 0.5))
+        let m = onFront(eye + tipped(V(0, r * 0.5)))
         mouthAt = m
         let path = CGMutablePath()
         // Left resting on it for a moment, it starts nibbling the cursor.
         let chomp = hoverTime > 1 ? abs(sin(CGFloat(clock) * 11)) * 0.75 + 0.15 : pop
+        // an outfit may draw the plain smile its own way (the whale girl's pink cat's mouth); every other look is Tako's
+        var plain = true
         if happy {
             // a wide open smile
             path.move(to: L(m + V(-r * 0.24, -r * 0.02)))
@@ -256,27 +265,34 @@ extension Goo {
             path.addQuadCurve(to: L(m + V(-r * 0.24, -r * 0.02)), control: L(m + V(0, r * 0.36)))
             path.closeSubpath()
         } else if oops {
+            plain = false
             // an awkward little frown
             path.move(to: L(m + V(-r * 0.15, r * 0.08)))
             path.addQuadCurve(to: L(m + V(r * 0.15, r * 0.08)), control: L(m + V(0, -r * 0.04)))
             path.addQuadCurve(to: L(m + V(-r * 0.15, r * 0.08)), control: L(m + V(0, r * 0.04)))
             path.closeSubpath()
         } else if guilty {
+            plain = false
             // whistling innocently, off to one side
             path.addPath(ellipse(m + V(r * 0.2, r * 0.04), r * 0.07, r * 0.08))
-        } else if ((armOut > 6 && acting == nil) || clock < smirkUntil) && chomp <= 0.14 {
+        } else if !soft && ((armOut > 6 && acting == nil) || clock < smirkUntil) && chomp <= 0.14 {
+            plain = false
             // the smirk
             path.move(to: L(m + V(-r * 0.2, r * 0.05)))
             path.addQuadCurve(to: L(m + V(r * 0.27, -r * 0.09)), control: L(m + V(r * 0.08, r * 0.1)))
             path.addQuadCurve(to: L(m + V(-r * 0.2, r * 0.05)), control: L(m + V(r * 0.08, r * 0.19)))
             path.closeSubpath()
         } else if puddle {
+            plain = false
             path.addRect(CGRect(origin: L(m + V(-r * 0.16, r * 0.02)), size: CGSize(width: r * 0.32, height: 1.1)))
         } else if sleeping {
+            plain = false
             path.addPath(ellipse(m + V(0, r * 0.05), r * 0.07, r * 0.07 * (1 + 0.5 * sin(CGFloat(clock) * 1.1))))
         } else if tall > 0.4 {
+            plain = false
             path.addPath(ellipse(m + V(0, r * 0.08), r * 0.16, r * 0.24 * tall))
         } else if dizzy {
+            plain = false
             path.move(to: L(m + V(-r * 0.24, 0)))
             for i in 1...4 {
                 let up: CGFloat = i % 2 == 0 ? -1 : 1
@@ -286,7 +302,8 @@ extension Goo {
                 path.addLine(to: L(m + V(-r * 0.24 + r * 0.12 * CGFloat(i), r * 0.02)))
             }
             path.closeSubpath()
-        } else if chomp > 0.14 {
+        } else if !soft && chomp > 0.14 {
+            plain = false
             let w = r * (0.34 + chomp * 0.16), h = r * (0.06 + chomp * 0.3), teeth = 4
             let step = (w * 2) / CGFloat(teeth)
             path.move(to: L(m + V(-w, 0)))
@@ -297,6 +314,7 @@ extension Goo {
             path.addQuadCurve(to: L(m + V(-w, 0)), control: L(m + V(0, h * 2)))
             path.closeSubpath()
         } else if mode == .grabbed || (mode == .free && !settled && !trotting) {
+            plain = false
             let s = clamp(max(mouseSpeed.length, v.length) / 900, 0.09, 0.2) * r
             path.addPath(ellipse(m + V(0, r * 0.05), s * 0.85, s))
         } else {
@@ -307,7 +325,13 @@ extension Goo {
             arc.addQuadCurve(to: L(m + V(w, 0)), control: L(m + V(0, h)))
             path.addPath(arc.copy(strokingWithWidth: max(1.1, r * 0.075), lineCap: .round, lineJoin: .round, miterLimit: 1))
         }
-        mouth.path = path
+        if plain && costume.isWhale && costume.dressed > 0.5 {
+            mouth.path = nil
+            whaleMouth(at: m, wide: happy)
+        } else {
+            mouth.path = path
+            for layer in [costume.mouthIn, costume.mouthTongue, costume.lip] { layer.path = nil }
+        }
     }
 
     func drawBits() {

@@ -3,7 +3,11 @@
 // The choice is the owner's, in the right-click menu: follow the occasions (the default), one outfit, or none.
 // An outfit is worn, not stuck on: it is cut from the goo's own skin, moves with it and brings a few habits of its own.
 // The corgi is after a real one, so it has that dog's looks and no tail: it wags its back end instead.
-// The whale girl goes with a DeepSeek key (Wardrobe.swift, Whale.swift): her apron, tail and spout, taken from the drawing of her.
+// The whale girl goes with a DeepSeek key (Wardrobe.swift, Whale.swift): her face, apron, tail and water, from the drawing of her.
+// What an outfit may change, so every outfit holds in every state Tako is in (stuck on a window, on its panel, held up,
+// on the floor): the colour and light of the goo, the face, pieces pinned to the skin that squash and swing with it, and
+// things that come and go with what Tako is doing. Never the body: no limbs of its own, no shape of its own for being stuck
+// on or held. An outfit that needs its own code for one of those states is growing a body; draw it on the goo instead.
 import AppKit
 import QuartzCore
 
@@ -26,13 +30,6 @@ final class Costume {
     let ears = CAShapeLayer(), earsInner = CAShapeLayer()
     // the whale girl's apron, tail and spout: pieces cut from the drawing of her (Sources/art), hung on the goo
     let apronArt = CALayer(), tailArt = CALayer(), spoutArt = CALayer()
-    // and, drawn like her: her legs and arms tucked in behind the head, the head's own fine dark outline
-    let armsLine = CAShapeLayer(), headLine = CAShapeLayer()
-    // her tentacles, back pair then front pair, each: the goo with its outline, the line round the inside of each curl,
-    // a soft light along the top
-    let tentacles = (0..<6).map { _ in CAShapeLayer() }
-    static let whaleInk = NSColor(srgbRed: 0.106, green: 0.1, blue: 0.1, alpha: 1).cgColor, whaleLine = NSColor(white: 0.025, alpha: 1).cgColor
-    var inked = false   // the goo is in her black just now
     // over the goo, under the face: a hood is shaded fur cut from the skin, a hat is a plain shape
     let hood = CAGradientLayer(), hoodMask = CAShapeLayer(), fur = CALayer(), furMask = CAShapeLayer()
     let cover = CAShapeLayer(), fold = CAShapeLayer(), stitch = CAShapeLayer(), trim = CAShapeLayer(), blush = CAShapeLayer()
@@ -40,12 +37,11 @@ final class Costume {
     let tongue = CAShapeLayer(), tongueLine = CAShapeLayer()
     // the whale girl's open mouth and the tongue in it
     let mouthIn = CAShapeLayer(), mouthTongue = CAShapeLayer(), lip = CAShapeLayer()
-    // in front of everything, the whale girl's: what she holds (under her hands), her hands when they are in use, and her
-    // pictures in the air (water, a fish, twinkles, hearts), each frame from these pools
-    let props = (0..<2).map { _ in CALayer() }, hands = CAShapeLayer(), handLight = CAShapeLayer(), sprites = (0..<18).map { _ in CALayer() }
-    var handLights: [CGPath] = []
-    var propsUsed = 0, spritesUsed = 0, handPaths: [CGPath] = []
-    var layers: [CAShapeLayer] { [ears, earsInner, hoodMask, furMask, cover, fold, stitch, trim, blush, tongue, tongueLine, mouthIn, mouthTongue, lip, armsLine, headLine, hands, handLight] + tentacles }
+    // in front of everything, the whale girl's: what Tako holds out for her (her order pad), and her pictures in the air
+    // (water, hearts), each frame from these pools
+    let props = (0..<2).map { _ in CALayer() }, sprites = (0..<18).map { _ in CALayer() }
+    var propsUsed = 0, spritesUsed = 0
+    var layers: [CAShapeLayer] { [ears, earsInner, hoodMask, furMask, cover, fold, stitch, trim, blush, tongue, tongueLine, mouthIn, mouthTongue, lip] }
     var furFor: CGFloat = 0   // the radius the fur pattern was made for
     var outfit: Outfit? { didSet { if outfit?.id != oldValue?.id { clear(); paint() } } }
     var onWear: ((Outfit) -> Void)?
@@ -62,26 +58,21 @@ final class Costume {
     // how far into her shape it is (0 plain Tako, 1 dressed), and the head as it is this frame: its middle and how far the
     // body is squashed across and down from her round head
     var dressed: CGFloat = 0, mid = V(), sx: CGFloat = 1, sy: CGFloat = 1
-    var faceOwn = false   // this frame the face is hers, not one of Tako's own (startled, asleep…)
-    var tailRoot: V?      // where her right leg is: the tail goes in behind it
-    // her sea and her manners (Whale.swift): how far down she has gone or dips, the bubbles she breathes, the scene she was
-    // in, how long the last job ran, her rare tricks, the splashes and hearts in the air, her curtsey
-    var sink: CGFloat = 0, swim: CGFloat = 0
-    // the fish gag (Whale.swift `fishBeat`): where it is, and what it does to her head
-    var beat: Goo.FishBeat?, stretch = V(1, 1), lunge: CGFloat = 0, puff: CGFloat = 0, wobble: CGFloat = 0
+    // her sea (Whale.swift): her sway swimming along, the bubbles she breathes, the scene she was in, how long the last job
+    // ran, the splashes and hearts in the air
+    var swim: CGFloat = 0
     var bubbles: [(p: V, v: V, r: CGFloat, life: CGFloat, full: CGFloat)] = []
     var sputter: [(p: V, v: V, r: CGFloat, life: CGFloat)] = []
     var lastAct = "", busySince: Double?, busyLength = 0.0, busyEndedAt = -100.0
-    var nextBubble = 0.0, nextDrip = 0.0, nextRare = 0.0, fishAt = -100.0, rainbowAt = -100.0, curtseyAt = -100.0, breaching = false, wasShy = false
+    var nextBubble = 0.0, nextDrip = 0.0, rainbowAt = -100.0, wasShy = false
     var splashes: [(p: V, start: Double, width: CGFloat)] = [], hearts: [(p: V, start: Double)] = []
     var drops: [(p: V, v: V, r: CGFloat, life: CGFloat)] = []
 
     func attach(behind goo: CALayer, over: CALayer) {
         guard let root = goo.superlayer else { return }
         for layer in [ears, earsInner] { root.insertSublayer(layer, below: goo) }
-        // behind the goo, back to front: the tail (its root goes in under the arm and the leg), the legs, the arms
-        for layer in [tailArt] + tentacles + [armsLine] { root.insertSublayer(layer, below: goo) }
-        for layer in [blush, trim, stitch, fold, cover, fur, hood, apronArt, headLine] { root.insertSublayer(layer, above: over) }
+        root.insertSublayer(tailArt, below: goo)   // behind the goo: its root tucked in under the skin
+        for layer in [blush, trim, stitch, fold, cover, fur, hood, apronArt] { root.insertSublayer(layer, above: over) }
         hood.mask = hoodMask
         fur.mask = furMask
         root.addSublayer(tongue)
@@ -89,19 +80,12 @@ final class Costume {
         root.addSublayer(mouthIn)
         root.addSublayer(mouthTongue)
         root.addSublayer(lip)
-        for layer in [spoutArt] + props + [hands, handLight] + sprites { root.addSublayer(layer) }
-        handLight.fillColor = NSColor(white: 1, alpha: 0.3).cgColor   // the same soft light as on her tentacles
+        for layer in [spoutArt] + props + sprites { root.addSublayer(layer) }
         for layer in props + sprites { layer.contentsGravity = .resize; layer.isHidden = true }
-        hands.fillColor = Costume.whaleInk
-        hands.lineJoin = .round
         for layer in [apronArt, tailArt, spoutArt] {
             layer.contentsGravity = .resize
             layer.isHidden = true
         }
-        tailArt.shadowColor = NSColor.white.cgColor   // shown on dark windows only (Whale.swift)
-        tailArt.shadowRadius = 0.7
-        tailArt.shadowOffset = .zero
-        tailArt.shadowOpacity = 0
         for layer in [ears, cover] { layer.lineJoin = .round }
         tongueLine.lineCap = .round
         tongueLine.fillColor = nil
@@ -135,18 +119,14 @@ final class Costume {
         tongueLine.strokeColor = NSColor(srgbRed: 0.78, green: 0.3, blue: 0.39, alpha: 1).cgColor
         guard outfit.id == "whale" else { return }
         // The whale girl as Tako wears her, in the drawing's colours: pink blush strokes with a glow, a pink mouth and tongue,
-        // and her fine dark outline (the apron, tail, spout and all her things are pictures, Sources/art).
+        // a pale cat's lip over it (the apron, tail, spout and all her things are pictures, Sources/art).
         blush.fillColor = NSColor(srgbRed: 0.95, green: 0.6, blue: 0.59, alpha: 1).cgColor
         blush.shadowColor = NSColor(srgbRed: 1, green: 0.45, blue: 0.45, alpha: 1).cgColor
         blush.shadowOpacity = 0.5
         trim.fillColor = NSColor(srgbRed: 0.95, green: 0.5, blue: 0.5, alpha: 0.05).cgColor
         mouthIn.fillColor = NSColor(srgbRed: 0.85, green: 0.45, blue: 0.56, alpha: 1).cgColor
         mouthTongue.fillColor = NSColor(srgbRed: 0.97, green: 0.66, blue: 0.73, alpha: 1).cgColor
-        for layer in [armsLine, tentacles[0], tentacles[3]] { layer.fillColor = Costume.whaleInk; layer.strokeColor = Costume.whaleLine; layer.lineJoin = .round }
-        tentacles[0].fillColor = NSColor(srgbRed: 0.085, green: 0.08, blue: 0.08, alpha: 1).cgColor   // the pair behind a shade deeper
-        for layer in [tentacles[1], tentacles[4]] { layer.fillColor = Costume.whaleLine }                              // the curl's inner line
-        for layer in [tentacles[2], tentacles[5]] { layer.fillColor = NSColor(white: 1, alpha: 0.3).cgColor }   // light along the top
-        for layer in [headLine, lip] { layer.fillColor = nil; layer.strokeColor = Costume.whaleLine; layer.lineCap = .round; layer.lineJoin = .round }
+        lip.fillColor = nil; lip.strokeColor = NSColor(white: 0.9, alpha: 1).cgColor; lip.lineCap = .round; lip.lineJoin = .round   // pale, like Tako's smile
     }
 
     /// Once a minute (and at once after the menu): which outfit today. Putting one on is worth showing off; starting up is not.
@@ -168,11 +148,7 @@ final class Costume {
         bubbles = []
         sputter = []
         dressed = 0
-        sink = 0
-        beat = nil
-        stretch = V(1, 1)
-        lunge = 0
-        puff = 0
+        swim = 0
     }
 
     /// One of the pieces cut from the drawing of the whale girl, shipped in the app's resources.
@@ -259,7 +235,7 @@ extension Goo {
     }
 
     /// Being stroked on the head (the cursor resting on it): a corgi melts, eyes shut, ears back, tongue out, its back end going;
-    /// the whale girl shuts her eyes and spouts.
+    /// the whale girl blushes, a heart floats up and her tail flutters.
     func pet() {
         guard costume.isCorgi || costume.isWhale, !sleeping, mode != .grabbed, !dizzy else { return }
         costume.pettedAt = clock
@@ -345,7 +321,7 @@ extension Goo {
         // The hood, cut from the skin itself so it squashes and stretches with it: over the crown and down the sides,
         // thinning to nothing at the cheeks, the face left open. It stops just inside the skin, so Tako's own ink
         // runs round it as an outline.
-        let middle = eye + V(0, r * 0.5), rx = r * 0.8, ry = r * 1.02
+        let middle = onFront(eye + V(0, r * 0.5)), rx = r * 0.8 * (0.75 + 0.25 * cos(turn)), ry = r * 1.02
         let face = ellipse(middle, rx, ry)
         let within = skin.subtracting(skin.copy(strokingWithWidth: ink * 2, lineCap: .round, lineJoin: .round, miterLimit: 1))
         let hood = within.subtracting(face)
@@ -376,12 +352,12 @@ extension Goo {
         for i in 0..<96 { ruffOut.addQuadCurve(to: L(mix(puffs[i], puffs[(i + 1) % 96], 0.5)), control: L(puffs[i])) }
         ruffOut.closeSubpath()
         let blaze = CGMutablePath()
-        let top = eye + V(0, -r * 0.9), base = middle.y - ry - r * 0.06
+        let top = onFront(eye + V(0, -r * 0.9)), base = middle.y - ry - r * 0.06
         blaze.move(to: L(top + V(-r * 0.035, 0)))
         blaze.addQuadCurve(to: L(top + V(r * 0.035, 0)), control: L(top + V(0, -r * 0.04)))
-        blaze.addCurve(to: L(V(eye.x + r * 0.14, base)), control1: L(top + V(r * 0.05, r * 0.12)), control2: L(V(eye.x + r * 0.07, base - r * 0.04)))
-        blaze.addLine(to: L(V(eye.x - r * 0.14, base)))
-        blaze.addCurve(to: L(top + V(-r * 0.035, 0)), control1: L(V(eye.x - r * 0.07, base - r * 0.04)), control2: L(top + V(-r * 0.05, r * 0.12)))
+        blaze.addCurve(to: L(V(middle.x + r * 0.14, base)), control1: L(top + V(r * 0.05, r * 0.12)), control2: L(V(middle.x + r * 0.07, base - r * 0.04)))
+        blaze.addLine(to: L(V(middle.x - r * 0.14, base)))
+        blaze.addCurve(to: L(top + V(-r * 0.035, 0)), control1: L(V(middle.x - r * 0.07, base - r * 0.04)), control2: L(top + V(-r * 0.05, r * 0.12)))
         blaze.closeSubpath()
         let ruff = ruffOut.subtracting(face).union(blaze).intersection(within)
         k.trim.path = ruff

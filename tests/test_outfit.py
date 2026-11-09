@@ -93,9 +93,21 @@ class Wardrobe(unittest.TestCase):
         for corgi in ("startZoomies", "zooming", "trotLeg", "isCorgi", "wiggle +="):
             self.assertNotIn(corgi, code)
         acts = re.search(r"static let whaleActs: Set<String> = \[(.*?)\]", code).group(1)
-        for scene in ("think", "search", "run", "answer", "wait", "trouble"):
+        for scene in ("think", "answer", "trouble"):
             self.assertIn(f'"{scene}"', acts)
         self.assertIn("costume.isWhale && Goo.whaleActs.contains(a)", (ROOT / "Sources/native/Acts.swift").read_text())
+
+    def test_she_is_worn_not_a_second_body(self):
+        # An outfit changes the look, never the body (Joe 2026-11-08: the whale girl's own limbs broke how Tako sticks to a
+        # window): no limbs or hands of its own, no shape of its own for being stuck on, on the panel or held; the face's
+        # looks stay Tako's. Legs, strands and the reaching limb are drawn by Goo for every outfit.
+        code = (ROOT / "Sources/native/Whale.swift").read_text()
+        for body in ("tentacle", "whaleLimbs", "maidPose", "handPaths", "mode == .attached", "mode == .open", "holdingOn"):
+            self.assertNotIn(body, code)
+        arms = (ROOT / "Sources/native/Goo.swift").read_text()
+        start = arms.index("func drawArms()")
+        self.assertNotIn("isWhale", arms[start:arms.index("arms.path = joined", start)])
+        self.assertNotIn("drawWhaleFace", (ROOT / "Sources/native/GooDrawing.swift").read_text())
 
     def test_the_outfit_changes_nothing_but_the_look(self):
         # Any model gets the same Tako (AGENTS.md): no prompt, step cap or rule may name the whale or its service.

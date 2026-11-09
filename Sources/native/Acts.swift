@@ -1,7 +1,7 @@
 // What Tako acts out while it works: a small scene for each kind of step, told by the panel in fixed words
 // (think, search, run, look, read, answer, write, file, operate, listen, wait, trouble). Every scene has a plain
-// version any outfit can use; an outfit plays some of them its own way (`costume.isCorgi` below; the whale girl plays hers
-// in Whale.swift, `whaleActs`).
+// version any outfit can use; an outfit plays some of them its own way (`costume.isCorgi` below; the whale girl plays a few
+// with her water and her order pad, Whale.swift `whaleActs`), never with a body of its own.
 import AppKit
 import QuartzCore
 
@@ -35,7 +35,6 @@ extension Goo {
     /// How far the head tips over.
     func actTilt() -> CGFloat {
         switch acting {
-        case "think" where costume.isWhale: return 0                                             // she goes down still
         case "think": return costume.isCorgi ? 0.3 + 0.04 * sin(t * 1.7) : 0.12 * sin(t * 0.9)   // a dog's "hm?"
         case "listen": return 0.13 * sin(t * 3.4)                                                 // nodding to it
         case "search": return costume.isCorgi ? 0.08 * sin(t * 6) : 0
@@ -47,9 +46,8 @@ extension Goo {
     /// Where a limb goes to hold the scene's prop, if it needs one.
     func actHold() -> V? {
         let r = radius
-        if costume.isWhale && costume.dressed > 0.5 { return nil }   // her own hands hold her things (Whale.swift)
         switch acting {
-        case "search" where !costume.isCorgi && !costume.isWhale: return c + V(facing * (r * 1.15 + sin(t * 1.8) * r * 0.22), -r * 0.05)
+        case "search" where !costume.isCorgi: return c + V(facing * (r * 1.15 + sin(t * 1.8) * r * 0.22), -r * 0.05)
         case "answer", "write", "file": return c + V(facing * r * 1.05, r * 0.42) + scribble()
         default: return nil
         }

@@ -382,10 +382,13 @@ extension Goo {
         let limit = radius * 0.16
         if slosh.length > limit { slosh = slosh.unit * limit }
         eye = c + V(radius * 0.08, -radius * 0.14) + slosh
+        turn += (turnGoal - turn) * min(1, dt * 5)
 
         var look: V
+        // the whale girl's looks are softened (Joe 2026-11-08): no side-eye from the corners, she looks down a little instead
+        let soft = costume.isWhale && costume.dressed > 0.5
         switch state {
-        case "reading", "working": look = V(-1, sin(CGFloat(clock) * 2) * 0.4)
+        case "reading", "working": look = soft ? V(-0.5, 0.35 + sin(CGFloat(clock) * 2) * 0.15) : V(-1, sin(CGFloat(clock) * 2) * 0.4)
         case "thinking": look = V(sin(CGFloat(clock) * 2.4) * 0.7, -1)
         default:
             let toMouse = mouseAt - c
@@ -398,7 +401,7 @@ extension Goo {
         // caught: looks anywhere but at you
         if guilty { look = ((c - mouseAt).unit + V(0, -0.5)).unit }
         // close up it won't meet your eye for long: a side glance, then away
-        if mode != .grabbed && hoverTime > 0.15 && hoverTime < 1 { look = V(sin(CGFloat(hoverTime) * 9) > 0 ? 1 : -1, 0.1) }
+        if mode != .grabbed && hoverTime > 0.15 && hoverTime < 1 { look = soft ? V(0.25, 0.75) : V(sin(CGFloat(hoverTime) * 9) > 0 ? 1 : -1, 0.1) }   // she looks down, bashful
         // dizzy: the pupils go round and round
         if dizzy { look = V(cos(CGFloat(clock) * 11), sin(CGFloat(clock) * 11)) }
         if oops { look = V(-0.8, 0.5) }
