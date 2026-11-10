@@ -495,13 +495,17 @@ function showOthers(rows) {
     const id = `${row.state}|${row.name}`;
     seen.add(id);
     if (!othersSeen.has(id)) line.className = 'new';
-    // Still going needs nothing from them: no way over, so nothing pulls them away from what they are doing.
-    if (row.window && row.state !== 'working') {
+    // Running or not, going back to a job is the owner's own choice (Joe 2026-11-10). The tap is them seeing it: the line goes, wherever the panel lands.
+    if (row.window) {
       line.classList.add('go');
       line.tabIndex = 0;
       line.setAttribute('role', 'button');
-      line.title = '去那个窗口';
-      const go = () => { line.classList.add('leaving'); native?.postMessage({ goTo: String(row.window), chat: row.chat || '' }); };
+      line.title = row.chat ? `去微信「${row.chat}」` : '去那个窗口';
+      const go = () => {
+        line.classList.add('leaving');
+        api('/go', { key: row.key || '', window: String(row.window) }).catch(() => {});
+        native?.postMessage({ goTo: String(row.window), chat: row.chat || '' });
+      };
       line.onclick = go;
       line.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } };
     }

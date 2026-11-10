@@ -39,7 +39,7 @@ from hands import Hands
 from lecture import Lectures
 from prompts import point_label
 from routes import serve
-from settings import HAS_WECHAT, HAS_WORKBENCH, INBOX, RUNTIME, app_version, clock
+from settings import HAS_WECHAT, HAS_WORKBENCH, INBOX, RUNTIME, app_version, clock, conversation_key
 
 SAME_THING_SECONDS = 600
 from turns import Turns
@@ -71,12 +71,14 @@ class Companion(Chats, Turns, Hands, Lectures, Agents):
         self.wanted_titles = None
         self.following = False
         self.index, self.index_stamp = None, None
+        self.groups, self.groups_stamp = [], None  # groups nobody named, by their members: what WeChat titles them with (`_unnamed_groups`)
         self.window = None     # the window it is stuck to: app, bundle, title, id
         self.active = []       # every job under way, in the order they started
         self.on_thread = {}    # thread -> the owner's job on it; only these may use tools or ask for anything
         self.settling = False  # the brain's thread is being got ready or summarized: wait for it rather than go round it
         self.limb_news = []    # what limbs did while the brain was busy, for its next turn
-        self.finished = {}     # conversation -> its name and window, for jobs that ended while the owner was elsewhere
+        self.finished = {}     # conversation -> its name and window, for jobs that ended while the owner was elsewhere; gone once seen or tapped
+        self.going = None      # the line the owner just tapped: its conversation and window, for the window to show when the goo lands (`_shown_on`)
         self.worked = {}       # another window a job's hands worked -> that job's conversation, which the window then shows (Hands._hands_on)
         self.rings = {}        # window -> the latest ring to draw again when the owner gets there
         self.held = {}         # conversation -> a job's last step, waiting for the owner to get to the window it needs; ("fill", conversation) -> a hand-over that finishes by itself
@@ -176,6 +178,7 @@ class Companion(Chats, Turns, Hands, Lectures, Agents):
         self.submit(self._ask(text, list(files), list(points)))
 
     async def _ask(self, text, files, points=()):
+        await self.settle_chat()
         reply = None if files or points else greet.secret(text)
         if reply:
             self.add("owner", text)
@@ -186,7 +189,7 @@ class Companion(Chats, Turns, Hands, Lectures, Agents):
         self.add("owner", text + names + (f"\n\n{circled}" if circled else ""))
         self.said = [*self.said, (secrets.token_hex(8), text)][-50:]
         self.feedback.heard((self.window or {}).get("app"), text)
-        here = (self.chat or {}).get("username") or id(self.events)
+        here = conversation_key(self.chat, self.events)
         # How many words a thing takes is the measure of Tako: the fewer after the first, the better.
         self.feedback.count("said.more" if time.time() - self.last_spoke.get(here, 0) < SAME_THING_SECONDS else "said.first")
         self.last_spoke[here] = time.time()

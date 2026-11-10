@@ -39,6 +39,30 @@ def same_chat(want, line):
     return bool(start) and whole.startswith(start) and len(whole) > len(start) and not whole[len(start)].isalnum()
 
 
+def group_by_members(titles, groups):
+    """Which unnamed groups a title made of their members' names is: WeChat shows such a group as the others' names joined, and the head count.
+    `groups` is (username, members counted, the other members' names). The best-covered ones, or [] when no group's names make up most of the title."""
+    for line in titles:
+        want = normalized(line)
+        if len(want) < 4:
+            continue
+        count = re.search(r"[(（]\s*(\d+)\s*[)）]", unicodedata.normalize("NFKC", line))
+        hits = []
+        for room, counted, people in groups:
+            if count and int(count.group(1)) != counted:
+                continue
+            shown = [key for key in {normalized(person) for person in people} if key and key in want]
+            covered = sum(map(len, shown))
+            # Without the head count a few names fit many groups: then every other member has to be there.
+            enough = len(shown) >= min(2, len(people)) if count else len(shown) == len({normalized(person) for person in people})
+            if enough and covered >= 0.8 * len(want):
+                hits.append((covered, room))
+        if hits:
+            best = max(covered for covered, _ in hits)
+            return [room for covered, room in hits if covered == best]
+    return []
+
+
 def full_chat_name(chat, names, asked=None):
     """The chat a short name means, from the names WeChat has: (name, the others it could equally be). The one the owner is talking about right now wins."""
     if any(normalized(name) == normalized(chat) for name in names):

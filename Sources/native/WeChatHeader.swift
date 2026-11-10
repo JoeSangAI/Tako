@@ -20,7 +20,7 @@ extension Controller {
               lastBand == 0 || NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
         guard canCapture else { return }
         headerBusy = true
-        let id = current.id, width = current.frame.width, listEnd = listEnd
+        let id = current.id, width = current.frame.width, listEnd = listEnds[current.id] ?? 0
         Task.detached { [weak self] in
             let titles = await Controller.headerTitles(windowID: id, width: width, previous: self?.lastBand ?? 0, listEnd: listEnd)
             await MainActor.run {
@@ -28,7 +28,7 @@ extension Controller {
                 self.headerBusy = false
                 if let titles {
                     self.lastBand = titles.band
-                    if titles.listEnd > 0 { self.listEnd = titles.listEnd }
+                    if titles.listEnd > 0 { self.listEnds[id] = titles.listEnd }
                     self.log("header changed, \(titles.lines.count) lines")
                     if !titles.lines.isEmpty { self.sendHeader(titles.lines + titles.others) }
                 }

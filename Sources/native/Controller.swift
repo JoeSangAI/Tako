@@ -69,7 +69,8 @@ final class Controller: NSObject, NSApplicationDelegate {
     var spill: CGFloat = 0
     var stopSource: DispatchSourceSignal?, collapseSource: DispatchSourceSignal?, reportSource: DispatchSourceSignal?
     var headerBusy = false, lastBand = 0, canCapture = false, captureAsked = false
-    var listEnd: CGFloat = 0                  // where WeChat's chat list ends, in points, as of the last time its search box showed
+    var listEnds: [Int: CGFloat] = [:]        // per WeChat window, where its chat list ends, as of the last time its search box showed. A chat opened in a window of its own has no list,
+                                              // and the main window's edge cut its whole title off as list (Joe 2026-11-10: the panel stayed on the chat before)
     var headerAt: CFTimeInterval = 0          // a click in WeChat may have opened another chat: read the title then, not on the next round
     var stackUntil: CFTimeInterval = 0, wasPressed = false   // windows may be reordering until then: check every frame
     var lastWindowSign: CGFloat = 0, windowShakes: [CFTimeInterval] = []

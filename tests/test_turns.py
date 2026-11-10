@@ -829,6 +829,59 @@ class WhereItsHandsAre(Base):
         self.tako.stick("Google Chrome", "com.google.Chrome", "QQ邮箱", "5")
         self.tako.until(lambda s: "邮件写好了，没发" in self.tako.said(s), "the conversation there", 3)
 
+    def mailbox_job_of_its_own(self):
+        """The mailbox worked by the job asked on Keynote, then a job asked on the mailbox itself, done while the owner is on a third window."""
+        self.work_the_mailbox([])
+        self.tako.idle(5)
+        self.tako.stick("Safari", "com.apple.Safari", "另一个页面", "2")
+        started = self.tako.agent("/agent/ask", {"text": steps({"pause": 0.3}, {"say": "邮箱自己的事做完了"}), "window": "5"})
+        self.tako.agent_until(started["id"], lambda s: s["state"] == "done", "done")
+        return self.tako.until(lambda s: any(row["name"] == "QQ邮箱" for row in s["others"]), "its line here", 3)
+
+    def test_a_tap_shows_that_job_and_its_line_is_gone(self):
+        """Joe 2026-11-10: the tap took him to Chrome, where Tako showed the other job that had worked it; back on WeChat the line he had tapped was still there."""
+        seen = self.mailbox_job_of_its_own()
+        row = next(row for row in seen["others"] if row["name"] == "QQ邮箱")
+        self.tako.call("/go", {"key": row["key"], "window": row["window"]})
+        self.tako.stick("Google Chrome", "com.google.Chrome", "QQ邮箱", "5")
+        self.tako.until(lambda s: "邮箱自己的事做完了" in self.tako.said(s), "the job tapped, not the one that worked the window", 3)
+        self.tako.stick("Safari", "com.apple.Safari", "另一个页面", "2")
+        time.sleep(0.3)
+        self.assertEqual([row["name"] for row in self.tako.state()["others"] if row["name"] == "QQ邮箱"], [], "seen is seen")
+
+    def test_a_tap_clears_its_line_even_if_the_panel_never_gets_there(self):
+        seen = self.mailbox_job_of_its_own()
+        row = next(row for row in seen["others"] if row["name"] == "QQ邮箱")
+        self.tako.call("/go", {"key": row["key"], "window": row["window"]})
+        self.tako.until(lambda s: not any(row["name"] == "QQ邮箱" for row in s["others"]), "gone on the tap", 3)
+
+    def test_a_tap_for_the_window_the_panel_is_on_shows_it_there(self):
+        """The mailbox showing the job that worked it last, and a line for the mailbox's own job: the goo is already there, so nothing lands."""
+        self.mailbox_job_of_its_own()
+        self.tako.stick()
+        self.work_the_mailbox([])
+        self.tako.idle(5)
+        self.tako.stick("Google Chrome", "com.google.Chrome", "QQ邮箱", "5")
+        seen = self.tako.until(lambda s: self.tako.said(s).count("邮件写好了，没发") == 2, "the job that worked it last", 3)
+        row = next(row for row in seen["others"] if row["name"] == "QQ邮箱")
+        self.tako.call("/go", {"key": row["key"], "window": row["window"]})
+        seen = self.tako.until(lambda s: "邮箱自己的事做完了" in self.tako.said(s), "shown right here", 3)
+        self.assertEqual(seen["others"], [])
+
+    def test_without_a_tap_the_window_shows_whatever_moved_last(self):
+        self.mailbox_job_of_its_own()
+        self.tako.stick("Google Chrome", "com.google.Chrome", "QQ邮箱", "5")
+        self.tako.until(lambda s: "邮箱自己的事做完了" in self.tako.said(s), "its own, newer than the job that worked it", 3)
+
+    def test_a_job_still_going_has_a_line_to_tap_too(self):
+        """Joe 2026-11-10: going back to a job from another one is his choice, running or not."""
+        self.work_the_mailbox([{"pause": 1.2}])
+        self.tako.until(lambda s: self.sent("step"), "working the mailbox", 4)
+        self.tako.stick("Safari", "com.apple.Safari", "另一个页面", "2")
+        seen = self.tako.until(lambda s: s["others"], "the line", 3)
+        self.assertEqual(seen["others"][0]["state"], "working")
+        self.assertTrue(seen["others"][0]["key"] and seen["others"][0]["window"])
+
 
 class ARestart(Base):
     """Joe 2026-11-09: two restarts emptied every panel and the answer he went back for was gone. A week of each conversation stays on this Mac."""
@@ -1437,6 +1490,70 @@ class Inside(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.tako.is_showing("执行组-益海嘉里", read))
         self.assertFalse(self.tako.is_showing("上海-战略部-李聪", read))
         self.assertTrue(self.tako.is_showing("战略部～益海嘉里", ["战略部~益海嘉重", "战略部～益海嘉里"]), "a second guess read right counts")
+
+    async def wechat_with_names(self, header):
+        """小林 open in the panel, and WeChat's header reading `header` when asked."""
+        chats, reader = __import__("chats"), __import__("wechat_reader")
+        _, prompts = await self.wechat([self.row(1, "在吗")])
+        root = self.home / "wx2"
+        (root / "work").mkdir(parents=True, exist_ok=True)
+        (root / "work/namemap.json").write_text(json.dumps({"names": {"xiaolin": "小林", "xiaohua": "小花"}}, ensure_ascii=False))
+        self.addCleanup(setattr, reader, "WXEXPORT", reader.WXEXPORT)
+        reader.WXEXPORT, self.tako.index = root, None
+        self.tako.window = {"app": "微信", "bundle": "com.tencent.xinWeChat", "title": "微信", "id": "9"}
+        plain = self.tako.native
+
+        async def native(command, timeout=30, **args):
+            return {"ok": True, "lines": header} if command == "titles" else await plain(command, timeout, **args)
+        self.tako.native = native
+        return prompts
+
+    async def test_a_word_said_while_the_panel_is_still_finding_the_chat_goes_to_the_chat_open(self):
+        """Joe 2026-11-10: a job asked right after opening a chat was filed under 微信 or the chat before, and its line could not take him back."""
+        await self.wechat_with_names(["小花"])
+        following = asyncio.create_task(self.tako.follow_header(["小花"]))
+        await asyncio.sleep(0)  # the title came in first, as it does from the app, and is still being looked up
+        await self.tako._ask("帮我回一下", [])
+        await following
+        self.assertEqual(self.tako.chat["name"], "小花")
+        self.assertIn("帮我回一下", [e["text"] for e in self.tako.events if e["role"] == "owner"])
+        self.assertNotIn("帮我回一下", [e["text"] for e in self.tako.saved["xiaolin"]["events"]])
+
+    async def test_a_word_said_with_no_chat_found_yet_asks_which_chat_is_open(self):
+        await self.wechat_with_names(["小花"])
+        self.tako.chat, self.tako.events = None, []
+        await self.tako._ask("帮我回一下", [])
+        self.assertEqual(self.tako.chat["name"], "小花")
+        self.assertEqual([e["text"] for e in self.tako.events if e["role"] == "owner"], ["帮我回一下"])
+
+    async def test_a_group_nobody_named_is_followed_by_its_members(self):
+        """Joe 2026-11-10: the header read four people's names and (5), and the panel stayed on the chat before."""
+        await self.wechat_with_names([])
+        reader = __import__("wechat_reader")
+        groups = [("g5@chatroom", 3, ["小林", "老王-市场"])]
+        self.addCleanup(setattr, reader, "unnamed_groups", reader.unnamed_groups)
+        self.addCleanup(setattr, reader, "contact_signature", reader.contact_signature)
+        reader.unnamed_groups, reader.contact_signature = (lambda: groups), (lambda: (1,))
+        await self.tako.follow_header(["小林、老王–市场 (3)"])
+        self.assertEqual(self.tako.chat["username"], "g5@chatroom")
+
+    async def test_a_chat_it_cannot_tell_is_not_the_chat_before(self):
+        prompts = await self.wechat_with_names([])
+        reader = __import__("wechat_reader")
+        self.addCleanup(setattr, reader, "contact_signature", reader.contact_signature)
+        reader.contact_signature, self.tako.groups_stamp = (lambda: (1,)), (1,)
+        await self.tako.follow_header(["某个新建的项目群 (8)"])
+        self.assertEqual(self.tako.chat["name"], "某个新建的项目群")
+        await self.tako._ask("帮我回一下", [])
+        self.assertEqual([e for e in self.tako.saved["xiaolin"]["events"] if e["role"] == "owner"], [], "nothing filed under 小林")
+        self.assertIn("「某个新建的项目群」的聊天记录这次没读到", prompts[-1], "the model knows it has only the window to go on")
+
+    async def test_a_chat_job_goes_back_to_its_chat_wherever_its_hands_were(self):
+        """Joe 2026-11-10: a job asked in a chat that looked something up in Chrome took him to Chrome, not the chat."""
+        job = self.turns.Job(self.chat("小林"), [], {"id": "9", "app": "微信", "bundle": "com.tencent.xinWeChat"})
+        self.tako._hands_on(job, {"id": "5", "app": "Google Chrome", "bundle": "com.google.Chrome"})
+        self.assertEqual((job.goes_to, job.wechat_chat), ("com.tencent.xinWeChat", "小林"))
+        self.assertEqual(self.tako.worked["window:com.google.Chrome:5"]["name"], "小林", "Chrome still shows the job when the owner goes there")
 
     async def test_a_message_coming_in_costs_nothing_and_shows_nothing(self):
         rows = [self.row(1, "在吗")]

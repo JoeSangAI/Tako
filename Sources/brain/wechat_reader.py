@@ -125,6 +125,32 @@ def find_chats(query):
     return sorted(hits, key=lambda chat: (chat["name"].strip() != query, not chat["name"].strip().startswith(query)))
 
 
+CONTACT = "contact/contact.db"
+
+
+def contact_signature():
+    """The contact database as it is on disk, so its members are only read again when a group changed."""
+    root, _ = account()
+    path = root / "db_storage" / CONTACT
+    return tuple((p.stat().st_size, p.stat().st_mtime_ns) for p in (path, Path(str(path) + "-wal")) if p.is_file())
+
+
+def unnamed_groups():
+    """Groups nobody named, which WeChat titles with their other members' names: (username, members counted, those other members' names).
+    The name list holds only the group's own id for them, so this is the one way to know which group such a title is."""
+    _, me = account()
+    names = json.loads((WXEXPORT / "work/namemap.json").read_text())["names"]
+    con, _ = open_shard(shard=CONTACT)
+    try:
+        members = {}
+        for room, member in con.execute("SELECT r.username, n.username FROM chatroom_member m JOIN chat_room r ON r.id = m.room_id JOIN name2id n ON n.rowid = m.member_id"):
+            members.setdefault(room, []).append(member)
+    finally:
+        con.close()
+    return [(room, len(people), [names.get(u) or u for u in people if u != me]) for room, people in members.items()
+            if not isinstance(names.get(room), str) or names[room].strip() in ("", room)]
+
+
 def _table(username):
     return "Msg_" + hashlib.md5(username.encode()).hexdigest()
 

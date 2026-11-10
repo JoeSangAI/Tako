@@ -17,7 +17,7 @@ import wechat_reader as reader
 from chats import render
 from guards import LOCAL_NAMES, SCRIPTABLE, clipped, full_chat_name, lasting_command, overwritten_paths, plain_command, same_chat, risky_script, unsafe_script, workbench_packet
 from outputs import back_up, change_problem, file_in_title, file_pictures, replace_file
-from settings import CONFIG, HAS_WECHAT, OWNER, WECHAT, WORKBENCH, WORKBENCH_CARDS, local_today, note_metric
+from settings import CONFIG, HAS_WECHAT, conversation_key, OWNER, WECHAT, WORKBENCH, WORKBENCH_CARDS, local_today, note_metric
 
 FEEDBACK_KINDS = {"bug": "出了问题", "rough": "不好用", "wish": "想用的场景"}
 COMING_BACK_SECONDS = 1800  # How long the last step of a job waits for the owner to come back to its window.
@@ -132,7 +132,7 @@ class Hands:
 
     @staticmethod
     def _conversation(job):
-        return (job.chat or {}).get("username") or id(job.events)
+        return job.key
 
     def _say_to_owner(self, events, text):
         """In the conversation it belongs to, and on the panel in front of them if that is another one."""
@@ -149,7 +149,7 @@ class Hands:
             self.feedback.count("job.gave_up")
             self._say_to_owner(job.events, "差的这一步在后台没走通，放下了，其余的都在上面。")
             return
-        mark = self.held[key] = {"name": job.name, "events": job.events, "window": window, "chat": job.wechat_chat, "trouble": f"差一步在后台做不了。不用专门切过去，你之后用到 {app} 时我接上。"}
+        mark = self.held[key] = {"name": job.name, "events": job.events, "key": job.key, "window": window, "chat": job.wechat_chat, "trouble": f"差一步在后台做不了。不用专门切过去，你之后用到 {app} 时我接上。"}
         deadline = time.time() + COMING_BACK_SECONDS
         try:
             while self.held.get(key) is mark and time.time() < deadline:
@@ -203,7 +203,7 @@ class Hands:
         key = ("fill", self._conversation(job))
         where = f"{app}「{chat}」" if chat else app
         what = "、".join(Path(f).name for f in files) or "这段话"
-        mark = self.held[key] = {"name": job.name, "events": job.events, "what": what, "where": where, "app": app, "window": window or (WECHAT if chat else None), "chat": chat or job.wechat_chat,
+        mark = self.held[key] = {"name": job.name, "events": job.events, "key": job.key, "what": what, "where": where, "app": app, "window": window or (WECHAT if chat else None), "chat": chat or job.wechat_chat,
                                  "trouble": f"{what} 备好了，切到{app}就自动放进去。", "placed": asyncio.Event()}
         self._later(self._place_when_back(key, mark, text, files, window, chat, job))
         # Facts, not orders: told "don't try again, don't look", the model obeyed that over the owner saying the chat was open (2026-11-06).
@@ -260,7 +260,7 @@ class Hands:
 
     def _waiting_fill_note(self):
         """The owner is talking while a hand-over waits: the model should know, and only it can tell whether this calls it off. No paths here: this reads as the owner's own words."""
-        mark = self.held.get(("fill", (self.chat or {}).get("username") or id(self.events)))
+        mark = self.held.get(("fill", conversation_key(self.chat, self.events)))
         if not mark:
             return ""
         return f"（系统提示，不是 {OWNER} 说的：还排着一步，把 {mark['what']} 放进{mark['where']}，TA切过去就自动放。下面这句话如果是不要了，调 fill_input 传 cancel:true；再调 fill_input 会换掉排着的这条。）\n"

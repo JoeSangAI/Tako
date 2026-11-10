@@ -147,6 +147,9 @@ def serve(companion, token, port, agent_token=None):
             if url.path == "/stuck" and body.get("bundle"):
                 companion.submit(companion.stick({k: str(body.get(k, "")) for k in ("app", "bundle", "title", "id")}))
                 return self.reply({"ok": True})
+            if url.path == "/go" and body.get("key"):
+                companion.submit(companion.going_to(str(body["key"]), str(body.get("window") or "")))
+                return self.reply({"ok": True})
             if url.path == "/watching":
                 companion.watching = bool(body.get("on"))
                 if not companion.watching and companion.lecture:

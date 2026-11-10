@@ -621,6 +621,23 @@ class OwnerNamedPaths(unittest.TestCase):
         self.assertFalse(guards.same_chat("产品讨论组1", "产品讨论组2"))
         self.assertFalse(guards.same_chat("Ann", "Anna-市场"))
 
+    def test_each_wechat_window_keeps_its_own_list_edge(self):
+        """Joe 2026-11-10: a chat opened in a window of its own has no list; the main window's edge threw its whole title away as list."""
+        native = "".join(path.read_text() for path in (ROOT / "Sources/native").glob("*.swift"))
+        self.assertNotIn("var listEnd:", native)
+        self.assertIn("listEnds[", native)
+
+    def test_a_group_nobody_named_is_known_by_its_members(self):
+        """Joe 2026-11-10: WeChat titled the group with its members' names and the head count; the panel stayed on the chat before."""
+        groups = [("g5@chatroom", 5, ["小林-市场", "老王-市场", "阿明", "苏苏-华南"]),
+                  ("g4@chatroom", 4, ["小林-市场", "老王-市场", "阿明"]),
+                  ("g9@chatroom", 9, ["小林-市场", "老王-市场", "阿明", "苏苏-华南", "大刘", "小美", "Kyle", "Rocky"])]
+        self.assertEqual(guards.group_by_members(["小林–市场、老王–市场、阿明、苏苏–华南 (5)"], groups), ["g5@chatroom"])
+        self.assertEqual(guards.group_by_members(["小林–市场老王–市场阿明苏苏–华南(5)"], groups), ["g5@chatroom"], "the separators lost in reading")
+        self.assertEqual(guards.group_by_members(["小林-市场、老王-市场、阿明"], groups), ["g4@chatroom"], "no count: every other member named")
+        self.assertEqual(guards.group_by_members(["小林-市场、老王-市场"], groups), [], "a few names fit too many groups to guess")
+        self.assertEqual(guards.group_by_members(["产品讨论组"], groups), [])
+
     def test_a_short_name_settles_on_one_chat_or_says_it_cannot(self):
         self.assertEqual(guards.full_chat_name("小林", ["小林-市场 助理", "小林妈妈"]), ("小林-市场 助理", []))
         self.assertEqual(guards.full_chat_name("小林", ["小林", "小林-市场 助理"]), ("小林", []))

@@ -19,7 +19,7 @@ from guards import last_draft, named_paths, plain_command, pointable
 from outputs import make_output_dir, tidy_output_dir
 from prompts import BRAIN_CONFIG, PROMPT, READER_CONFIG, STEP_NAMES, TOOLS, pointed_at
 from provider import current as provider_now, light_model, model as main_model
-from settings import (COMPACT_AT, COMPACT_PICTURES_AT, OWNER, RUNTIME, WECHAT, WORKBENCH, local_now, local_today, note_metric, user_background, voice_block, voice_notes)
+from settings import (COMPACT_AT, conversation_key, COMPACT_PICTURES_AT, OWNER, RUNTIME, WECHAT, WORKBENCH, local_now, local_today, note_metric, user_background, voice_block, voice_notes)
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic"}
 
@@ -88,9 +88,16 @@ class Job:
         return self.chat.get("name") if self.chat and self.chat.get("kind", "wechat") != "window" else None
 
     @property
+    def key(self):
+        return conversation_key(self.chat, self.events)
+
+    @property
     def goes_to(self):
-        """Where a tap on its line takes the owner: where the work ended up, else its own window, or WeChat for a chat asked on without one."""
-        return (self.hands_on or {}).get("id") or self.window_id or (WECHAT if self.wechat_chat else None)
+        """Where a tap on its line takes the owner. A chat's job goes back to that chat, whatever it looked up elsewhere: the person, the answer and any draft are there
+        (Joe 2026-11-10: a job asked in a chat took him to Chrome). Any other job goes where the work ended up, else its own window."""
+        if self.wechat_chat:
+            return WECHAT
+        return (self.hands_on or {}).get("id") or self.window_id
 
 
 class TurnFailed(Exception):
@@ -344,13 +351,14 @@ class Turns:
 
     def _tell_owner_elsewhere(self, job):
         if job.events is not self.events:
-            self.finished[(job.chat or {}).get("username") or id(job.events)] = {"name": job.name, "window": job.goes_to, "chat": job.wechat_chat}
+            self.finished[job.key] = {"name": job.name, "window": job.goes_to, "chat": job.wechat_chat, "key": job.key}
 
     def _others(self):
         """What is going on in the windows the owner is not looking at, each with the window a tap on it goes to."""
-        rows = [{"name": job.name, "state": "held" if job.trouble else "working", "trouble": job.trouble, "window": job.goes_to, "chat": job.wechat_chat}
+        rows = [{"name": job.name, "state": "held" if job.trouble else "working", "trouble": job.trouble, "window": job.goes_to, "chat": job.wechat_chat, "key": job.key}
                 for job in self.active if job.events is not self.events and job.status != "idle"]
-        rows += [{"name": mark["name"], "state": "held", "trouble": mark["trouble"], "window": mark.get("window"), "chat": mark.get("chat")} for mark in self.held.values() if mark["events"] is not self.events]
+        rows += [{"name": mark["name"], "state": "held", "trouble": mark["trouble"], "window": mark.get("window"), "chat": mark.get("chat"), "key": mark["key"]}
+                 for mark in self.held.values() if mark["events"] is not self.events]
         return rows + [{**done, "state": "done", "trouble": ""} for done in self.finished.values()]
 
     def _trouble_here(self, job):
@@ -624,7 +632,7 @@ class Turns:
     async def stop(self):
         """Stops what the panel is showing. A job in another window goes on."""
         job = self._here()
-        self.held.pop(("fill", (self.chat or {}).get("username") or id(self.events)), None)
+        self.held.pop(("fill", conversation_key(self.chat, self.events)), None)
         if job:
             await self._stop(job)
 

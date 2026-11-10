@@ -123,3 +123,8 @@ def app_version():
     with contextlib.suppress(OSError, ValueError, KeyError):
         return plistlib.loads((HERE.parent / "Info.plist").read_bytes())["CFBundleShortVersionString"]
     return "dev"
+
+
+def conversation_key(chat, events):
+    """What a conversation is known by: its chat, or for one with no chat found yet, its own list of what was said."""
+    return (chat or {}).get("username") or f"events:{id(events)}"

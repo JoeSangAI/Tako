@@ -12,10 +12,14 @@ from pathlib import Path
 
 import greetings as greet
 import wechat_reader as reader
-from guards import learned_notes, normalized, same_chat
+from guards import COUNT_SUFFIX, group_by_members, learned_notes, normalized, same_chat
 from prompts import LEARN_PROMPT
 from settings import (CONTEXT_MESSAGES, FULL_READ_SECONDS, HAS_WECHAT, MAX_MESSAGE_CHARS, OWNER, POLL_SECONDS, SENT_SETTLE_SECONDS, VOICE, WECHAT,
                       clock, note_metric, voice_notes)
+
+
+GOING_SECONDS = 15   # a tap on a line and the goo landing on that window
+SETTLE_SECONDS = 3   # the longest a word on WeChat waits to know which chat it was said in
 
 
 def render(rows):
@@ -87,7 +91,29 @@ class Chats:
             match = difflib.get_close_matches(key, near, n=1, cutoff=0.82)
             if match:
                 return key, self.index[match[0]]
+        # A group nobody named is titled with its other members' names (Joe 2026-11-10: a five-person group titled with four names left the panel on the chat before).
+        title = next((line for line in titles if len(normalized(line)) >= 4), "")
+        rooms = group_by_members([title], self._unnamed_groups()) if title else []
+        if rooms:
+            name = COUNT_SUFFIX.sub("", title).strip()
+            return normalized(title), [{"username": room, "name": name} for room in rooms]
         return None, []
+
+    def _unnamed_groups(self):
+        """Read from the contact database only when it changed: seconds to decrypt, and a header that names no one asks often."""
+        with contextlib.suppress(Exception):
+            stamp = reader.contact_signature()
+            if stamp != self.groups_stamp:
+                self.groups, self.groups_stamp = reader.unnamed_groups(), stamp
+        return self.groups
+
+    @staticmethod
+    def _by_title(titles):
+        """A chat known only by its title: nothing of its history can be read, but the job asked there is filed under it, not under the chat before."""
+        title = next((line for line in titles if len(normalized(line)) >= 2), "")
+        if not title:
+            return None, None
+        return normalized(title), {"username": f"title:{normalized(title)}", "name": COUNT_SUFFIX.sub("", title).strip() or title, "unreadable": True}
 
     def _latest(self, chats):
         """Same-named chats exist; the one with the newest message is the live one. Skips chats with no table."""
@@ -128,10 +154,15 @@ class Chats:
             while self.wanted_titles is not None:
                 titles, self.wanted_titles = self.wanted_titles, None
                 key, _ = await asyncio.to_thread(self._candidates, titles)
+                chat = None
+                if not key:
+                    # Not a chat it knows is still not the chat before: staying there filed what was said here under someone else.
+                    key, chat = self._by_title(titles)
                 if not key or key == self.last_header:
                     continue
                 # Same-named chats: the one with the newest message; no readable history still means the owner is looking at it.
-                _, chat = await asyncio.to_thread(self.which_chat, titles)
+                if chat is None:
+                    _, chat = await asyncio.to_thread(self.which_chat, titles)
                 # A newer title arrived while this one was resolving: skip straight to it.
                 if self.wanted_titles is not None or not chat:
                     continue
@@ -152,10 +183,9 @@ class Chats:
                 self.generation += 1
             return
         key = f"window:{window.get('bundle')}:{window.get('id')}"
-        # A window a job worked shows that job's conversation, wherever it was asked: the owner finds it where it was done.
-        if (worked := self.worked.get(key)) is not None:
-            if (self.chat or {}).get("username") != worked["username"]:
-                await self.attach(worked)
+        if (shown := self._shown_on(key, str(window.get("id") or ""))) is not None:
+            if (self.chat or {}).get("username") != shown["username"]:
+                await self.attach(shown)
             return
         name = window.get("title") or window.get("app") or "这个窗口"
         if self.chat and self.chat["username"] == key:
@@ -168,6 +198,58 @@ class Chats:
             if self.greetings.wants_more(app):
                 self._later(self._more_greetings(app))
         await self.attach(chat)
+
+    def _shown_on(self, key, window_id):
+        """Another conversation a window shows instead of its own, or None. The one the owner just tapped a line to go to comes first: that line is what they want to see.
+        Otherwise a window a job worked shows that job's conversation, so the owner finds it where it was done, unless the window's own conversation moved since
+        (Joe 2026-11-10: a Chrome window kept showing the job that had once worked it, and the line he tapped for its own job never cleared)."""
+        going = self.going
+        if going and going["window"] == window_id:
+            self.going = None
+            if time.time() - going["at"] < GOING_SECONDS and (chat := self._chat_of(going["key"])):
+                return chat
+        worked = self.worked.get(key)
+        if worked and self._last_said(worked["username"]) >= self._last_said(key):
+            return worked
+        return None
+
+    def _chat_of(self, key):
+        if self.chat and self.chat["username"] == key:
+            return self.chat
+        return (self.saved.get(key) or {}).get("chat")
+
+    def _last_said(self, key):
+        events = self.events if self.chat and self.chat["username"] == key else (self.saved.get(key) or {}).get("events") or []
+        return events[-1].get("at", 0) if events else 0
+
+    async def going_to(self, key, window):
+        """The owner tapped the line about a job elsewhere: that is them seeing it, wherever the panel ends up. The window it lands on shows that job."""
+        self.finished.pop(key, None)
+        self.going = {"key": key, "window": str(window or ""), "at": time.time()}
+        # Already on that window, the goo doesn't move and nothing says it landed.
+        if self.window and str(self.window.get("id") or "") == self.going["window"] and self.window.get("bundle") != WECHAT:
+            await self.stick(self.window)
+
+    async def settle_chat(self):
+        """Before a word on WeChat is taken: which chat is open now. A chat just clicked may still be resolving, and before the first title is read there is none;
+        a job filed under the chat before, or under no chat, can't be found again (Joe 2026-11-10)."""
+        if not HAS_WECHAT or (self.window or {}).get("bundle") != WECHAT:
+            return
+        deadline = time.time() + SETTLE_SECONDS
+        while (self.following or self.wanted_titles is not None) and time.time() < deadline:
+            await asyncio.sleep(0.05)
+        if self.chat and self.chat.get("kind") != "window":
+            return
+        seen = await self.native("titles", timeout=SETTLE_SECONDS, window=str(self.window.get("id") or ""))
+        titles = [str(t) for t in (seen.get("lines") or []) + (seen.get("others") or [])][:12]
+        if titles:
+            with contextlib.suppress(Exception):  # Unreadable is only unknown: the word still goes where the panel is.
+                key, chat = await asyncio.to_thread(self.which_chat, titles)
+                if not chat:
+                    key, chat = self._by_title(titles)
+                if chat:
+                    self.last_header = key
+                    await self.attach(chat)
 
     async def _more_greetings(self, app):
         """Only the app's name goes out, on a throwaway thread with no tools. If it comes back in time, a stock line on an empty panel gives way."""
@@ -208,6 +290,8 @@ class Chats:
         """What a WeChat conversation has said that the model hasn't seen, read now because the owner spoke. Empty when there is nothing new, None when it can't be read. A thread of its own (fresh) has seen none of it."""
         if not HAS_WECHAT or not chat or chat.get("kind") == "window":
             return []
+        if chat.get("unreadable"):
+            return None
         after = 0 if fresh else self.read_up_to.get(chat["username"], 0)
         for wait in (0, 1, 2):  # WeChat may be mid-write.
             await asyncio.sleep(wait)

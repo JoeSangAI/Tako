@@ -895,7 +895,7 @@ extension Controller {
         guard stillOurs() else { return takenOver }
         let want = Hands.normalize(name)
         // Already showing it: nothing to do.
-        if let shown = await Controller.headerTitles(windowID: win.id, width: win.frame.width, previous: 0, listEnd: listEnd), shown.lines.contains(where: { Hands.sameChat(name, $0) }) {
+        if let shown = await Controller.headerTitles(windowID: win.id, width: win.frame.width, previous: 0, listEnd: listEnds[win.id] ?? 0), shown.lines.contains(where: { Hands.sameChat(name, $0) }) {
             return ["ok": true]
         }
         // The search box sits at the top of the chat list; results open on a click, so Enter is never needed.
@@ -1062,8 +1062,30 @@ extension Controller {
             _ = await run(["command": "bringForward", "window": String(win.id)])
             try? await Task.sleep(nanoseconds: UInt64(max(0, flight * 0.4 - 0.25) * 1e9))
             if !chat.isEmpty, win.bundle == weChatBundle {
-                // Already showing it is nothing to do; otherwise its search box, the pointer put back after. Not opened is only not opened: WeChat is in front either way.
-                _ = await openChat(chat, in: win)
+                // Already showing it is nothing to do; otherwise its search box, the pointer put back after. Activating is not instant, and the hand that pressed the line
+                // is still settling: going straight on found WeChat "not in front" and gave up without a word (Joe 2026-11-10). So it waits for both, a few seconds at most.
+                // Only a hand still settling is waited out: a pointer taken mid-way or WeChat left is the owner moving on, and that is left alone.
+                let start = CACurrentMediaTime()
+                var opened: [String: Any] = [:]
+                while CACurrentMediaTime() - start < 6 {
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                    guard isFront(win) else {
+                        if CACurrentMediaTime() - start < 1.5 { continue }
+                        break
+                    }
+                    opened = await openChat(chat, in: win)
+                    if opened["why"] as? String != "hand_moving" { break }
+                }
+                // Taken over mid-way says needsFront without a why; that, or WeChat no longer in front, is the owner gone elsewhere.
+                let ownerLeft = !isFront(win) || (opened["needsFront"] as? Bool == true && opened["why"] == nil)
+                if opened["ok"] as? Bool == true {
+                    headerAt = CACurrentMediaTime()  // the panel follows the chat now, not on the next round
+                } else if !opened.isEmpty, !ownerLeft,
+                          let said = try? JSONSerialization.data(withJSONObject: ["没能替你点开微信里的「\(chat)」，在左边列表点它就行"]),
+                          let text = String(data: said, encoding: .utf8) {
+                    goo.fumble()
+                    web.evaluateJavaScript("wentNowhere(\(text)[0])", completionHandler: nil)
+                }
             }
             guard reopen, goo.mode == .attached, target?.id == win.id else { return }
             openQuietly = true
