@@ -5,6 +5,7 @@ Run: python3 tests/test_turns.py
 """
 import asyncio
 import base64
+import datetime
 import json
 import os
 import pathlib
@@ -201,10 +202,11 @@ class AQuestion(Base):
         self.tako.idle(3)
 
     def test_leaves_no_empty_folders_behind(self):
+        """Only the record of what was said: an answer with no file makes no folder (Joe 2026-11-10)."""
         self.tako.ask("你好")
         self.tako.until(lambda s: self.tako.said(s), "an answer")
         self.tako.idle()
-        self.assertEqual([path for path in self.tako.output.rglob("*")], [])
+        self.assertEqual([path.relative_to(self.tako.output).parts[0] for path in self.tako.output.rglob("*")], ["对话记录", "对话记录"])
 
     def test_right_after_sticking_stays_on_that_window(self):
         self.tako.call("/stuck", {"app": "Numbers", "bundle": "com.apple.iWork.Numbers", "title": "表", "id": "2"})
@@ -309,16 +311,18 @@ class WhereItWritesWithoutAsking(Base):
         self.tako.until(lambda s: self.tako.said(s), "an answer")
         self.tako.idle()
         roots = self.tako.owner_turns()[-1]["sandboxPolicy"]["writableRoots"]
-        self.assertEqual(roots[1:], [os.path.realpath(folder)])
+        self.assertIn("/work/", roots[0], "commands run in the scratch")
+        self.assertIn("产出文件", roots[1], "what it hands over goes to Tako's folder")
+        self.assertEqual(roots[2:], [os.path.realpath(folder)])
         self.tako.call("/ask", {"text": "再看看这个", "files": [str(dragged)]})
         self.tako.until(lambda s: len(self.tako.owner_turns()) >= 2, "the next turn")
         self.tako.idle()
-        self.assertEqual(set(self.tako.owner_turns()[-1]["sandboxPolicy"]["writableRoots"][1:]), {os.path.realpath(folder), str(dragged)})
+        self.assertEqual(set(self.tako.owner_turns()[-1]["sandboxPolicy"]["writableRoots"][2:]), {os.path.realpath(folder), str(dragged)})
 
     def test_and_nowhere_else(self):
         self.tako.ask("随便说一句 /不存在的路径")
         self.tako.until(lambda s: self.tako.said(s), "an answer")
-        self.assertEqual(len(self.tako.owner_turns()[-1]["sandboxPolicy"]["writableRoots"]), 1)
+        self.assertEqual(len(self.tako.owner_turns()[-1]["sandboxPolicy"]["writableRoots"]), 2)
 
 
 class ShowingWithControl(Base):
@@ -883,6 +887,91 @@ class WhereItsHandsAre(Base):
         self.assertTrue(seen["others"][0]["key"] and seen["others"][0]["window"])
 
 
+class TheRecord(Base):
+    """Joe 2026-11-10: what Tako was asked and made is found again in one folder the owner chose: 对话记录 a day at a time, 产出文件 only for what was made."""
+
+    def records(self):
+        return "".join(path.read_text() for path in (self.tako.output / "对话记录").glob("*.md"))
+
+    def test_an_answer_with_no_file_is_still_a_thing_done(self):
+        self.tako.ask(steps({"say": "周三下午可以开会"}))
+        self.tako.until(lambda s: "周三下午可以开会" in self.tako.said(s), "the answer", 4)
+        self.tako.idle()
+        rows = self.tako.call("/history")["rows"]
+        self.assertEqual([(r["where"], r["ended"], r["files"]) for r in rows], [("稿子", "答完了", [])])
+        self.assertEqual([r["text"] for r in rows[0]["replies"]], ["周三下午可以开会"])
+        self.assertIn("周三下午可以开会", self.records())
+        self.assertFalse((self.tako.output / "产出文件").exists(), "no folder for an answer")
+
+    def test_each_ask_keeps_its_own_files(self):
+        self.tako.ask(steps({"make": "邀请函-甲.pptx"}, {"say": "做好了"}))
+        self.tako.until(lambda s: "做好了" in self.tako.said(s), "the first", 4)
+        self.tako.idle()
+        self.tako.ask(steps({"make": "邀请函-乙.pptx"}, {"say": "也好了"}))
+        self.tako.until(lambda s: "也好了" in self.tako.said(s), "the second", 4)
+        self.tako.idle()
+        rows = self.tako.call("/history")["rows"]
+        self.assertEqual([[f["name"] for f in r["files"]] for r in rows], [["邀请函-乙.pptx"], ["邀请函-甲.pptx"]], "newest first, each with its own")
+        made = pathlib.Path(rows[0]["files"][0]["path"])
+        self.assertEqual(made.parent.parent.parent, self.tako.output / "产出文件")
+        self.assertIn("../产出文件/", self.records(), "the record links to what was made")
+        made.unlink()
+        self.assertFalse(self.tako.call("/history")["rows"][0]["files"][0]["there"], "deleted by the owner: the record stays")
+        self.assertEqual(len(self.tako.call("/history?find=%E7%94%B2")["rows"]), 1)
+
+    def test_another_agent_reads_the_history(self):
+        started = self.tako.agent("/agent/ask", {"text": "查一下 " + steps({"say": "查完了"}), "from": "Claude"})
+        self.tako.agent_until(started["id"], lambda s: s.get("state") == "done" or s.get("answer"), "the job")
+        self.tako.idle()
+        seen = self.tako.agent("/agent/history?days=1")
+        self.assertEqual([r["ended"] for r in seen["rows"]], ["答完了"])
+        self.assertTrue(seen["rows"][0]["asked"].startswith("〔Claude 转来〕查一下"), "who handed it over, not what the model was told")
+        self.assertTrue(seen["records"].endswith("对话记录"))
+
+    def test_a_new_folder_takes_everything_along(self):
+        self.tako.ask(steps({"make": "方案.docx"}, {"say": "写好了"}))
+        self.tako.until(lambda s: "写好了" in self.tako.said(s), "the answer", 4)
+        self.tako.idle()
+        elsewhere = self.tako.home / "别处" / "Tako"
+        self.assertTrue(self.tako.call("/folder", {"path": str(elsewhere), "move": True})["ok"])
+        self.assertFalse(self.tako.output.exists(), "only ever one folder")
+        self.assertEqual(json.loads((self.tako.home / "config.json").read_text())["output_root"], str(elsewhere))
+        rows = self.tako.call("/history")["rows"]
+        self.assertTrue(rows[0]["files"][0]["path"].startswith(str(elsewhere)) or rows[0]["files"][0]["there"] is False)
+        self.assertTrue(list((elsewhere / "产出文件").rglob("方案.docx")))
+        self.tako.ask(steps({"say": "新的一件"}))
+        self.tako.until(lambda s: "新的一件" in self.tako.said(s), "the next answer", 4)
+        self.tako.idle()
+        self.assertIn("新的一件", "".join(p.read_text() for p in (elsewhere / "对话记录").glob("*.md")))
+
+    def test_the_week_before_comes_along_and_old_scratch_goes(self):
+        home = self.tako.home
+
+        def from_before():
+            at = time.time() - 3600
+            (home / "conversations.json").write_text(json.dumps({"window:com.apple.iWork.Keynote:1": {"chat": {"name": "稿子", "kind": "window"}, "at": at + 1,
+                "events": [{"role": "owner", "text": "旧的问题", "at": at}, {"role": "tako", "text": "旧的回答", "at": at + 1}]}}))
+            (home / "asked.json").write_text(json.dumps([{"at": at - 1, "where": "稿子", "asked": "旧的问题", "folder": "", "ended": "答完了"}]))
+            stale = home / "work" / "2026-10-01" / "稿子"
+            stale.mkdir(parents=True)
+            os.utime(stale.parent, (time.time() - 9 * 86400,) * 2)
+        self.tako.restart(from_before)
+        self.tako.stick()
+        self.tako.until(lambda s: "旧的回答" in self.tako.said(s), "the panel from before", 4)
+        self.assertEqual([r["asked"] for r in self.tako.call("/history")["rows"]], ["旧的问题"])
+        self.assertFalse((home / "asked.json").exists() or (home / "conversations.json").exists(), "nothing kept twice")
+        self.assertFalse((home / "work" / "2026-10-01").exists(), "a week-old scratch is gone")
+
+    def test_the_old_files_move_into_the_new_shape(self):
+        old = self.tako.home / "旧"
+        (old / "2026-11-02" / "TAKO-稿子").mkdir(parents=True)
+        (old / "2026-11-02" / "TAKO-稿子" / "a.pptx").write_text("x")
+        (old / "2026-11-02" / "别人的.txt").write_text("y")
+        self.tako.call("/folder", {"path": str(old), "move": False})
+        self.assertTrue((old / "产出文件" / "2026-11-02" / "稿子" / "a.pptx").exists())
+        self.assertTrue((old / "2026-11-02" / "别人的.txt").exists(), "nothing that isn't Tako's moves")
+
+
 class ARestart(Base):
     """Joe 2026-11-09: two restarts emptied every panel and the answer he went back for was gone. A week of each conversation stays on this Mac."""
 
@@ -893,8 +982,9 @@ class ARestart(Base):
         self.tako.stick()
         seen = self.tako.until(lambda s: "给刘珊总的话写好了" in self.tako.said(s), "the answer after the restart", 4)
         self.assertEqual([e["role"] for e in seen["events"]], ["owner", "tako"])
-        kept = self.tako.home / "conversations.json"
+        kept = next((self.tako.output / "对话记录").glob("*.md"))
         self.assertEqual(stat.S_IMODE(kept.stat().st_mode), 0o600)
+        self.assertIn("给刘珊总的话写好了", kept.read_text(), "in the record in Tako's folder")
 
     def test_the_model_is_told_what_was_said_here(self):
         self.tako.ask(steps({"say": "封面改成月亮"}))
@@ -909,13 +999,11 @@ class ARestart(Base):
     def test_a_week_old_conversation_is_gone(self):
         self.tako.ask("老话")
         self.tako.until(lambda s: self.tako.said(s), "the answer", 4)
-        kept = self.tako.home / "conversations.json"
+        kept = next((self.tako.output / "对话记录").glob("*.md"))
 
         def a_week_later():
-            old = json.loads(kept.read_text())
-            for conversation in old.values():
-                conversation["at"] -= 8 * 86400
-            kept.write_text(json.dumps(old))
+            day = datetime.date.fromisoformat(kept.stem) - datetime.timedelta(days=8)
+            kept.rename(kept.with_name(f"{day}.md"))
         self.tako.restart(a_week_later)
         self.tako.stick()
         time.sleep(0.5)
@@ -1639,9 +1727,10 @@ class Inside(unittest.IsolatedAsyncioTestCase):
         self.assertIn("把她发的表填好", prompts[-1])
         self.assertIn("结局：答完了", prompts[-1])
         self.assertNotIn("附件3 在这里", prompts[-1].split("聊天记录")[0], "the memory holds the owner's words, not the chat")
-        kept = (self.home / "asked.json")
+        kept = next((self.home / "works" / "对话记录").glob("*.md"))
         self.assertEqual(kept.stat().st_mode & 0o777, 0o600)
         self.assertNotIn("附件3 在这里", kept.read_text())
+        self.assertIn("把她发的表填好", kept.read_text())
         await self.tako.turn("好的")
         self.assertNotIn("交代过你的事", prompts[-1], "only a new thread is told")
 
@@ -1905,7 +1994,7 @@ class AnOfficeAgentAsTheBrain(Base):
         self.tako.ask(steps({"call": "apply_patch", "args": {"input": patch}}, {"say": "写好了"}))
         self.answered("写好了")
         self.assertIn("A ", self.agent("tool_reply")[0]["reply"]["content"][0]["text"])
-        self.assertEqual(list(self.tako.output.rglob("笔记.md"))[0].read_text(), "# 笔记\n第一条\n")
+        self.assertEqual(list((self.tako.home / "work").rglob("笔记.md"))[0].read_text(), "# 笔记\n第一条\n", "a command's own files go to the scratch")
 
     def test_stop_stops_it(self):
         self.tako.ask(steps({"hang": True}))

@@ -1,7 +1,7 @@
 """Tako beside whichever window it is stuck to. It may fill an input or change a document
 when the owner asks; it never sends a message.
 
-What the panel showed is kept on this Mac for a week (`conversations.py`); everything else lives in memory. What arrives by itself (a new WeChat message) runs read-only and
+What the panel showed goes into the records in Tako's folder (`records.py`); everything else lives in memory. What arrives by itself (a new WeChat message) runs read-only and
 cannot touch anything; the owner's own words run with a narrow writable folder and approval cards.
 Every window shares one Codex thread: one brain, a limb on each window.
 The app itself is driven through the native side (`/native/next`), the only process with the permissions.
@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import datetime
 import os
 import platform
 import queue
@@ -25,7 +26,8 @@ import time
 from pathlib import Path
 from urllib.parse import unquote
 
-import conversations
+import outputs
+import records
 import feedback as fb
 import greetings as greet
 import wechat_reader as reader
@@ -39,9 +41,38 @@ from hands import Hands
 from lecture import Lectures
 from prompts import point_label
 from routes import serve
-from settings import HAS_WECHAT, HAS_WORKBENCH, INBOX, RUNTIME, app_version, clock, conversation_key
+from settings import HAS_WECHAT, HAS_WORKBENCH, INBOX, RUNTIME, WECHAT, WORKING, ZONE, app_version, clock, conversation_key, local_today, output_root, set_output_root
 
 SAME_THING_SECONDS = 600
+
+
+def merge_into(source, target):
+    """Moves everything under source into target. A day's record that is in both is joined, the moved one after; any other name taken keeps both."""
+    moved = 0
+    if not source.is_dir():
+        return 0
+    target.mkdir(parents=True, exist_ok=True)
+    for item in sorted(source.iterdir()):
+        there = target / item.name
+        if item.name == ".DS_Store":
+            item.unlink(missing_ok=True)
+            continue
+        if not there.exists():
+            shutil.move(str(item), str(there))
+            moved += 1
+        elif item.is_dir() and there.is_dir():
+            moved += merge_into(item, there)
+        elif item.suffix == ".md" and item.parent.name == outputs.RECORDS:
+            with open(there, "a") as out:
+                out.write("\n" + item.read_text().split("\n", 1)[-1])
+            item.unlink()
+            moved += 1
+        else:
+            shutil.move(str(item), str(there.with_name(f"{there.stem} 2{there.suffix}")))
+            moved += 1
+    with contextlib.suppress(OSError):
+        source.rmdir()
+    return moved
 from turns import Turns
 
 
@@ -63,7 +94,7 @@ class Companion(Chats, Turns, Hands, Lectures, Agents):
         self.signature = None
         self.generation = 0
         self.watching = True  # peeled off the window, it stops reading altogether
-        self.saved = conversations.load()  # conversations already visited, so returning to one keeps its thread; a week of them outlives a restart
+        self.saved = records.load()  # conversations already visited, so returning to one keeps its thread; a week of them outlives a restart
         self.brain_lost = bool(self.saved)  # the thread went away (or the app restarted) with things said: the next window with something said tells it (`_brain`)
         self.keeping = False   # a save of the conversations is on its way
         self.offered = set()   # files the owner dragged or picked, which the panel may preview before they send them
@@ -105,6 +136,7 @@ class Companion(Chats, Turns, Hands, Lectures, Agents):
         self.compacted = (None, 0)  # thread, and its size when it was last summarized
         self.pictures = 0      # bytes of images on the brain thread since it was last summarized
         self.agent_jobs = {}   # id -> a job one of the owner's other agents handed over, kept an hour after it ends so they can hear how
+        self.tidied = time.time()  # Tako's own leftovers were cleared at the start; again once a day after a job (outputs.tidy_runtime)
         self.tasks = set()
 
     def _later(self, work):
@@ -128,7 +160,7 @@ class Companion(Chats, Turns, Hands, Lectures, Agents):
     async def _keep(self):
         await asyncio.sleep(1)
         self.keeping = False
-        await asyncio.to_thread(conversations.save, self._every_conversation())
+        await asyncio.to_thread(records.save, self._every_conversation())
 
     def _every_conversation(self):
         every = {key: (item.get("chat") or {"name": key}, list(item["events"])) for key, item in list(self.saved.items())}
@@ -139,7 +171,7 @@ class Companion(Chats, Turns, Hands, Lectures, Agents):
     def keep_now(self):
         """On the way out: what was said in the last second is kept too."""
         with contextlib.suppress(Exception):
-            conversations.save(self._every_conversation())
+            records.save(self._every_conversation())
 
     def snapshot(self, after=0):
         job = self._here()
@@ -163,6 +195,50 @@ class Companion(Chats, Turns, Hands, Lectures, Agents):
             return True
         groups = [self.events, *(s["events"] for s in self.saved.values())]
         return any(path in event["text"] or path in unquote(event["text"]) for group in groups for event in group)
+
+    # ---- the history and Tako's folder ----
+    def history(self, find="", days=None):
+        """Every ask in the records, newest first, with where a tap goes to take it up again. find: only those that said it; days: only the last ones."""
+        self.keep_now()  # what was said this second is in it too
+        rows = records.history()
+        if days:
+            since = (datetime.datetime.now(ZONE).date() - datetime.timedelta(days=int(days) - 1)).isoformat()
+            rows = [row for row in rows if row["day"] >= since]
+        if find := str(find or "").strip().lower():
+            rows = [row for row in rows if find in " ".join([row["where"], row["asked"], *(f["name"] for f in row["files"]), *(s["text"] for s in row["replies"])]).lower()]
+        for row in rows:
+            key = row["key"]
+            if key.startswith("window:"):
+                row["window"], row["chat"] = key.rsplit(":", 1)[1], ""
+            elif key:
+                row["window"], row["chat"] = WECHAT, row["where"]
+        return {"root": str(output_root()), "records": str(records.folder()), "today": local_today(), "rows": rows[:500]}
+
+    def move_folder(self, path, move):
+        """The owner chose another folder for Tako. What was in the old one comes along if they say so, so there is only ever one."""
+        new, old = Path(path).expanduser(), output_root()
+        if new.resolve() == old.resolve():
+            return {"ok": True, "root": str(new)}
+        try:
+            new.mkdir(parents=True, exist_ok=True)
+            probe = new / ".tako-probe"
+            probe.write_text("")
+            probe.unlink()
+        except OSError:
+            return {"ok": False, "error": "这个文件夹写不进去，换一个吧"}
+        if new.resolve().is_relative_to(old.resolve()):
+            return {"ok": False, "error": "不能放在原来的文件夹里面，换一个吧"}
+        self.keep_now()  # what was said up to now goes where it was
+        moved = 0
+        if move:
+            for part in (outputs.RECORDS, outputs.PRODUCTS):
+                moved += merge_into(old / part, new / part)
+            with contextlib.suppress(OSError):
+                (old / ".DS_Store").unlink(missing_ok=True)
+                old.rmdir()
+        set_output_root(new)
+        outputs.move_old_layout(new)
+        return {"ok": True, "root": str(new), "moved": moved}
 
     # ---- called from HTTP threads ----
     def submit(self, coro):
@@ -207,6 +283,15 @@ async def main():
     parser.add_argument("--with-app", action="store_true", help="跟着 app 走：标准输入一关就退出")
     args = parser.parse_args()
     RUNTIME.mkdir(parents=True, exist_ok=True)
+    # Once, from before the records, and Tako's own leftovers. Never holds the start up: whatever can't be done now is tried next time.
+    with contextlib.suppress(Exception):
+        records.move_in(RUNTIME)
+    with contextlib.suppress(Exception):
+        outputs.move_old_layout()
+    with contextlib.suppress(Exception):
+        outputs.tidy_runtime()
+    with contextlib.suppress(OSError):
+        WORKING.write_text("[]")
 
     companion = Companion(None)
     companion.loop = asyncio.get_running_loop()

@@ -58,6 +58,9 @@ def serve(companion, token, port, agent_token=None):
                     return self.reply(companion.agent_job(query["id"][0]))
                 if url.path == "/agent/stop" and body is not None and body.get("id"):
                     return self.reply(companion.submit(companion.agent_stop(str(body["id"]))).result(timeout=15))
+                if url.path == "/agent/history":
+                    days = int(query.get("days", ["7"])[0] or 7)
+                    return self.reply({"ok": True, **companion.history(query.get("find", [""])[0], days)})
                 if url.path == "/agent/windows":
                     return self.reply(companion.submit(companion.native("windows", timeout=8)).result(timeout=10))
             except TimeoutError:
@@ -81,6 +84,8 @@ def serve(companion, token, port, agent_token=None):
                 return self.reply(companion.feedback.panel())
             if url.path == "/setup":
                 return self.reply(companion.setup.state())
+            if url.path == "/history":
+                return self.reply(companion.history(query.get("find", [""])[0]))
             if url.path == "/markdown-it.js":
                 return self.reply(renderer, "text/javascript; charset=utf-8")
             if url.path == "/file":
@@ -147,6 +152,8 @@ def serve(companion, token, port, agent_token=None):
             if url.path == "/stuck" and body.get("bundle"):
                 companion.submit(companion.stick({k: str(body.get(k, "")) for k in ("app", "bundle", "title", "id")}))
                 return self.reply({"ok": True})
+            if url.path == "/folder" and body.get("path"):
+                return self.reply(companion.move_folder(str(body["path"]), bool(body.get("move"))))
             if url.path == "/go" and body.get("key"):
                 companion.submit(companion.going_to(str(body["key"]), str(body.get("window") or "")))
                 return self.reply({"ok": True})

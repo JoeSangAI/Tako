@@ -90,6 +90,11 @@ final class Controller: NSObject, NSApplicationDelegate {
     }
 
     @objc func checkForUpdate() { updater.showOrCheck() }
+    /// 做过的事…: every ask in the records and where Tako's folder is, wherever the goo is.
+    @objc func showHistory() {
+        if !sideOpen { summon() }
+        web.evaluateJavaScript("showHistory()")
+    }
     /// 模型设置…: the panel's first card again (account or key), wherever the goo is.
     @objc func chooseModel() {
         if !sideOpen { summon() }
@@ -356,6 +361,10 @@ final class Controller: NSObject, NSApplicationDelegate {
         menu.addItem(shortcut)
         menu.addItem(outfitMenu())
         menu.addItem(.separator())
+        let history = NSMenuItem(title: "做过的事…", action: #selector(showHistory), keyEquivalent: "")
+        history.target = self
+        history.toolTip = "Tako 做过的事，和它的对话记录、产出文件放在哪。"
+        menu.addItem(history)
         let model = NSMenuItem(title: "模型设置…", action: #selector(chooseModel), keyEquivalent: "")
         model.target = self
         model.toolTip = "用 AI 账号登录，或者换成 API key。"

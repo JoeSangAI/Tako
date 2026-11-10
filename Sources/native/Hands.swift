@@ -220,6 +220,27 @@ extension Controller {
         }
     }
 
+    /// 换位置… in 做过的事: the owner picks where Tako's folder goes; the panel then asks whether the old one comes along.
+    func chooseFolder(from now: String) {
+        let before = NSWorkspace.shared.frontmostApplication
+        let open = NSOpenPanel()
+        open.canChooseFiles = false
+        open.canChooseDirectories = true
+        open.canCreateDirectories = true
+        open.prompt = "放在这里"
+        open.message = "Tako 的对话记录和做出的文件放在哪个文件夹"
+        if !now.isEmpty { open.directoryURL = URL(fileURLWithPath: now).deletingLastPathComponent() }
+        NSApp.activate(ignoringOtherApps: true)
+        open.begin { [weak self] answer in
+            before?.activate()
+            guard let self else { return }
+            self.side.makeKey()
+            guard answer == .OK, let chosen = open.url?.path,
+                  let data = try? JSONSerialization.data(withJSONObject: [chosen]), let text = String(data: data, encoding: .utf8) else { return }
+            self.web.evaluateJavaScript("folderChosen(\(text)[0])", completionHandler: nil)
+        }
+    }
+
     func openFile(_ path: String) {
         // A click on a file in the panel opens documents; nothing the model names gets to run.
         let url = URL(fileURLWithPath: path)

@@ -9,11 +9,18 @@ BINARY="$APP/Contents/MacOS/Tako"
 # A restart kills whatever job the owner has going (it happened 2026-11-04). Wait for it to end, or say TAKO_FORCE=1.
 if [ -z "${TAKO_FORCE:-}" ] && pgrep -x Tako >/dev/null; then
   # Only jobs begun by the Tako running now: one that was killed keeps saying 在做 forever. Its brain rewrites agent.json on every start.
+  # working.json lists them (records.py); a Tako from before it kept them in asked.json.
   BUSY="$(/usr/bin/python3 -c 'import json,os,sys,time
 home=os.environ.get("TAKO_HOME") or os.path.expanduser("~/Library/Application Support/Tako")
-try: jobs, began = json.load(open(os.path.join(home,"asked.json"))), os.path.getmtime(os.path.join(home,"agent.json"))
+try: began = os.path.getmtime(os.path.join(home,"agent.json"))
 except Exception: sys.exit()
-print(" ".join(j.get("where","") for j in jobs if j.get("ended")=="在做" and float(j.get("at",0))>began-5 and time.time()-float(j.get("at",0))<1800))' 2>/dev/null || true)"
+ids = []
+try: ids += [float(i) for i in json.load(open(os.path.join(home,"working.json")))]
+except Exception: pass
+try: ids += [float(j.get("at",0)) for j in json.load(open(os.path.join(home,"asked.json"))) if j.get("ended")=="在做"]
+except Exception: pass
+busy = [i for i in ids if i>began-5 and time.time()-i<1800]
+print(f"{len(busy)} 件" if busy else "")' 2>/dev/null || true)"
   if [ -n "$BUSY" ]; then
     echo "Tako 正在做事（$BUSY），重启会打断它。等它做完再跑，或者 TAKO_FORCE=1 ./run.sh。" >&2
     exit 1

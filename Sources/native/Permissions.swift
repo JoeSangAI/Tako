@@ -219,11 +219,11 @@ extension Controller {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in self?.quit() }
     }
 
-    /// A job the owner started since this Tako began and not yet ended (asked.py keeps them): a restart would cut it off.
+    /// A job the owner started since this Tako began and not yet ended (records.py lists them): a restart would cut it off.
     func jobUnderWay() -> Bool {
-        let file = takoHome.appendingPathComponent("asked.json")
-        guard let data = try? Data(contentsOf: file), let jobs = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return false }
+        let file = takoHome.appendingPathComponent("working.json")
+        guard let data = try? Data(contentsOf: file), let jobs = try? JSONSerialization.jsonObject(with: data) as? [Double] else { return false }
         let since = launchedAt.timeIntervalSince1970 - 5
-        return jobs.contains { ($0["ended"] as? String) == "在做" && (($0["at"] as? Double) ?? 0) > since }
+        return jobs.contains { $0 > since }
     }
 }

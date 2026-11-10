@@ -10,13 +10,29 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
-from settings import BACKUPS, OUTPUT_ROOT, RUNTIME, ZONE
+import settings
+from settings import BACKUPS, RUNTIME, WORK, ZONE
+
+PRODUCTS = "产出文件"
+RECORDS = "对话记录"
+WORK_DAYS, BACKUP_DAYS = 7, 30
+DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def products_root():
+    return settings.output_root() / PRODUCTS
 
 
 def output_roots():
-    return (OUTPUT_ROOT, RUNTIME / "output")
+    """Where a turn's work may be: Tako's folder, the fallback when that can't be written, and the scratch."""
+    return (settings.output_root(), RUNTIME / "output", WORK)
+
+
+def folder_name(chat):
+    return re.sub(r"[^\w\u4e00-\u9fff-]+", "-", chat["name"] if chat else "tako").strip("-")[:24] or "tako"
 
 
 def file_pictures(path, first=1, count=6):
@@ -66,30 +82,92 @@ def file_in_title(title):
 
 
 def make_output_dir(chat):
-    """Where a turn may write. A folder the owner refused or that can't exist never stops the work: it goes to Tako's own."""
-    name = re.sub(r"[^\w\u4e00-\u9fff-]+", "-", chat["name"] if chat else "tako").strip("-")[:24] or "tako"
+    """Where a turn puts what it hands the owner. A folder the owner refused or that can't exist never stops the work: it goes to Tako's own."""
     day = dt.datetime.now(ZONE).strftime("%Y-%m-%d")
-    for root in output_roots():
-        path = root / day / f"TAKO-{name}"
+    for root in (products_root(), RUNTIME / "output"):
+        path = root / day / folder_name(chat)
         with contextlib.suppress(OSError):
             path.mkdir(parents=True, exist_ok=True)
             return path
     raise OSError("no folder to write in")
 
 
+def make_work_dir(chat):
+    """The turn's scratch, where commands run: what it needs on the way and nobody asked for (Joe 2026-11-10: a cleanup's 772 files sat among the work)."""
+    path = WORK / dt.datetime.now(ZONE).strftime("%Y-%m-%d") / folder_name(chat)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def tidy_output_dir(path):
-    """Nothing landed in it: it goes, and so do the day's folder and the root if they are empty now."""
+    """Nothing landed in it: it goes, and so do the day's folder and 产出文件 if they are empty now."""
     with contextlib.suppress(OSError):
         path.rmdir()
         path.parent.rmdir()
         path.parent.parent.rmdir()
 
 
+def files_in(folder):
+    """Every file under a folder and when it last changed, hidden ones left out."""
+    found = {}
+    with contextlib.suppress(OSError):
+        for path in Path(folder).rglob("*"):
+            if path.is_file() and not any(part.startswith(".") for part in path.relative_to(folder).parts):
+                with contextlib.suppress(OSError):
+                    found[str(path)] = path.stat().st_mtime
+    return found
+
+
+def made_since(folder, before):
+    """What this one ask made or changed in the folder, not what earlier asks left there."""
+    return sorted(path for path, changed in files_in(folder).items() if before.get(path) != changed)
+
+
+def _to_trash(path):
+    trash = Path.home() / ".Trash"
+    target = trash / path.name
+    if target.exists():
+        target = trash / f"{path.stem} {time.strftime('%H.%M.%S')}{path.suffix}"
+    shutil.move(str(path), str(target))
+
+
+def tidy_runtime(now=None):
+    """Tako's own leftovers, without asking: scratch after a week is gone, backups after a month go to the Trash. What the owner was handed is theirs to delete."""
+    now = now or time.time()
+    with contextlib.suppress(OSError):
+        for day in WORK.iterdir():
+            if day.is_dir() and now - day.stat().st_mtime > WORK_DAYS * 86400:
+                shutil.rmtree(day, ignore_errors=True)
+    with contextlib.suppress(OSError):
+        for backup in BACKUPS.iterdir():
+            if now - backup.stat().st_mtime > BACKUP_DAYS * 86400:
+                with contextlib.suppress(OSError):
+                    _to_trash(backup)
+
+
+def move_old_layout(root=None):
+    """Before 对话记录 and 产出文件, a day's folders sat in Tako's folder itself as TAKO-name: they go where they belong now. Only Tako's own, never anything else in there."""
+    root = Path(root or settings.output_root())
+    with contextlib.suppress(OSError):
+        for day in root.iterdir():
+            if not (day.is_dir() and DAY.fullmatch(day.name)):
+                continue
+            for old in day.iterdir():
+                if old.is_dir() and old.name.startswith("TAKO-"):
+                    target = root / PRODUCTS / day.name / (old.name[5:] or "tako")
+                    if not target.exists():
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        old.rename(target)
+            with contextlib.suppress(OSError):
+                (day / ".DS_Store").unlink(missing_ok=True)
+                day.rmdir()
+
+
 def change_problem(source, copy):
     if not source.is_file() or not copy.is_file():
         return "原文件或副本不存在"
     if not any(copy.resolve().is_relative_to(root.resolve()) for root in output_roots()):
-        return "副本要放在本轮作品目录里"
+        return "副本要放在本轮草稿目录或作品目录里"
     if source.stat().st_mtime > copy.stat().st_mtime:
         return "原文件在复制之后又变过，这份副本已经旧了。重新复制再改。"
     return None

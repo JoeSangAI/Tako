@@ -61,7 +61,8 @@ if CONFIG.get("timezone") and isinstance(ZONE, ZoneInfo) and ZONE.key == CONFIG[
 OWNER = str(CONFIG.get("name") or account_name())
 MODEL = CONFIG.get("model") or None  # The owner's own jobs. None leaves it to the model the owner's Codex is set to.
 LIGHT_MODEL = CONFIG.get("light_model") or MODEL  # Throwaway threads: greetings, lecture notes, learning from edits, feedback.
-OUTPUT_ROOT = configured_path(CONFIG.get("output_root")) or Path.home() / "Desktop" / "Tako"
+# Tako's own folder: the conversations in 对话记录/, what it made in 产出文件/ (records.py). A test home keeps its own, so a test never writes on the real Desktop.
+OUTPUT_ROOT = configured_path(CONFIG.get("output_root")) or (RUNTIME / "Tako" if os.environ.get("TAKO_HOME") else Path.home() / "Desktop" / "Tako")
 BACKGROUND = configured_path(CONFIG.get("background_file")) or RUNTIME / "about-me.md"
 WORKBENCH_SETTING = CONFIG.get("workbench") if isinstance(CONFIG.get("workbench"), dict) else {}
 WORKBENCH = os.environ.get("TAKO_WORKBENCH") or WORKBENCH_SETTING.get("url")  # Write tests point this at an isolated copy.
@@ -78,9 +79,30 @@ CONTEXT_MESSAGES = 30
 MAX_MESSAGE_CHARS = 2000
 VOICE = RUNTIME / "voice.md"      # Habits learned from the owner's edits, never their sentences. Plain text they can read or change.
 METRICS = RUNTIME / "metrics.jsonl"  # Numbers only, never chat content.
-CONVERSATIONS = RUNTIME / "conversations.json"  # What each panel showed, a week of it, so a restart doesn't empty them (conversations.py).
-ASKED = RUNTIME / "asked.json"      # What the owner asked and how it ended, a week of it: their words, never a window's.
+WORK = RUNTIME / "work"            # A turn's scratch: screenshots, scripts, copies being edited. Gone a week later (outputs.tidy).
+WORKING = RUNTIME / "working.json"  # The jobs under way right now, for the app: a restart would cut them off.
 AGENT_DOOR = RUNTIME / "agent.json"  # Where the owner's other agents find Tako: port and their own token, readable by the owner alone.
+
+
+def output_root():
+    """Where Tako's folder is now: the owner may move it while it runs."""
+    return OUTPUT_ROOT
+
+
+def set_output_root(path):
+    """The owner chose another folder: kept in config.json with the rest of what is theirs."""
+    global OUTPUT_ROOT
+    path = Path(path).expanduser()
+    found = load_config()
+    found["output_root"] = str(path).replace(str(Path.home()), "~", 1) if str(path).startswith(str(Path.home()) + "/") else str(path)
+    target = RUNTIME / "config.json"
+    spare = target.with_name("config.json.tmp")
+    RUNTIME.mkdir(parents=True, exist_ok=True)
+    spare.write_text(json.dumps(found, ensure_ascii=False, indent=2) + "\n")
+    os.chmod(spare, 0o600)
+    os.replace(spare, target)
+    CONFIG["output_root"] = found["output_root"]
+    OUTPUT_ROOT = path
 
 
 def clock(ts):

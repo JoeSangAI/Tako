@@ -64,9 +64,14 @@ extension Controller: WKScriptMessageHandler, WKNavigationDelegate {
         if body["done"] != nil { goo.celebrate() }
         if body["oops"] != nil { goo.fumble() }
         if let value = body["cardWidth"] as? Double { cardWidth = CGFloat(value); enchant.sync() }
-        if let path = body["openFile"] as? String { openFile(path) }
+        if let path = body["openFile"] as? String {
+            var folder: ObjCBool = false
+            // Tako's own folder opens in Finder; a file goes through the same check as any other.
+            if FileManager.default.fileExists(atPath: path, isDirectory: &folder), folder.boolValue { NSWorkspace.shared.open(URL(fileURLWithPath: path, isDirectory: true)) } else { openFile(path) }
+        }
         if let spec = body["goTo"] as? String { goTo(spec, chat: body["chat"] as? String ?? "") }
         if body["pickFiles"] != nil { pickFiles() }
+        if let now = body["chooseFolder"] as? String { chooseFolder(from: now) }
         if let action = body["update"] as? String { updater.act(action) }
         if let value = body["statistics"] as? Bool { statistics = value }
         if let path = body["revealFile"] as? String { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }

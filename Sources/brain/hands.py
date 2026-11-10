@@ -16,7 +16,7 @@ import webfill
 import wechat_reader as reader
 from chats import render
 from guards import LOCAL_NAMES, SCRIPTABLE, clipped, full_chat_name, lasting_command, overwritten_paths, plain_command, same_chat, risky_script, unsafe_script, workbench_packet
-from outputs import back_up, change_problem, file_in_title, file_pictures, replace_file
+from outputs import back_up, change_problem, file_in_title, file_pictures, output_roots, replace_file
 from settings import CONFIG, HAS_WECHAT, conversation_key, OWNER, WECHAT, WORKBENCH, WORKBENCH_CARDS, local_today, note_metric
 
 FEEDBACK_KINDS = {"bug": "出了问题", "rough": "不好用", "wish": "想用的场景"}
@@ -44,6 +44,7 @@ class Hands:
                 await asyncio.sleep(0.1)  # the item's own start event carries the paths
                 paths = [str(path) for path in job.changing.get(params.get("itemId")) or [] if path]
                 if paths and await asyncio.to_thread(self._backed_up, paths):
+                    job.touched.update(path for path in paths if not any(Path(path).resolve().is_relative_to(root.resolve()) for root in output_roots()))
                     note_metric(kind="approval", by="itself", what="file")
                     return {"decision": "accept"}  # Not for the session: the next change gets its own backup.
                 text = "改动文件：" + "、".join(paths) if paths else f"改动文件：{params.get('grantRoot') or '不知道改哪里'}"
@@ -754,6 +755,7 @@ class Hands:
             return self._reply(f"替换失败（{problem}），原文件没动，已重新打开。", ok=False)
         if not opened.get("ok"):
             return self._reply(f"已替换，但没能重新打开：{opened.get('error') or '没有回应'}。原文件备份在 {backup}", ok=False)
+        job.touched.add(str(source))
         return self._reply(f"已替换并重新打开，原文件备份在 {backup}")
 
     def _private_names(self, job):

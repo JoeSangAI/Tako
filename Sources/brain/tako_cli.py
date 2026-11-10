@@ -5,6 +5,7 @@
   tako job ID [--wait]
   tako stop ID
   tako windows
+  tako history [--days 7] [--find 关键词]
 
 It reads the door Tako writes when it starts (agent.json in Tako's own folder). Only the standard library, any python3 from 3.8.
 Exit codes: 0 done, 1 failed or refused, 3 still going (asked not to wait, or waited long enough), 4 stopped.
@@ -17,6 +18,7 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -111,6 +113,9 @@ def main():
     stop = sub.add_parser("stop", help="停掉一件事")
     stop.add_argument("id")
     sub.add_parser("windows", help="列出开着的窗口")
+    history = sub.add_parser("history", help="看 Tako 做过的事")
+    history.add_argument("--days", type=int, default=7, help="最近几天，默认 7")
+    history.add_argument("--find", default="", help="只看说过这些字的")
     args = parser.parse_args()
 
     if args.command == "windows":
@@ -120,6 +125,16 @@ def main():
         else:
             for row in found.get("windows", []):
                 print("\t".join(str(row.get(k, "")) for k in ("id", "app", "title")))
+        return 0
+    if args.command == "history":
+        found = call(f"/agent/history?days={args.days}&find={urllib.parse.quote(args.find)}")
+        if args.json or not found.get("ok", True):
+            print(json.dumps(found, ensure_ascii=False, indent=2))
+        else:
+            for row in found.get("rows", []):
+                files = "　".join(f["path"] for f in row.get("files") or [])
+                print("\t".join([row["time"], row["where"], row["ended"], " ".join(row["asked"].split()), files]).rstrip("\t"))
+            print(f"[对话记录在 {found.get('records')}]", file=sys.stderr)
         return 0
     if args.command == "ask":
         started = call("/agent/ask", {"text": args.text, "window": args.window, "files": [str(Path(f).resolve()) for f in args.file], "from": args.source})

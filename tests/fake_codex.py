@@ -15,6 +15,7 @@ Everything received is written to $FAKE_CODEX_LOG, one JSON object per line.
 """
 import itertools
 import json
+from pathlib import Path
 import os
 import re
 import sys
@@ -101,6 +102,9 @@ def run_turn(thread, turn, text):
         elif "retry" in step:
             for attempt in range(step["retry"]):
                 event("error", threadId=thread, turnId=turn, willRetry=True, error={"message": f"Reconnecting... {attempt + 1}/5", "codexErrorInfo": None})
+        elif "make" in step:  # a file handed over, in the turn's own folder as the prompt names it
+            folder = re.search(r"本轮作品目录：(.+?)（", text)
+            Path(folder.group(1), step["make"]).write_text(step.get("text", "x"))
         elif "pause" in step:
             stop.wait(step["pause"])
         elif "die" in step:

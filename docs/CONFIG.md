@@ -29,7 +29,7 @@ Tako 不需要任何设置就能用。想让它更懂你，在 `~/Library/Applic
 | `light_model` | 后台的一次性轻活用哪个模型：开场白、听课笔记、从你改过的草稿里学写法、整理反馈 | 和 `model` 一样 |
 | `timezone` | Tako 用的时区：判断“今天”、问候，以及模型跑命令时的时钟 | 这台 Mac 的时区 |
 | `clock_note` | 关于时间的补充说明，每轮都会告诉模型 | 无 |
-| `output_root` | 做好的文件放哪 | `~/Desktop/Tako` |
+| `output_root` | Tako 的文件夹：`对话记录/` 和 `产出文件/` 放在这里。也可以右键小章鱼 →“做过的事…”→“换位置…”来选 | `~/Desktop/Tako` |
 | `background_file` | 背景文件的位置 | `about-me.md` |
 | `extra_instructions` | 追加给模型的说明 | 无 |
 | `keep_codex_log` | 排查问题时设成 `true`：Codex 的完整日志（含窗口截图和文字）留在 `codex-state/`，下次启动清空。查完记得关 | 不留 |

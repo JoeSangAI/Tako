@@ -50,6 +50,37 @@
   #log { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; user-select: text; }
   .note { font-size: 12px; line-height: 1.5; padding-left: 10px; border-left: 2px solid var(--ink); user-select: text; }
   #tick.ear { color: var(--ink); cursor: pointer; }
+  /* 做过的事: every ask in the records, over the conversation until closed */
+  #hist { flex: none; width: 26px; height: 26px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 7px; background: none; color: var(--muted); cursor: pointer; }
+  #hist:hover, body.history #hist { background: var(--card); color: var(--ink); }
+  #history { display: none; position: absolute; left: 0; right: 0; top: var(--bar-h); bottom: 0; z-index: 4; background: var(--paper); flex-direction: column; }
+  body.history #history { display: flex; }
+  #history .hbar { flex: none; display: flex; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+  #hq { flex: 1; min-width: 0; padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; font: inherit; background: var(--paper); color: inherit; user-select: text; }
+  #hq:focus { outline: 2px solid var(--btn); outline-offset: -1px; }
+  #hlist { flex: 1; overflow-y: auto; padding: 4px 8px 12px; user-select: text; }
+  #hlist .day { font-size: 11px; color: var(--muted); padding: 10px 6px 4px; font-weight: 600; }
+  #hlist .empty { color: var(--muted); padding: 24px 6px; text-align: center; }
+  .hrow { border-radius: 9px; padding: 7px 8px; cursor: pointer; }
+  .hrow:hover, .hrow.open { background: var(--card); }
+  .hrow .meta { display: flex; gap: 6px; font-size: 11px; color: var(--muted); }
+  .hrow .meta .where { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hrow .meta .ended { flex: none; }
+  .hrow .meta .ended.short { color: var(--accent); }
+  .hrow .asked { margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+  .hrow.open .asked { display: block; }
+  .hrow .more { display: none; margin-top: 8px; cursor: auto; }
+  .hrow.open .more { display: block; }
+  .hrow .more .md { margin-bottom: 8px; }
+  .hrow .gone { font-size: 12px; color: var(--muted); margin: 0 0 6px; }
+  .hrow .back { border: 0; border-radius: 8px; background: var(--paper); color: var(--ink); font: inherit; font-size: 12px; padding: 2px 10px; cursor: pointer; box-shadow: inset 0 0 0 1px var(--line); }
+  #hfoot { flex: none; display: flex; align-items: center; gap: 6px; padding: 8px 12px 10px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
+  #hroot { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
+  #hfoot button, #hask button { flex: none; border: 0; border-radius: 8px; background: var(--paper); color: var(--ink); font: inherit; font-size: 12px; padding: 2px 10px; cursor: pointer; box-shadow: inset 0 0 0 1px var(--line); }
+  #hask { display: none; padding: 10px 12px; border-top: 1px solid var(--line); font-size: 12px; }
+  #hask.show { display: block; }
+  #hask .actions { display: flex; gap: 6px; margin-top: 8px; }
+  #hask button.main { background: var(--btn); color: var(--btn-ink); box-shadow: none; }
   .owner { align-self: flex-end; background: var(--btn); color: var(--btn-ink); padding: 5px 10px; border-radius: 12px 12px 3px 12px; max-width: 88%; white-space: pre-wrap; overflow-wrap: anywhere; }
   .owner a { color: inherit; }
   .empty { color: var(--muted); margin: auto; text-align: center; font-size: 12px; padding: 0 12px; animation: hello .5s ease; }
@@ -189,7 +220,13 @@
 </head>
 <body>
 <section id="card" aria-label="Tako">
-  <header><button id="who" title="换一段对话" type="button">我在看：…</button><span id="tick"></span></header>
+  <header><button id="who" title="换一段对话" type="button">我在看：…</button><span id="tick"></span><button id="hist" type="button" title="做过的事" aria-label="做过的事"><svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M8 4.8V8l2.2 1.6" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></button></header>
+  <section id="history" aria-label="做过的事">
+    <div class="hbar"><input id="hq" placeholder="搜做过的事、文件名" aria-label="搜做过的事"></div>
+    <div id="hlist"></div>
+    <div id="hask" role="dialog"></div>
+    <div id="hfoot"><span id="hroot"></span><button id="hopen" type="button">打开</button><button id="hmove" type="button">换位置…</button></div>
+  </section>
   <div id="picker"><input id="q" placeholder="搜索对话名称" aria-label="搜索对话"><div id="hits"></div></div>
   <div id="notice" role="status"></div>
   <div id="log"></div>
@@ -434,6 +471,108 @@ function stepsBlock(steps) {
   return box;
 }
 $('tick').onclick = () => { if ($('tick').classList.contains('ear')) api('/listen/stop', {}); };
+
+// ---- 做过的事: what the records in Tako's folder hold, newest first (Joe 2026-11-10) ----
+let historyRows = [], historyRoot = '', historyToday = '';
+async function loadHistory() {
+  try {
+    const r = await api('/history');
+    historyRows = r.rows || []; historyRoot = r.root || ''; historyToday = r.today || '';
+  } catch { historyRows = []; }
+  drawHistory();
+}
+window.showHistory = () => {
+  document.body.classList.add('history');
+  window.setOpen(true);
+  loadHistory();
+  setTimeout(() => $('hq').focus(), 50);
+};
+function hideHistory() { document.body.classList.remove('history'); $('hask').classList.remove('show'); }
+$('hist').onclick = () => (document.body.classList.contains('history') ? hideHistory() : window.showHistory());
+$('hq').oninput = () => drawHistory();
+$('hopen').onclick = () => native?.postMessage({ openFile: historyRoot });
+$('hmove').onclick = () => native?.postMessage({ chooseFolder: historyRoot });
+function dayName(day) {
+  if (day === historyToday) return '今天';
+  const t = new Date(`${historyToday}T12:00:00`), d = new Date(`${day}T12:00:00`);
+  const back = Math.round((t - d) / 86400000);
+  return back === 1 ? '昨天' : back === 2 ? '前天' : `${+day.slice(5, 7)}月${+day.slice(8, 10)}日`;
+}
+function historyRow(row) {
+  const box = document.createElement('div');
+  box.className = 'hrow';
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  const when = document.createElement('span'); when.textContent = row.time.slice(-5);
+  const where = document.createElement('span'); where.className = 'where'; where.textContent = row.where || '某个窗口';
+  const ended = document.createElement('span');
+  ended.className = row.ended === '答完了' ? 'ended' : 'ended short';
+  const files = row.files.length ? ` · ${row.files.length} 个文件` : '';
+  ended.textContent = (row.ended === '答完了' ? '' : row.ended) + files;
+  meta.append(when, where, ended);
+  const asked = document.createElement('div');
+  asked.className = 'asked';
+  asked.textContent = row.asked;
+  const more = document.createElement('div');
+  more.className = 'more';
+  box.append(meta, asked, more);
+  box.onclick = (e) => {
+    if (more.contains(e.target)) return;
+    if (!more.childElementCount) {
+      row.replies.forEach((reply) => {
+        try { more.append(renderMarkdown(reply.text)); } catch { const plain = document.createElement('div'); plain.textContent = reply.text; more.append(plain); }
+      });
+      row.files.forEach((file) => {
+        if (file.there) more.append(fileCard(file.path, file.name));
+        else { const gone = document.createElement('div'); gone.className = 'gone'; gone.textContent = `${file.name}（已不在）`; more.append(gone); }
+      });
+      if (row.touched.length) { const touched = document.createElement('div'); touched.className = 'gone'; touched.textContent = `改动了：${row.touched.join('、')}（原样备份过）`; more.append(touched); }
+      if (row.window) {
+        const back = button(row.chat ? `回到「${row.chat}」` : '回到那个窗口', () => {
+          hideHistory();
+          api('/go', { key: row.key || '', window: String(row.window) }).catch(() => {});
+          native?.postMessage({ goTo: String(row.window), chat: row.chat || '' });
+        });
+        back.className = 'back';
+        more.append(back);
+      }
+    }
+    box.classList.toggle('open');
+  };
+  return box;
+}
+function drawHistory() {
+  setText($('hroot'), `\u200e${historyRoot.replace(/^\/Users\/[^/]+/, '~')}\u200e`);
+  $('hroot').title = historyRoot;
+  const q = $('hq').value.trim().toLowerCase();
+  const rows = q ? historyRows.filter((row) => [row.where, row.asked, ...row.files.map((f) => f.name), ...row.replies.map((r) => r.text)].join(' ').toLowerCase().includes(q)) : historyRows;
+  const out = [];
+  let day = '';
+  rows.forEach((row) => {
+    if (row.day !== day) { day = row.day; const head = document.createElement('div'); head.className = 'day'; head.textContent = dayName(day); out.push(head); }
+    out.push(historyRow(row));
+  });
+  if (!out.length) { const empty = document.createElement('div'); empty.className = 'empty'; empty.textContent = q ? '没有找到' : '还没有做过的事'; out.push(empty); }
+  $('hlist').replaceChildren(...out);
+}
+// The owner picked another folder (换位置…, or 做过的事… in the menu): one question, then everything is in one place again.
+window.folderChosen = (path) => {
+  if (!document.body.classList.contains('history')) window.showHistory();
+  const ask = $('hask');
+  const text = document.createElement('div');
+  text.textContent = `以后放在 ${path.replace(/^\/Users\/[^/]+/, '~')}。以前的对话记录和产出文件也搬过去吗？`;
+  const actions = document.createElement('div');
+  actions.className = 'actions';
+  const choose = (move) => async () => {
+    ask.classList.remove('show');
+    const r = await api('/folder', { path, move }).catch(() => ({ ok: false, error: '没有回应，再试一次' }));
+    if (!r.ok) showError(r.error || '没换成', true);
+    loadHistory();
+  };
+  actions.append(button('搬过去', choose(true), true), button('不用，只放以后的', choose(false)), button('取消', () => ask.classList.remove('show')));
+  ask.replaceChildren(text, actions);
+  ask.classList.add('show');
+};
 function bubble(event) {
   const row = document.createElement('div');
   if (event.role === 'note') { row.className = 'note'; row.textContent = event.text; return row; }
@@ -1092,7 +1231,10 @@ $('q').oninput = () => {
     });
   }, 220);
 };
-addEventListener('keydown', (e) => { if (e.key === 'Escape' && opened) window.setOpen(false); });
+addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !opened) return;
+  if (document.body.classList.contains('history')) hideHistory(); else window.setOpen(false);
+});
 layout();
 </script>
 </body>

@@ -171,11 +171,14 @@ class WhatTheOwnerAsked(unittest.TestCase):
     """Joe 2026-11-03: after an update Tako had forgotten the morning's job. What the owner asked is kept on disk, and only that."""
 
     def test_only_the_owners_own_words_are_kept(self):
-        self.assertIn("asked.begin, (chat or {}).get(\"name\") or (window or {}).get(\"app\"), instruction, output)", TURNS)
-        self.assertEqual(TURNS.count("asked.begin"), 1)
-        kept = source("asked")
-        for private in ("render", "said", "events", "read_wechat", "screenshot"):
+        """Joe 2026-11-10: the records in Tako's folder hold what the panel showed and each ask's ending, never a chat or a window by itself."""
+        self.assertIn("records.begin, conversation_key(chat, events), (chat or {}).get(\"name\") or (window or {}).get(\"app\"), instruction, output)", TURNS)
+        self.assertEqual(TURNS.count("records.begin"), 1)
+        kept = source("records")
+        for private in ("render", "read_wechat", "_said_since", "screenshot", "import chats", "look_at"):
             self.assertNotIn(private, kept.split('"""')[2])
+        self.assertIn('ROLES = {"owner": None, "tako": "Tako", "note": "笔记"}', kept)
+        self.assertIn("0o600", kept)
 
     def test_stopping_short_is_a_word_the_owner_can_be_heard_saying(self):
         self.assertIn("没做完就停了", fb.STUCK)
@@ -506,7 +509,7 @@ class WorkbenchTakesOnlyOwnersWords(unittest.TestCase):
         hands = (ROOT / "Sources/native/Hands.swift").read_text()
         self.assertNotIn(".activate()", operate)
         self.assertNotIn("frontTarget", operate + hands)
-        self.assertEqual(hands.count("?.activate()"), 2, "bringing a window forward is for a button the owner pressed, and the file picker they opened")
+        self.assertEqual(hands.count("?.activate()"), 3, "bringing a window forward is for a button the owner pressed: the file picker and the folder picker they opened")
         # Every use of the real pointer and keyboard in a step goes through the one door, behind the one check that the owner is away.
         step = operate[operate.index("func step(_ step"):operate.index("/// While the real pointer is in use")]
         self.assertEqual(step.count("withRealPointer"), step.count("guard await ownerSettles(on: win) else { return waitForFront(win) }"))

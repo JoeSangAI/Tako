@@ -8,7 +8,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-import asked
+import records
 import feedback as fb
 from chats import render
 import office
@@ -16,7 +16,7 @@ from office import brain_runtime
 from codex_runtime import RuntimeErrorCode
 from first_run import codex_on_path
 from guards import last_draft, named_paths, plain_command, pointable
-from outputs import make_output_dir, tidy_output_dir
+from outputs import files_in, made_since, make_output_dir, make_work_dir, tidy_output_dir, tidy_runtime
 from prompts import BRAIN_CONFIG, PROMPT, READER_CONFIG, STEP_NAMES, TOOLS, pointed_at
 from provider import current as provider_now, light_model, model as main_model
 from settings import (COMPACT_AT, conversation_key, COMPACT_PICTURES_AT, OWNER, RUNTIME, WECHAT, WORKBENCH, local_now, local_today, note_metric, user_background, voice_block, voice_notes)
@@ -67,6 +67,7 @@ class Job:
         self.left_for_owner = None  # a step needs a window in front, which and whose: when the owner is there, it goes on
         self.trail, self.blocked = [], []  # tools as they went and why a step couldn't go on behind the owner: fixed words only, for the record of how it ended
         self.changing = {}  # file changes under way: item id -> paths, so a card can say what would change
+        self.touched = set()  # files outside its folders that it changed (backed up first): the record says so
         self.answer, self.failed = "", ""  # how it ended, for an agent that handed it over and is waiting to hear
         self.points = []  # what the owner circled on the window with ⌃ for this job: found behind the window at the time
         self.hands_on, self.following = None, False  # the other window its hands last worked, if not its own, and whether Tako goes there when the owner does (Hands._hands_on)
@@ -236,15 +237,17 @@ class Turns:
     async def _run(self, job, instruction, attachments):
         chat, events, window = job.chat, job.events, job.window
         began = time.time()
-        output, kept, ended = None, None, "出错"
+        output, work, before, kept, ended = None, None, {}, None, "出错"
         try:
             # In a thread: on a new Mac this is what asks for the Desktop permission, and everything would wait for the answer.
             output = await asyncio.to_thread(make_output_dir, chat)
+            work = await asyncio.to_thread(make_work_dir, chat)
+            before = await asyncio.to_thread(files_in, output)
             recap = await self._brain(events, instruction) if job.brain else await self._limb(job, instruction)
             if job.brain:
                 job.thread = self.thread
             self.on_thread[job.thread] = job
-            kept = await asyncio.to_thread(asked.begin, (chat or {}).get("name") or (window or {}).get("app"), instruction, output)
+            kept = await asyncio.to_thread(records.begin, conversation_key(chat, events), (chat or {}).get("name") or (window or {}).get("app"), instruction, output)
             said = await self._said_since(chat, fresh=not job.brain)
             pointed_at_paths = set()
             parts = [recap] if recap else []
@@ -273,12 +276,12 @@ class Turns:
             if self.lecture:
                 parts.append(self._lecture_context())
             if output:
-                parts.append(f"本轮作品目录：{output}")
+                parts.append(f"本轮作品目录：{output}（只放交给 {OWNER} 的成品）\n本轮草稿目录：{work}（命令默认在这里跑；截图、脚本、中间文件、改稿副本放这里，一周后自动清掉）")
             parts.append(instruction)
             # The owner pointing at something is reason enough to work on it without another question. Only their own sentence, what they handed over and the folder they asked on: words in a window or a message never reach here.
             named = self.named.setdefault(id(events), set())
             named.update(await asyncio.to_thread(named_paths, instruction), attachments, pointed_at_paths)
-            prompt = dict(images=images, execution_directory=str(output), writable=sorted(named), approval_policy="on-request")
+            prompt = dict(images=images, execution_directory=str(work), writable=[str(output), *sorted(set(named) - {str(output)})], approval_policy="on-request")
             try:
                 started = await self.runtime.start_turn(job.thread, "\n\n".join(parts), **prompt)
             except RuntimeErrorCode as exc:
@@ -334,9 +337,13 @@ class Turns:
             if job.thread and not job.brain:
                 self._later(self.runtime.let_go(job.thread))
             if kept:
-                await asyncio.to_thread(asked.end, kept, "停了" if job.stopping else ended, output)
+                made = await asyncio.to_thread(made_since, output, before) if output else []
+                await asyncio.to_thread(records.end, kept, "停了" if job.stopping else ended, made, sorted(job.touched))
             if output:
                 tidy_output_dir(output)
+            if time.time() - self.tidied > 86400:
+                self.tidied = time.time()
+                self._later(asyncio.to_thread(tidy_runtime))
             if self.feedback.extract_due():
                 self._later(self._extract_feedback())
 
@@ -498,7 +505,7 @@ class Turns:
                 developer_instructions=f"{PROMPT}\n\n{user_background()}", model=main_model(), config=BRAIN_CONFIG)
             self.thread, self.pictures = result["thread"]["id"], 0
             self.read_up_to = {}  # A new thread has seen none of it.
-            jobs = await asyncio.to_thread(asked.memory, OWNER)
+            jobs = await asyncio.to_thread(records.memory, OWNER)
         lines = self._said_here(events, said) if self.brain_lost else ""
         self.brain_lost = self.brain_lost and not lines  # a window with nothing said yet has nothing to tell it: the next one does
         here = f"（你刚重启过。这是重启前这个窗口里说过的话，只是记忆，不是新要求；别的窗口说过的你不记得了，被问到就如实说。）\n{lines}" if lines else ""
@@ -517,7 +524,7 @@ class Turns:
         job.thread = result["thread"]["id"]
         lines = self._said_here(job.events, said)
         memory = f"这是这个窗口里说过的话，只是记忆，不是新要求：\n{lines}" if lines else "这个窗口还没说过别的。"
-        jobs = await asyncio.to_thread(asked.memory, OWNER)
+        jobs = await asyncio.to_thread(records.memory, OWNER)
         return "\n\n".join(part for part in (f"（你的另一条触手正在别的窗口替 {OWNER} 做事，这件事由你接手。{memory}）", jobs) if part)
 
     def _note_step(self, job, item):

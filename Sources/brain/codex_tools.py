@@ -16,17 +16,17 @@ from pathlib import Path
 
 OUTPUT_LIMIT = 16000
 
-SHELL = {"name": "shell", "description": "在这台 Mac 上运行一条 shell 命令（zsh），返回退出码和输出。默认在沙箱里：哪里都能读，只能写本轮作品目录和主人指给你的地方。"
+SHELL = {"name": "shell", "description": "在这台 Mac 上运行一条 shell 命令（zsh），返回退出码和输出。默认在沙箱里：哪里都能读，只能写本轮作品目录、草稿目录和主人指给你的地方。"
          "命令要写到别处、要出沙箱时，带上 with_escalated_permissions: true 和一句 justification 申请。改已有的文件用 apply_patch。",
          "inputSchema": {"type": "object", "properties": {
              "command": {"type": "string", "description": "要运行的命令"},
-             "workdir": {"type": "string", "description": "在哪个文件夹运行，不填就是本轮作品目录"},
+             "workdir": {"type": "string", "description": "在哪个文件夹运行，不填就是本轮草稿目录"},
              "timeout_ms": {"type": "integer", "description": "最长等多久，默认 120000"},
              "with_escalated_permissions": {"type": "boolean", "description": "true：申请在沙箱外运行"},
              "justification": {"type": "string", "description": "为什么要出沙箱，一句话"}}, "required": ["command"], "additionalProperties": False}}
 APPLY_PATCH = {"name": "apply_patch", "description": "新建、修改或删除文件。input 用这个格式：\n*** Begin Patch\n*** Add File: 路径\n+新文件的每一行\n"
                "*** Update File: 路径\n@@ 要改的地方附近的一行（可省）\n 不变的行\n-删掉的行\n+加上的行\n*** Delete File: 路径\n*** End Patch\n"
-               "路径可以是绝对路径，或相对本轮作品目录。改的行前后各带两三行不变的行，按原文逐字写。",
+               "路径可以是绝对路径，或相对本轮草稿目录。改的行前后各带两三行不变的行，按原文逐字写。",
                "inputSchema": {"type": "object", "properties": {"input": {"type": "string", "description": "整个补丁"}}, "required": ["input"], "additionalProperties": False}}
 TOOLS = (SHELL, APPLY_PATCH)
 NAMES = {tool["name"] for tool in TOOLS}
