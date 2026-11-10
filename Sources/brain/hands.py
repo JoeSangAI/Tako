@@ -15,7 +15,7 @@ import feedback as fb
 import webfill
 import wechat_reader as reader
 from chats import render
-from guards import LOCAL_NAMES, SCRIPTABLE, clipped, full_chat_name, lasting_command, overwritten_paths, plain_command, same_chat, risky_script, unsafe_script, workbench_packet
+from guards import LOCAL_NAMES, SCRIPTABLE, clipped, full_chat_name, lasting_command, normalized, overwritten_paths, plain_command, same_chat, risky_script, unsafe_script, workbench_packet
 from outputs import back_up, change_problem, file_in_title, file_pictures, output_roots, replace_file
 from settings import CONFIG, HAS_WECHAT, conversation_key, OWNER, WECHAT, WORKBENCH, WORKBENCH_CARDS, local_today, note_metric
 
@@ -34,7 +34,9 @@ class Hands:
                 return self._reply("这个线程没有工具。", ok=False)
             result = await self._tool(params.get("tool"), params.get("arguments") or {}, job)
             self._weigh(job, sum(len(item.get("imageUrl") or "") for item in result.get("contentItems") or []))
-            self.feedback.count(f"tool.{params.get('tool')}" if result.get("success") else f"tool_failed.{params.get('tool')}")
+            # A failure says which kind it was, in one fixed word: the reason itself never leaves (docs/PRIVACY.md).
+            reason = ((result.get("contentItems") or [{}])[0]).get("text")
+            self.feedback.count(f"tool.{params.get('tool')}" if result.get("success") else f"tool_failed.{params.get('tool')}.{fb.failure_kind(reason)}")
             return result
         if method in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval"):
             if not job:
@@ -199,9 +201,20 @@ class Hands:
         finally:
             job.following = False
 
-    def _hold_fill(self, text, files, window, chat, job, app, why=None):
-        """The hand-over itself is known exactly, so no model is needed to finish it: the owner getting to that window is enough. Asked again, the newest one stands."""
-        key = ("fill", self._conversation(job))
+    @staticmethod
+    def _fill_key(job, window, chat):
+        """One hand-over waits per place it goes: two invitations for two people both get there (Joe 2026-11-10, the second pushed the first out). Asked again for the same place, the newest stands."""
+        return ("fill", Hands._conversation(job), normalized(chat) if chat else str(window or ""))
+
+    def _fills(self, conversation):
+        return [key for key in self.held if key[0] == "fill" and key[1] == conversation]
+
+    def _drop_fills(self, conversation, chat=None):
+        """All of this conversation's hand-overs, or the one going to `chat`."""
+        return [self.held.pop(key) for key in self._fills(conversation) if not chat or key[2] == normalized(chat)]
+
+    def _hold_fill(self, key, text, files, window, chat, job, app, why=None):
+        """The hand-over itself is known exactly, so no model is needed to finish it: the owner getting to that window is enough."""
         where = f"{app}「{chat}」" if chat else app
         what = "、".join(Path(f).name for f in files) or "这段话"
         mark = self.held[key] = {"name": job.name, "events": job.events, "key": job.key, "what": what, "where": where, "app": app, "window": window or (WECHAT if chat else None), "chat": chat or job.wechat_chat,
@@ -209,7 +222,7 @@ class Hands:
         self._later(self._place_when_back(key, mark, text, files, window, chat, job))
         # Facts, not orders: told "don't try again, don't look", the model obeyed that over the owner saying the chat was open (2026-11-06).
         why = why or f"{app}的输入框要用真鼠标放字"
-        return {"ok": True, "message": f"还没放进去，排着：{why}。{OWNER} 到{app}、手停下时系统自己放，不用你再做什么。跟 {OWNER} 照实说“排着，切过去就放”，不要说已经放进去了。再调 fill_input 会换掉排着的这条，cancel:true 取消。"}
+        return {"ok": True, "message": f"还没放进去，排着：{why}。{OWNER} 到{app}、手停下时系统自己放，不用你再做什么。跟 {OWNER} 照实说“排着，切过去就放”，不要说已经放进去了。给同一个地方再调 fill_input 会换掉排着的这条，给别的人或窗口的各排各的，按顺序放；cancel:true 取消（带 chat 只取消给那个人的）。"}
 
     async def _place_when_back(self, key, mark, text, files, window, chat, job):
         ending = f"文件在这里：{' '.join(f'[{Path(f).name}](</{f.lstrip(chr(47))}>)' for f in files)}" if files else ""
@@ -234,8 +247,12 @@ class Hands:
                     mark["trouble"] = f"{mark['what']} 备好了，切到{mark['app']}就自动放进去。"
                 here = bool(seen.get("front"))
                 if seen.get("ok"):
-                    mark["placing"] = True
-                    result = await self._place(text, files, window, chat, job)
+                    # Several waiting for the same WeChat go one after another: each opens its own chat with the real pointer.
+                    async with self.placing:
+                        if self.held.get(key) is not mark:
+                            return
+                        mark["placing"] = True
+                        result = await self._place(text, files, window, chat, job)
                     if not result.get("needsFront"):  # The owner's hand came back: not a failure, only not yet.
                         await self._placed(mark, result, ending)
                         return
@@ -261,10 +278,11 @@ class Hands:
 
     def _waiting_fill_note(self):
         """The owner is talking while a hand-over waits: the model should know, and only it can tell whether this calls it off. No paths here: this reads as the owner's own words."""
-        mark = self.held.get(("fill", conversation_key(self.chat, self.events)))
-        if not mark:
+        marks = [self.held[key] for key in self._fills(conversation_key(self.chat, self.events))]
+        if not marks:
             return ""
-        return f"（系统提示，不是 {OWNER} 说的：还排着一步，把 {mark['what']} 放进{mark['where']}，TA切过去就自动放。下面这句话如果是不要了，调 fill_input 传 cancel:true；再调 fill_input 会换掉排着的这条。）\n"
+        waiting = "；".join(f"把 {mark['what']} 放进{mark['where']}" for mark in marks)
+        return f"（系统提示，不是 {OWNER} 说的：还排着：{waiting}，TA切过去就自动放。下面这句话如果是不要了，调 fill_input 传 cancel:true（带 chat 只取消给那个人的）；给同一个地方再调 fill_input 会换掉排着的那条。）\n"
 
     def native_done(self, request, result):
         future = self.waiting.get(request)
@@ -340,8 +358,8 @@ class Hands:
             return await self._operate(args.get("steps") or [], window, job)
         if name == "fill_input":
             if args.get("cancel"):
-                dropped = self.held.pop(("fill", self._conversation(job)), None)
-                return self._reply(f"不放了：{dropped['what']}。" if dropped else "没有排着的。")
+                dropped = self._drop_fills(self._conversation(job), str(args.get("chat") or "") or None)
+                return self._reply(f"不放了：{'、'.join(mark['what'] for mark in dropped)}。" if dropped else "没有排着的。")
             result = await self.fill(str(args.get("text") or ""), [str(f) for f in args.get("files") or []], window, str(args.get("chat") or "") or None, job,
                                      field=str(args.get("field") or "") or None)
             return self._reply(result.get("message") or result.get("error") or "", ok=bool(result.get("ok")))
@@ -656,8 +674,8 @@ class Hands:
 
     async def fill(self, text, files=(), window=None, chat=None, job=None, field=None):
         """Into a window's input. `job` left out: the owner pressed the panel's button, right here. A job's fill that needs the window in front waits for the owner to get there, and that is not a failure."""
+        key = self._fill_key(job, window, chat) if job else None
         if job:
-            key = ("fill", self._conversation(job))
             earlier = self.held.get(key)
             if earlier and earlier.get("placing"):  # Going in right now: another one would make two.
                 await earlier["placed"].wait()
@@ -686,7 +704,7 @@ class Hands:
                     return result
         result = await self._place(text, files, window, chat, job)
         if job and result.get("needsFront"):
-            result = self._hold_fill(text, files, WECHAT if result.get("bundle") == WECHAT else str(result.get("id") or window or ""), chat, job, result.get("app") or "那个窗口", result.get("why"))
+            result = self._hold_fill(key, text, files, WECHAT if result.get("bundle") == WECHAT else str(result.get("id") or window or ""), chat, job, result.get("app") or "那个窗口", result.get("why"))
         if why:  # the model hears why the page's own way was missed, and can tell the owner the one thing that turns it on
             told = "message" if result.get("ok") else "error"
             result = {**result, told: f"{result.get(told) or ''}（网页里的后台填法没用上：{why}）"}
@@ -716,23 +734,38 @@ class Hands:
             async def header():
                 seen = await self.native("titles", timeout=10, window=window)
                 return [*(seen.get("lines") or []), *(seen.get("others") or [])]
-            showing = await header() if chat else []
-            if chat and not await asyncio.to_thread(self.is_showing, chat, showing):
-                opened = await hand("openChat", timeout=15, window=window, name=chat)
-                if opened.get("needsFront"):
-                    return {**opened, **waiting, "why": f"微信标题读到的是「{(showing or ['看不清'])[0]}」，要先在搜索框里打开「{chat}」，这要用真鼠标"}
-                if not opened.get("ok"):
-                    return opened
             if want:
-                seen = await header()
-                if not await asyncio.to_thread(self.is_showing, want, seen):
-                    return {"ok": False, "error": f"微信标题读到的是「{(seen or ['看不清'])[0]}」，对不上「{want}」，没有填。要是 {OWNER} 说开着的就是它，look_at_window 看一眼，对就不传 chat 再填"}
+                showing = await header()
+                # Not showing it, or the header can't be read (2026-11-10: the OCR turned 赵梓彤's title into nonsense): open the chat the draft was written for.
+                if not await asyncio.to_thread(self.is_showing, want, showing):
+                    opened = await hand("openChat", timeout=15, window=window, name=want)
+                    if opened.get("needsFront"):
+                        return {**opened, **waiting, "why": f"微信标题读到的是「{(showing or ['看不清'])[0]}」，要先在搜索框里打开「{want}」，这要用真鼠标"}
+                    if not opened.get("ok"):
+                        return opened
+                    # A chat just opened takes a moment to draw its title, and a half-drawn one reads as nonsense: look again before giving up.
+                    for _ in range(3):
+                        seen = await header()
+                        if await asyncio.to_thread(self.is_showing, want, seen):
+                            break
+                        await asyncio.sleep(0.7)
+                    else:
+                        if await asyncio.to_thread(self._could_be_someone_else, seen, want):
+                            return {"ok": False, "error": f"微信标题读到的是「{(seen or ['看不清'])[0]}」，对不上「{want}」，没有填。要是 {OWNER} 说开着的就是它，look_at_window 看一眼，对就不传 chat 再填"}
         result = await hand("fill", timeout=20, text=text, files=list(files), window=window)
         if result.get("needsFront"):
             return {**result, **waiting}
         if result.get("ok") and shown.get("bundle") == WECHAT and asked and (not chat or same_chat(chat, asked["name"])):
             self._remember_draft(text, asked, filled=True)
         return result
+
+    def _could_be_someone_else(self, titles, want):
+        """After picking `want` from the search results, a header that still doesn't match. With the contact list it is someone else only if it reads as another chat
+        the list knows; anything else is a title the OCR couldn't read, and the result that was clicked stands. Without the list there is no telling, so it stops."""
+        if not (HAS_WECHAT and reader.WXEXPORT):
+            return True
+        _, chat = self.which_chat(titles)
+        return bool(chat) and normalized(chat["name"]) != normalized(want)
 
     async def _propose(self, original, edited, summary, job):
         source, copy = Path(original).expanduser(), Path(edited).expanduser()

@@ -377,6 +377,18 @@ class FeedbackLeavesOnlyFixedShapes(unittest.TestCase):
         for word in (*fb.WANTS, *fb.STUCK):
             self.assertTrue(receiver.NAME.fullmatch(f"想要|{word}"), word)
 
+    def test_a_failure_is_one_fixed_word_and_never_its_reason(self):
+        # The reasons the native side and the brain really give, word for word.
+        cases = {"用户 动了鼠标或切走了窗口，已停下，没有填": "owner_moved", "这一步要 微信 在前台才能做": "not_front",
+                 "微信里有几个“Chris”：Chris zhu、Chris Yin。问 用户 是哪一个，再填，chat 写全名": "several", "微信里没搜到“刘登科”": "no_chat",
+                 "微信标题读到的是「明碎刚1」，对不上「赵梓彤」，没有填": "title", "这个窗口的光标不在输入框里，先点一下输入框": "no_cursor",
+                 "这里是微信的发送键，留给用户自己按": "send", "没有辅助功能权限，填不进去": "permission", "这一步出错了（KeyError），没有做成。": "broke",
+                 "随便什么 王总 Acme": "other", "": "other"}
+        for reason, kind in cases.items():
+            self.assertEqual(fb.failure_kind(reason), kind, reason)
+        for kind in fb.FAILURES:
+            self.assertTrue(receiver.NAME.fullmatch(f"tool_failed.fill_input.{kind}"), kind)
+
     def test_a_look_at_most_once_a_day(self):
         self.tako.state["last_extract"] = self.clock[0]
         for words in ("帮我填表", "再填一个", "看下这个", "总结一下"):

@@ -23,6 +23,21 @@ RESULTS = ("完成", "没做到", "放弃")
 # What they wished it would do, and where it let them down: fixed words too, so nothing anyone said can travel in them.
 WANTS = ("替我操作软件", "少动手自动做完", "批量做重复的事", "定时自动做", "跨软件搬内容", "看懂这个界面", "一步步教我", "读长文件", "做成文件交付", "写得更像我", "记住我的习惯", "帮我拿主意", "其他")
 STUCK = ("太慢", "理解错了", "结果要大改", "要确认太多", "缺权限", "读不到窗口内容", "点错地方", "找不到入口", "不知道怎么说", "连不上", "没做完就停了", "其他")
+# Why a tool didn't work, as one fixed word read off the reason it gave the model (Joe 2026-11-11: counts alone can't say what to fix).
+# The first rule that fits wins; nothing of the reason itself leaves, only the word.
+FAILURE_KINDS = (("owner_moved", ("动了鼠标", "切走了窗口")), ("not_front", ("在前台", "到前台", "真鼠标", "真键鼠")), ("several", ("有几个", "里有几个")),
+                 ("no_chat", ("没搜到", "没找到叫", "不在当前可读", "打不开")), ("title", ("标题读到",)), ("no_cursor", ("光标不在", "没有光标")),
+                 ("credential", ("密码",)), ("send", ("发送留给", "发送键", "回车就是发送", "通常就是发送")), ("declined", ("没批", "没同意", "拒绝")),
+                 ("permission", ("权限", "允许", "开关")), ("login", ("登录",)), ("unseen", ("看不到", "盖住", "截不到", "最小化")),
+                 ("timeout", ("超时", "没有回应", "没回话")), ("upload", ("上传",)), ("not_found", ("没找到", "找不到", "没有这个")), ("broke", ("出错了",)))
+FAILURES = tuple(kind for kind, _ in FAILURE_KINDS) + ("other",)
+
+
+def failure_kind(reason):
+    reason = str(reason or "")
+    return next((kind for kind, words in FAILURE_KINDS if any(word in reason for word in words)), "other")
+
+
 # Words that say something went wrong, in the owner's own voice.
 TROUBLE = re.compile(r"不对|不好用|没用|错了|不行|搞错|弄错|怎么还|还是不|做不到|卡住|卡死|崩了|太慢|算了")
 

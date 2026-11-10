@@ -336,10 +336,13 @@ class Chats:
                 ratio = difflib.SequenceMatcher(None, draft["text"], sent).ratio()
                 note_metric(kind="draft", filled=draft["filled"], ratio=round(ratio, 3), draft_chars=len(draft["text"]), sent_chars=len(sent),
                             seconds=int(draft["last"] - draft["time"]))
+                # The measure of a hand-over is whether it was used (Joe 2026-11-11): sent as it was, sent changed, or not sent at all.
+                self.feedback.count("draft.sent_as_is" if ratio >= 0.95 else "draft.sent_changed" if ratio >= 0.5 else "draft.sent_other")
                 if draft["text"].strip() != sent.strip():
                     self._later(self._learn(draft["text"], sent))
             elif not draft["sent"] and time.time() - draft["time"] > 86400:
                 del self.drafts[username]
+                self.feedback.count("draft.unsent")
 
     async def _learn(self, draft, sent):
         async with self.learning:

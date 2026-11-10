@@ -112,7 +112,8 @@ class Companion(Chats, Turns, Hands, Lectures, Agents):
         self.going = None      # the line the owner just tapped: its conversation and window, for the window to show when the goo lands (`_shown_on`)
         self.worked = {}       # another window a job's hands worked -> that job's conversation, which the window then shows (Hands._hands_on)
         self.rings = {}        # window -> the latest ring to draw again when the owner gets there
-        self.held = {}         # conversation -> a job's last step, waiting for the owner to get to the window it needs; ("fill", conversation) -> a hand-over that finishes by itself
+        self.held = {}         # conversation -> a job's last step, waiting for the owner to get to the window it needs; ("fill", conversation, where) -> a hand-over that finishes by itself
+        self.placing = asyncio.Lock()  # hand-overs that need the real pointer go in one at a time
         self.picked_up = {}    # conversation -> turns a waiting step has started by itself since the owner last spoke there
         self.last_spoke = {}   # conversation -> when the owner last spoke there: a word soon after another is the same thing still being explained
         self.said = []         # (message identity, the owner's words), newest last; memory only, across all windows

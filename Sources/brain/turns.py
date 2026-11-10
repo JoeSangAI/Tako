@@ -639,7 +639,7 @@ class Turns:
     async def stop(self):
         """Stops what the panel is showing. A job in another window goes on."""
         job = self._here()
-        self.held.pop(("fill", conversation_key(self.chat, self.events)), None)
+        self._drop_fills(conversation_key(self.chat, self.events))
         if job:
             await self._stop(job)
 

@@ -1326,6 +1326,33 @@ class HandingAFileToAnotherApp(Base):
         self.assertEqual(placed["text"], "第二版")
         self.assertEqual(len(self.sent("fill")), 1, "the latest one, once")
 
+    def test_two_people_each_get_theirs_one_after_the_other(self):
+        # 2026-11-10: invitations for Chris and 刘登科; the second pushed the first out and only one went in.
+        shown = ["别的对话"]
+        self.tako.native["openChat"] = lambda c: (shown.__setitem__(0, c["name"]), {"ok": True})[1] if self.still.is_set() else {"ok": False, "needsFront": True, "id": 9, "app": "微信", "error": "要前台"}
+        self.tako.native["titles"] = lambda c: {"ok": True, "lines": [shown[0]]}
+        self.tako.native["fill"] = lambda c: {"ok": True, "message": f"已填入{shown[0]}"} if self.still.is_set() else {"ok": False, "needsFront": True, "id": 9, "app": "微信", "error": "要前台"}
+        other = {"call": "fill_input", "args": {"text": "", "files": ["/tmp/给小王.pptx"], "chat": "小王"}}
+        self.queued(other, {"say": "两份都排着"})
+        replies = [r["reply"] for r in self.tako.codex("tool_reply") if r["tool"] == "fill_input"]
+        self.assertTrue(all(r["success"] and "排着" in json.dumps(r, ensure_ascii=False) for r in replies) and len(replies) == 2, "both wait; neither replaced the other")
+        self.here.set()
+        self.still.set()
+        self.tako.until(lambda s: len(self.sent("fill")) == 2 and not s["trouble"], "both placed", 8)
+        placed = {tuple(c["files"]): c for c in self.sent("fill")}
+        self.assertEqual(set(placed), {("/tmp/名单.xlsx",), ("/tmp/给小王.pptx",)})
+        self.assertEqual({c["name"] for c in self.sent("openChat")}, {"小林", "小王"}, "each opens its own chat")
+
+    def test_a_title_still_drawing_is_read_again_before_giving_up(self):
+        # 2026-11-10: just opened, the header read as nonsense, and the PowerPoint for 赵梓彤 was refused.
+        self.here.set()
+        self.still.set()
+        looks = iter(["别的对话", "明碎刚1，风女问文川士", "小林"])
+        self.tako.native["titles"] = lambda c: {"ok": True, "lines": [next(looks, "小林")]}
+        self.tako.ask(steps(self.SEND, {"say": "好了"}))
+        self.tako.idle()
+        self.assertEqual(len(self.sent("fill")), 1)
+
     def test_the_goo_goes_along_while_the_hand_is_still_moving(self):
         self.queued()
         self.here.set()
