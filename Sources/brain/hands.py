@@ -126,8 +126,10 @@ class Hands:
                 return result
             if job:
                 job.blocked.append(result.get("why") or "front")
-                job.left_for_owner = {"window": str(result.get("id") or args.get("window") or job.window_id or ""), "app": result.get("app")}
-                return {"ok": False, "error": f"{result.get('error')}，先没做。不要让 {OWNER} 切窗口，也不要说在等TA。先换条路：文件、命令、脚本接口、聊天记录；换不了就把其余做完，最后说清差什么。"}
+                job.left_for_owner = {"window": str(result.get("id") or args.get("window") or job.window_id or ""), "app": result.get("app"), "bundle": result.get("bundle")}
+                # WeChat shows little to Accessibility, so a click there wants the real pointer; its own ways behind the owner's back are these two (Tako 0.2.39 counts, 2026-11-11).
+                wechat = "微信里要换对话、放文字或文件，用 fill_input 的 chat，在后台排着、到了自己放；要看对话用 read_wechat。" if result.get("bundle") == WECHAT else ""
+                return {"ok": False, "error": f"{result.get('error')}，先没做。不要让 {OWNER} 切窗口，也不要说在等TA。{wechat}先换条路：文件、命令、脚本接口、聊天记录；换不了就把其余做完，最后说清差什么。"}
             # The owner just pressed a button on the panel: a few seconds for their hand to settle is all this takes.
             if time.time() - began > 8:
                 return {"ok": False, "error": f"{result.get('error')}，这一步没有做"}
@@ -142,6 +144,14 @@ class Hands:
         self.add("tako", text, events)
         if events is not self.events:
             self.add("tako", text)
+
+    @staticmethod
+    def _bridged(job, window, bundle=None):
+        """A step left for the owner, then another way on that same window that worked (a click WeChat refused, then the hand-over queued; a drag refused, then a menu): nothing is left.
+        Kept, it woke a model turn on their arrival to do again what was done, and counted as a step short (Tako 0.2.39 counts, 2026-11-11)."""
+        left = job and job.left_for_owner
+        if left and ((window and str(window) == left["window"]) or (bundle == WECHAT and left.get("bundle") == WECHAT)):
+            job.left_for_owner = None
 
     async def _pick_up_when_back(self, job):
         key = self._conversation(job)
@@ -360,8 +370,11 @@ class Hands:
             if args.get("cancel"):
                 dropped = self._drop_fills(self._conversation(job), str(args.get("chat") or "") or None)
                 return self._reply(f"不放了：{'、'.join(mark['what'] for mark in dropped)}。" if dropped else "没有排着的。")
-            result = await self.fill(str(args.get("text") or ""), [str(f) for f in args.get("files") or []], window, str(args.get("chat") or "") or None, job,
+            chat = str(args.get("chat") or "") or None
+            result = await self.fill(str(args.get("text") or ""), [str(f) for f in args.get("files") or []], window, chat, job,
                                      field=str(args.get("field") or "") or None)
+            if result.get("ok"):  # placed, or queued to place itself: either way that hand-over is no longer a step short
+                self._bridged(job, window or (job.window_id if job else None), WECHAT if chat else (job.window or {}).get("bundle") if job else None)
             return self._reply(result.get("message") or result.get("error") or "", ok=bool(result.get("ok")))
         if name == "read_wechat":
             return await self._read_wechat(str(args.get("chat") or ""), int(args.get("limit") or 30))
@@ -441,6 +454,8 @@ class Hands:
                     fell_short = True
                     break
                 done.append(str(result.get("did") or "完成"))
+            if not fell_short:
+                self._bridged(job, window, target.get("bundle"))
         finally:
             await self.native("endSteps")
         # An upload button clicked opens the system's file chooser, which nothing behind the owner's back can work (GitHub issue 3).

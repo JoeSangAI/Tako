@@ -1051,6 +1051,19 @@ class NeedingTheRealPointer(Base):
         time.sleep(2.5)
         self.assertEqual(len(self.tako.owner_turns()), 2, "it must not come back to what they called off")
 
+    def test_another_way_that_worked_is_not_left_for_later(self):
+        """A step refused for want of the front, then another way on the same window that worked: nothing is left, so nothing waits and no model turn comes back for it (Tako 0.2.39 counts, 2026-11-11)."""
+        self.back = threading.Event()
+        self.tako.native["step"] = lambda c: {"ok": False, "needsFront": True, "why": "not_front", "error": "这一步后台做不了"} if c["step"]["action"] == "drag" else {"ok": True, "did": "点了 排列"}
+        self.tako.native["isBack"] = lambda c: {"ok": self.back.is_set()}
+        click = {"call": "operate_window", "args": {"steps": [{"action": "click", "text": "排列"}]}}
+        self.tako.ask(steps(self.DRAG, click, {"say": "用菜单排好了"}))
+        seen = self.tako.until(lambda s: not s["busy"] and "用菜单排好了" in self.tako.said(s), "answered", 6)
+        self.assertEqual(seen["trouble"], "", "nothing is waiting")
+        self.back.set()
+        time.sleep(2.5)
+        self.assertEqual(len(self.tako.owner_turns()), 1, "no turn comes back for a step already done another way")
+
     def test_a_window_that_closed_ends_the_wait(self):
         self.waiting_for_owner()
         self.tako.native["isBack"] = lambda c: {"ok": False, "error": "没找到窗口"}
@@ -1308,6 +1321,22 @@ class HandingAFileToAnotherApp(Base):
         time.sleep(1)
         self.assertEqual(len(self.tako.owner_turns()), 1, "doing it costs no model call")
         self.assertNotIn("bringForward", [c["command"] for c in self.tako.commands])
+
+    def test_a_refused_click_then_a_queued_hand_over_waits_only_as_the_hand_over(self):
+        """WeChat refuses a click behind the owner; the model then queues the hand-over, which places itself. Left as well as a step, the owner arriving woke a model turn to do it again (Tako 0.2.39 counts, 2026-11-11)."""
+        self.tako.native["step"] = lambda c: {"ok": False, "needsFront": True, "why": "not_front", "id": 9, "app": "微信", "bundle": self.WECHAT, "error": "这一步后台做不了：要真键鼠，微信 不在前台"}
+        click = {"call": "operate_window", "args": {"window": "9", "steps": [{"action": "click", "text": "小林"}]}}
+        self.tako.ask(steps(click, self.SEND, {"say": "切到微信就会放好"}))
+        self.tako.until(lambda s: not s["busy"] and s["trouble"], "told, and waiting", 6)
+        said = json.dumps([r for r in self.tako.codex("tool_reply") if r["tool"] == "operate_window"][0]["reply"], ensure_ascii=False)
+        self.assertIn("fill_input 的 chat", said, "told the way WeChat takes things behind the owner's back")
+        self.here.set()
+        self.still.set()
+        seen = self.tako.until(lambda s: any("没有发送" in text for text in self.tako.said(s)), "placed and said", 6)
+        time.sleep(2.5)
+        self.assertEqual(len(self.tako.owner_turns()), 1, "the queued hand-over was the whole of it: no model turn to do it again")
+        self.assertEqual(len(self.sent("fill")), 1)
+        self.assertEqual(self.tako.state()["trouble"], "")
 
     def test_coming_back_to_the_first_window_does_not_wake_the_model(self):
         self.queued()

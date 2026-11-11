@@ -273,7 +273,7 @@ extension Controller {
         let said = ["not_front": "这一步后台做不了：要真键鼠，\(win.app) 不在前台",
                     "covered": "这一步后台做不了：\(win.app) 自己的另一个窗口盖着它",
                     "hand_moving": "这一步后台做不了：要真键鼠，\(win.app) 在前台但用户的手一直在动"][why] ?? ""
-        return ["ok": false, "needsFront": true, "why": why, "id": win.id, "app": win.app, "error": said]
+        return ["ok": false, "needsFront": true, "why": why, "id": win.id, "app": win.app, "bundle": win.bundle, "error": said]
     }
 
     /// What sits at a point of this window, asked of its own app, which knows whatever else covers that spot on the screen.
