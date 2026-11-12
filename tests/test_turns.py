@@ -1680,6 +1680,10 @@ class Inside(unittest.IsolatedAsyncioTestCase):
         reader.unnamed_groups, reader.contact_signature = (lambda: groups), (lambda: (1,))
         await self.tako.follow_header(["小林、老王–市场 (3)"])
         self.assertEqual(self.tako.chat["username"], "g5@chatroom")
+        # Joe 2026-11-12: the top of a message under the title read as a longer line of nonsense, and only the longest line was tried.
+        await self.tako.follow_header(["某个别的群 (8)"])
+        await self.tako.follow_header(["儿是十食之用做祝油啊，赵！丛！十其之用油，", "小林、老王–市场 (3)"])
+        self.assertEqual(self.tako.chat["username"], "g5@chatroom")
 
     async def test_a_chat_it_cannot_tell_is_not_the_chat_before(self):
         prompts = await self.wechat_with_names([])

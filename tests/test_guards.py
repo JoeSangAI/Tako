@@ -879,8 +879,27 @@ class FirstRun(unittest.TestCase):
         page = (BRAIN / "side.html").read_text()
         # Only a login open in the browser, or 模型设置 the owner opened from the menu, goes before an update.
         self.assertIn("const updateFirst = update && !(pending && (setup.busy || setup.choosing));", page)
-        self.assertIn("if (permission && !updateFirst && !(pending && setup.choosing)) {", page)
+        # A missing model goes before the permissions: the one step that can fail for reasons outside this Mac.
+        self.assertIn("if (permission && !updateFirst && !pending) {", page)
         self.assertIn("if (pending && !updateFirst) {", page)
+
+    def test_a_new_install_is_led_to_its_first_answer(self):
+        page, native = (BRAIN / "side.html").read_text(), {f.name: f.read_text() for f in NATIVE.glob("*.swift")}
+        # With no model the panel opens once by itself, where the goo is; every way in is one tap on the first card.
+        self.assertIn("native?.postMessage({ needsSetup: true })", page)
+        self.assertIn('if body["needsSetup"] != nil, !sideOpen, !selfTest { openHere() }', native["SidePanel.swift"])
+        self.assertNotIn("accountForm", page)
+        # A click is a word to it wherever it is, and its menu opens where it is, not on the app in front (which may be on another display).
+        self.assertIn("host.openHere()", native["Goo.swift"])
+        self.assertNotIn("summon()", native["Controller.swift"].split("func showHistory")[1].split("var statistics")[0])
+        # The panel's own window never reaches past the screen its window is on.
+        self.assertIn("let width = min(sidePanelWidth, max(minimumWidth, visible.maxX - x))", native["Windows.swift"])
+        # What can be tried is offered in the empty panel only, one at a time, and never again once done: names only are kept.
+        self.assertIn("const left = learned && s.chat && !noticeUp ? TRIES.filter(([name]) => !learned.has(name)) : [];", page)
+        self.assertIn("guard !known.contains(name), !selfTest else { return }", native["SidePanel.swift"])
+        # The ring is said once more under an answer to "this" with nothing ringed: by the page, not the model, and kept in no record.
+        self.assertIn("!learned.has('point') && !learned.has('point-told') && !pointed.length", page)
+        self.assertNotIn("圈一片", (BRAIN / "prompts.py").read_text())
 
     def test_the_panel_shows_one_next_step_and_opens_only_two_settings_pages(self):
         page = (BRAIN / "side.html").read_text()

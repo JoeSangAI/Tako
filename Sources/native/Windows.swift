@@ -150,7 +150,9 @@ extension Controller {
             }
             return
         }
-        // Nothing to hold yet: the window it lost if that is back, a window of the same app, or at first WeChat.
+        // Nothing to hold yet: the window it lost if that is back, a window of the same app, or at first the window in front.
+        // (At first it used to look for WeChat: behind another window, the goo and a panel opened there were out of sight,
+        // and a new install's first card with them, 2026-11-12.)
         var best: (id: Int, frame: CGRect)?
         var bestInfo: [String: Any]?
         for info in ordinary {
@@ -160,7 +162,12 @@ extension Controller {
                   let owner = info[kCGWindowOwnerPID as String] as? Int else { continue }
             if number == lostID { best = (number, rect); bestInfo = info; break }
             guard let app = NSRunningApplication(processIdentifier: pid_t(owner))?.bundleIdentifier else { continue }
-            guard app == (lostBundle.isEmpty ? weChatBundle : lostBundle) else { continue }
+            if lostBundle.isEmpty {
+                guard lostID == nil, !blockedOwners.contains(info[kCGWindowOwnerName as String] as? String ?? "") else { continue }
+                best = (number, rect); bestInfo = info
+                break
+            }
+            guard app == lostBundle else { continue }
             if best == nil || rect.width * rect.height > best!.frame.width * best!.frame.height {
                 best = (number, rect)
                 bestInfo = info
@@ -191,7 +198,10 @@ extension Controller {
         let room = visible.maxX - frame.maxX
         let x = room >= minimumWidth ? frame.maxX : visible.maxX - minimumWidth
         sideX = x
-        let next = NSRect(x: x, y: primary.frame.maxY - frame.maxY, width: sidePanelWidth, height: frame.height)
+        // The panel's own window ends where this screen ends. Reaching past the edge, most of it lay on the display beside this one,
+        // and the system then shows the whole panel there or not at all (a tester with two displays, 2026-11-12).
+        let width = min(sidePanelWidth, max(minimumWidth, visible.maxX - x))
+        let next = NSRect(x: x, y: primary.frame.maxY - frame.maxY, width: width, height: frame.height)
         if next.size == side.frame.size {
             side.setFrameOrigin(next.origin)
         } else {

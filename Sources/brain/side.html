@@ -84,6 +84,11 @@
   .owner { align-self: flex-end; background: var(--btn); color: var(--btn-ink); padding: 5px 10px; border-radius: 12px 12px 3px 12px; max-width: 88%; white-space: pre-wrap; overflow-wrap: anywhere; }
   .owner a { color: inherit; }
   .empty { color: var(--muted); margin: auto; text-align: center; font-size: 12px; padding: 0 12px; animation: hello .5s ease; }
+  .tip { color: var(--muted); font-size: 12px; text-align: center; padding: 2px 12px 8px; }
+  .empty .try { margin-top: 10px; opacity: .8; line-height: 1.5; }
+  .empty .try:empty { display: none; }
+  .empty .try button { border: 0; border-radius: 9px; background: var(--card); color: var(--ink); font: inherit; padding: 6px 12px; cursor: pointer; }
+  .empty .try button:hover { background: var(--line); }
   @keyframes hello { from { opacity: 0; transform: translateY(3px); } }
 
   /* what Tako says */
@@ -296,6 +301,7 @@ window.setOpen = function setOpen(next) {
   layout();
   native?.postMessage({ open: next, wanted: width });
   if (next) {
+    tryTurn += 1;
     $('say').focus({ preventScroll: true });
     $('log').scrollTop = $('log').scrollHeight;
   } else {
@@ -716,7 +722,8 @@ function show(s) {
   }
   document.body.classList.toggle('wechat', s.kind !== 'window');
   const opening = s.chat ? s.greeting || '告诉 Tako 你想做什么。' : '把 Tako 拖到任意窗口上松手，或者在任意窗口按 ⌃⌥T。';
-  if (empty.textContent !== opening) { empty.textContent = opening; empty.style.animation = 'none'; void empty.offsetWidth; empty.style.animation = ''; }
+  if (emptyLine.textContent !== opening) { emptyLine.textContent = opening; empty.style.animation = 'none'; void empty.offsetWidth; empty.style.animation = ''; }
+  showTry(s);
   document.body.dataset.app = s.app || '';
   setText($('who'), s.chat ? `我在看：${s.chat}` : '还没盯着哪段对话，点这里选');
   const ear = s.listening !== null && s.listening !== undefined;
@@ -738,6 +745,7 @@ function show(s) {
   if (s.events.length) {
     $('log').querySelector('.empty')?.remove();
     s.events.forEach((event) => { $('log').append(bubble(event)); });
+    if (!catchingUp && s.events.some((event) => event.role === 'tako')) sayRing();
     seen += s.events.length;
     // Old answers coming back with a conversation are not news: a panel the owner closed stays closed.
     if (!catchingUp && s.events.some((event) => event.role === 'tako')) { native?.postMessage({ pop: 1, done: true }); window.setOpen(true); }
@@ -749,16 +757,66 @@ function show(s) {
   tellGoo(next);
   tellAct(s);
 }
-const empty = document.createElement('div');
-empty.className = 'empty'; empty.textContent = '告诉 Tako 你想做什么。';
+const empty = document.createElement('div'), emptyLine = document.createElement('div'), tryLine = document.createElement('div');
+empty.className = 'empty'; emptyLine.textContent = '告诉 Tako 你想做什么。'; tryLine.className = 'try';
+empty.append(emptyLine, tryLine);
 $('log').append(empty);
+
+// ---- things to try: nobody finds ⌃ and a ring, or the shortcut, by themselves (Joe 2026-11-12). The empty panel offers one
+// thing that can be done right now; doing it once is how it is learned, and then it is never offered again. No tour, no cards.
+const TRIES = [
+  ['ask', (s) => s.kind !== 'window' ? '看看这段对话，我该怎么回？' : '看看这个窗口，你能帮我做什么？', true],
+  ['point', () => '按住 ⌃，在窗口上点一下或圈一片：我就知道你指的是哪儿。'],
+  ['file', () => '文件和图片可以直接拖到我身上，或者拖进这里。'],
+  ['summon', () => '在任意窗口按 ⌃⌥T，或者把我拖到那个窗口右边：我就过去。'],
+  ['menu', () => '右键点我：换装扮、换模型、看做过的事。'],
+];
+let learned = null, tryTurn = 0, tryShown = '';
+window.setLearned = (names) => { learned = new Set(names); tryShown = ''; };
+function learn(name) {
+  if (!learned || learned.has(name)) return;
+  learned.add(name); tryShown = '';
+  native?.postMessage({ learned: name });
+}
+// The ring is said once more, at the moment it would have helped: the owner said "this" or "here" and ringed nothing.
+// One line under that answer, drawn by the page and kept nowhere; never again after that, or once they have ringed something.
+const POINTS_AT = /这个|这里|这儿|这段|这块|这张|这句|这行|这部分|那个|那里|那段/;
+const WHOLE = /这个(窗口|文件|文档|页面|网页|表格|对话|群|聊天|问题|事)|这段对话/g;
+let owesRing = false;
+function mayOweRing(text, pointed) {
+  owesRing = !!learned && !learned.has('point') && !learned.has('point-told') && !pointed.length && POINTS_AT.test(text.replace(WHOLE, ''));
+}
+function sayRing() {
+  if (!owesRing) return;
+  owesRing = false;
+  const line = document.createElement('div');
+  line.className = 'tip'; line.textContent = '下次按住 ⌃，在窗口上点一下或圈一片，我就知道你指的是哪儿。';
+  $('log').append(line);
+  learn('point-told');
+}
+function showTry(s) {
+  const left = learned && s.chat && !noticeUp ? TRIES.filter(([name]) => !learned.has(name)) : [];
+  // The first ask comes before everything else; the rest take turns, one each time the panel opens.
+  const pick = !left.length ? null : left[0][0] === 'ask' ? left[0] : left[tryTurn % left.length];
+  const text = pick ? pick[1](s) : '';
+  if (text === tryShown) return;
+  tryShown = text;
+  tryLine.replaceChildren();
+  if (!pick) return;
+  if (pick[2]) {
+    const go = document.createElement('button');
+    go.type = 'button'; go.textContent = text;
+    go.onclick = () => { $('say').value = text; $('f').requestSubmit(); };
+    tryLine.append(go);
+  } else tryLine.textContent = `试试：${text}`;
+}
 
 // ---- setting up, and new versions: the only things Tako ever shows on its own behalf ----
 let setup = null, update = null, noticeKey = '', noticeUp = false;
 // The owner chose to give a key of their own instead of logging in; what they typed survives a redraw.
 let keyForm = false, keyDraft = { service: '', key: '', base_url: '', model: '' }, keyChecking = false;
 // Or the office agent they already use (WorkBuddy, Qoder, 千问办公), on the login its app keeps: picked here when there are several.
-let accountForm = false, officeChecking = '';  // the second step after "用 AI 账号登录", and which agent's login is being read
+let officeChecking = '';  // which office agent's login is being read
 const PERMISSION_WORDS = {
   accessibility: ['还差一步：打开“辅助功能”', '在系统设置的“辅助功能”列表里打开 Tako 的开关（不是“终端”），它才能操作这个窗口。打开后这张卡自己会消失。'],
   screen: ['还差一步：打开录屏权限', '在系统设置的“录屏与系统录音”列表里打开 Tako 的开关，它才能看见这个窗口。打开后 Tako 会自己重开一次。'],
@@ -804,37 +862,30 @@ function showLoginChoices(box) {
   const offices = setup.offices || [];
   box.append(noticeLine('title', setup.choosing ? '模型设置' : SETUP_WORDS.login[0]));
   if (setup.choosing) box.append(noticeLine('body', setup.current ? `现在用的是 ${setup.current}。选一个换上，不选就照旧。` : '选一个接上。'));
-  if (!accountForm) {
-    box.append(choice('用 AI 账号登录', offices.length ? `这台 Mac 上有 ${offices.map((o) => o.name).join('、')}；也可以用 ChatGPT` : 'ChatGPT 会员', () => { accountForm = true; showNotice(); }),
-      choice('用 API key', 'DeepSeek、通义千问、Kimi、智谱，或中转站', () => { keyForm = true; showNotice(); }));
-    if (setup.choosing) {
-      const actions = document.createElement('div');
-      actions.className = 'card-actions';
-      actions.append(button('关闭', closeModelSettings));
-      box.append(actions);
-    }
-    return;
-  }
-  const rows = [...offices.map((o) => ({ id: o.id, name: o.name, line: '用它在这台 Mac 上的登录和积分', go: () => useOffice(o.id) })),
-    { id: 'chatgpt', name: 'ChatGPT', line: 'ChatGPT 会员，在浏览器里确认', go: () => api('/setup/next', {}).then(setSetup) }];
+  // Every way in is one tap from here: what this Mac is already logged in to comes first (a tester, 2026-11-12: a new install stalls on each extra step).
+  const rows = [...offices.map((o) => ({ id: o.id, name: useName(o.name), line: '这台 Mac 上已经装了，用你在它那里的登录和积分', go: () => useOffice(o.id) })),
+    { id: 'chatgpt', name: '用 ChatGPT 登录', line: 'ChatGPT 会员，在浏览器里确认', go: () => api('/setup/next', {}).then(setSetup) },
+    { id: 'key', name: '用 API key', line: 'DeepSeek、通义千问、Kimi、智谱，或中转站', go: () => { keyForm = true; showNotice(); } }];
   for (const r of rows) {
     const failed = !!setup.error && setup.error_for === r.id && officeChecking !== r.id;
     box.append(choice(r.name, officeChecking === r.id ? '核对登录中…' : failed ? setup.error : r.line, r.go, failed));
   }
   if (setup.error && !rows.some((r) => r.id === setup.error_for)) box.append(noticeLine('why', setup.error));
-  const actions = document.createElement('div');
-  actions.className = 'card-actions';
-  actions.append(button('← 返回', () => { accountForm = false; showNotice(); }));
-  box.append(actions);
+  if (setup.choosing) {
+    const actions = document.createElement('div');
+    actions.className = 'card-actions';
+    actions.append(button('关闭', closeModelSettings));
+    box.append(actions);
+  }
 }
 // 模型设置 in the menu: the same first card, over a model that already works. Closing it changes nothing.
 window.chooseModel = async () => {
-  accountForm = false; keyForm = false;
+  keyForm = false;
   try { setSetup(await api('/setup/choose', {})); } catch {}
   window.setOpen(true);
 };
 async function closeModelSettings() {
-  accountForm = false; keyForm = false;
+  keyForm = false;
   try { setSetup(await api('/setup/close', {})); } catch {}
 }
 function noticeLine(cls, text) { const el = document.createElement('div'); el.className = cls; el.textContent = text; return el; }
@@ -844,7 +895,7 @@ function showNotice() {
   const permission = !canMove ? 'accessibility' : !canRead ? 'screen' : null;
   const stale = !!permission && !!permissionAsked[permission] && Date.now() - permissionAsked[permission] > STALE_AFTER
     && (permission === 'accessibility' || permissionState.screen === 'off');
-  const key = JSON.stringify([permission, stale, repaired, !!permissionAsked.screen, permissionState, pending ? setup : null, update, busy, keyForm, keyChecking, accountForm, officeChecking]);
+  const key = JSON.stringify([permission, stale, repaired, !!permissionAsked.screen, permissionState, pending ? setup : null, update, busy, keyForm, keyChecking, officeChecking]);
   if (key === noticeKey) return;
   noticeKey = key;
   box.replaceChildren();
@@ -855,8 +906,10 @@ function showNotice() {
   actions.className = 'card-actions';
   // Stuck on a step is just when a newer Tako may be what gets them past it, and the menu's check answers here too. Only a login open in the browser goes on first; 稍后 brings the step back.
   // 模型设置 was asked for by name: it comes before an update or a permission, which come back once it is closed.
+  // A missing model comes before the permissions too: it is the one step that can fail for reasons outside this Mac,
+  // and nobody should have opened two system switches for something they then can't use.
   const updateFirst = update && !(pending && (setup.busy || setup.choosing));
-  if (permission && !updateFirst && !(pending && setup.choosing)) {
+  if (permission && !updateFirst && !pending) {
     const words = PERMISSION_WORDS[permission];
     let title = words[0], body = words[1];
     const why = permission === 'screen' ? permissionState.screen : '';
@@ -1021,7 +1074,11 @@ function showKeyForm(box, actions) {
 }
 // Which service the owner's key is for ('' with a ChatGPT login), told to the goo: a DeepSeek key puts on the little whale.
 let gooService = null;
+// A new install has no model yet and nobody has told its owner the panel exists: it opens once by itself, on the step that is missing.
+let askedToOpen = false;
 function setSetup(next) {
+  const waiting = (s) => !!s && s.step !== 'ready' && !s.choosing;
+  if (waiting(next) && !askedToOpen) { askedToOpen = true; native?.postMessage({ needsSetup: true }); }
   setup = next; showNotice();
   if (!['ready', 'key', 'login'].includes(next?.step)) return;
   const service = next.service || '';
@@ -1148,6 +1205,7 @@ function showAttached() {
 }
 window.addPoint = (p) => {
   points = [...points.filter((q) => q.n !== p.n), p];
+  learn('point');
   showAttached();
   window.setOpen(true);
   native?.postMessage({ pop: .5 });
@@ -1158,6 +1216,7 @@ window.dropPoint = (n) => { points = points.filter((q) => q.n !== n); showAttach
 window.addFiles = async (paths) => {
   await api('/offer', { paths });
   attachments = [...new Set([...attachments, ...paths])];
+  learn('file');
   showAttached();
   window.setOpen(true);
   native?.postMessage({ pop: .7 });
@@ -1204,6 +1263,8 @@ $('f').onsubmit = async (e) => {
   showError('');
   try {
     await api('/ask', { text, files, points: pointed });
+    learn('ask');
+    mayOweRing(text, pointed);
   } catch {
     // Never lose what the owner wrote: it goes back in the box.
     $('say').value = text; attachments = files; points = pointed; showAttached(); grow();

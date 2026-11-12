@@ -44,8 +44,7 @@ enum Hands {
             config.width = Int(area.width * scale)
             config.height = Int(area.height * scale)
             config.showsCursor = false
-            return try await SCScreenshotManager.captureImage(
-                contentFilter: SCContentFilter(desktopIndependentWindow: window), configuration: config)
+            return await shot(SCContentFilter(desktopIndependentWindow: window), config)
         } catch {
             return nil
         }
@@ -183,6 +182,14 @@ enum Hands {
         let start = tidy(want), whole = tidy(line)
         guard !start.isEmpty, whole.hasPrefix(start), let next = whole.dropFirst(start.count).first else { return false }
         return !(next.isLetter || next.isNumber)
+    }
+
+    /// A name WeChat cut short to fit: what is left ends in an ellipsis (often read as a dot or two) and is how the name begins.
+    static func cutShort(_ want: String, _ line: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard let last = trimmed.last, "…⋯.。".contains(last) else { return false }
+        let start = normalize(trimmed), whole = normalize(want)
+        return start.count >= 4 && start.count < whole.count && whole.hasPrefix(start)
     }
 
     static func normalize(_ text: String) -> String {

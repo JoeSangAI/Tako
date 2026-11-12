@@ -92,11 +92,13 @@ class Chats:
             if match:
                 return key, self.index[match[0]]
         # A group nobody named is titled with its other members' names (Joe 2026-11-10: a five-person group titled with four names left the panel on the chat before).
-        title = next((line for line in titles if len(normalized(line)) >= 4), "")
-        rooms = group_by_members([title], self._unnamed_groups()) if title else []
-        if rooms:
-            name = COUNT_SUFFIX.sub("", title).strip()
-            return normalized(title), [{"username": room, "name": name} for room in rooms]
+        # Every line is tried, like the names above: the longest one may be a misread line from under the title.
+        lines = [line for line in titles if len(normalized(line)) >= 4]
+        groups = self._unnamed_groups() if lines else []
+        for title in lines:
+            if rooms := group_by_members([title], groups):
+                name = COUNT_SUFFIX.sub("", title).strip()
+                return normalized(title), [{"username": room, "name": name} for room in rooms]
         return None, []
 
     def _unnamed_groups(self):

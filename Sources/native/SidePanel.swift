@@ -7,6 +7,7 @@ let minimumWidth: CGFloat = 280
 let minimumSharedWidth: CGFloat = 420   // a window sharing the screen with the panel never gets narrower than this
 let widthKey = "sideWidth"
 let modeKey = "gooMode"
+let learnedKey = "learned"
 
 final class SideWindow: NSPanel {
     override var canBecomeKey: Bool { true }
@@ -28,6 +29,7 @@ extension Controller: WKScriptMessageHandler, WKNavigationDelegate {
         web.evaluateJavaScript("setCanMove(\(trusted))")
         web.evaluateJavaScript("setCanRead(\(CGPreflightScreenCaptureAccess()))")
         tellPermissions()
+        tellLearned()
         updater.panelLoaded()
         sentGeometry = ""
         placeSide()
@@ -83,6 +85,9 @@ extension Controller: WKScriptMessageHandler, WKNavigationDelegate {
         if body["pointsSent"] != nil { pointsSent() }
         if let which = body["repair"] { if which as? String == "screen" { repairScreen() } else { repairAccessibility() } }
         if body["relaunch"] != nil { relaunch() }
+        // No model yet (a new install): the first card is put in front of the owner once, where the goo is.
+        if body["needsSetup"] != nil, !sideOpen, !selfTest { openHere() }
+        if let name = body["learned"] as? String { learn(name) }
         if let value = body["pop"] as? Double { goo.pop = CGFloat(value); goo.kick(CGFloat(value) * 90) }
         if let value = body["wanted"] as? Double {
             wanted = value
@@ -112,6 +117,21 @@ extension Controller: WKScriptMessageHandler, WKNavigationDelegate {
                 }
             }
         }
+    }
+
+    /// What the owner has done once and need not be offered again in the empty panel (side.html, "things to try"): names only.
+    func learn(_ name: String) {
+        var known = UserDefaults.standard.stringArray(forKey: learnedKey) ?? []
+        guard !known.contains(name), !selfTest else { return }
+        known.append(name)
+        UserDefaults.standard.set(known, forKey: learnedKey)
+        tellLearned()
+    }
+
+    func tellLearned() {
+        guard loaded, let data = try? JSONSerialization.data(withJSONObject: UserDefaults.standard.stringArray(forKey: learnedKey) ?? []),
+              let text = String(data: data, encoding: .utf8) else { return }
+        web.evaluateJavaScript("setLearned(\(text))")
     }
 
     /// The panel's page crashed: no message will ever come from it again, so the native side lets go by itself.

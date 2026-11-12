@@ -162,12 +162,13 @@ curl -fsSL https://raw.githubusercontent.com/JoeSangAI/Tako/main/install.sh | ba
 
 第一次打开，Tako 只会带你走这三步：
 
-1. **给权限。** 系统会先后问“辅助功能”和录屏权限，打开后 Tako 才能操作和看见窗口。没打开时，面板上会有一个按钮直接带你去系统设置。
-2. **接上一个模型。** 面板先问：用 AI 账号登录，还是用 API key。
-   - **账号：** 列出这台 Mac 上的 WorkBuddy、Qoder、千问办公，最后是 ChatGPT。点 WorkBuddy 这类，什么都不用装，用你在那里的登录和积分，规矩和别处一样。选 ChatGPT，Tako 会先自己装上 OpenAI 开源、免费的 [Codex](https://github.com/openai/codex)。
+1. **接上一个模型。** 面板会自己打开，点一下其中一行就行。
+   - **这台 Mac 上已经装了的 WorkBuddy、Qoder、千问办公**排在最前面：什么都不用装，用你在那里的登录和积分，规矩和别处一样。
+   - **ChatGPT：** Tako 会先自己装上 OpenAI 开源、免费的 [Codex](https://github.com/openai/codex)，再在浏览器里确认登录。
    - **API key：** 选 DeepSeek、通义千问、Kimi、智谱，或“其他 / 中转站”（要支持 OpenAI 的 Responses 接口），粘贴 key，按那一家的价格计费。
    - 以后想登录或换一家，右键小章鱼 →“模型设置…”。
-3. **到你想用的窗口按 ⌃⌥T，** 或者把小章鱼拖到那个窗口上松手。
+2. **给权限。** “辅助功能”和录屏权限，打开后 Tako 才能操作和看见窗口。面板上有一个按钮直接带你去系统设置。
+3. **点一下小章鱼，说一句要它做什么。** 想换个窗口，把它拖到那个窗口右边松手，或者在那个窗口按 ⌃⌥T。其余的用法，空着的面板会一次告诉你一样，用过就不再提。
 
 > 为什么用终端安装：Tako 还没有做 Apple 公证，直接下载的 app 会被系统拦下。安装脚本会校验文件哈希和签名，你也可以先[读一遍脚本](install.sh)。
 

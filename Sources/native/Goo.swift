@@ -804,26 +804,28 @@ final class Goo {
     func release() {
         guard mode == .grabbed else { return }
         if !grabMoved && clock - grabTime < 0.4 {
+            // Poke it too many times and it gets annoyed, wherever it is.
+            clicks.append(clock)
+            clicks.removeAll { clock - $0 > 1.4 }
+            if clicks.count >= 3 {
+                clicks.removeAll()
+                // Enough. Ink, and off it goes.
+                let side: CGFloat = mouseAt.x > c.x ? -1 : 1
+                if fromAttached { mode = .attached; tearOff(velocity: V(side * 620, -420), reason: "poked") } else { mode = .free; v = V(side * 620, -420) }
+                squirt(away: mouseAt)
+                host.log("poked too much: inked")
+                return
+            }
+            if clicks.count == 2 { smirkUntil = clock + 1.1; lookTime = 1.1; lookAt = (mouseAt - c).unit }  // a warning look
             if fromAttached {
                 mode = .attached
                 if !wasOpen { host.toggleSide() }
             } else {
+                // A click is a word to it, wherever it is: a pet that only hopped when clicked never led anyone to the panel
+                // (a tester, 2026-11-12). It takes the frontmost window of the screen it is on and opens there.
                 mode = .free
-                v = V(v.x, -230)
-                kick(130)
                 pop = 0.9
-                // Poke it too many times and it gets annoyed.
-                clicks.append(clock)
-                clicks.removeAll { clock - $0 > 1.4 }
-                if clicks.count == 2 { smirkUntil = clock + 1.1; lookTime = 1.1; lookAt = (mouseAt - c).unit }  // a warning look
-                if clicks.count >= 3 {
-                    clicks.removeAll()
-                    // Enough. Ink, and off it goes.
-                    let side: CGFloat = mouseAt.x > c.x ? -1 : 1
-                    squirt(away: mouseAt)
-                    v = V(side * 620, -420)
-                    host.log("poked too much: inked")
-                }
+                host.openHere()
             }
             return
         }
@@ -836,6 +838,7 @@ final class Goo {
         // Set down near the window it sticks; flung past the window it keeps flying.
         if let edge = candidate, mouseSpeed.length < 900 {
             stick(to: edge, window: candidateID, latching: true)
+            host.learn("summon")
         } else {
             mode = .free
             v = mouseSpeed * 0.75

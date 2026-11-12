@@ -26,7 +26,8 @@ extension Controller {
             await MainActor.run {
                 guard let self else { return }
                 self.headerBusy = false
-                if let titles {
+                // The goo moved to another window while this one was read: its title is not that window's.
+                if let titles, self.target?.id == id {
                     self.lastBand = titles.band
                     if titles.listEnd > 0 { self.listEnds[id] = titles.listEnd }
                     self.log("header changed, \(titles.lines.count) lines")
@@ -45,8 +46,8 @@ extension Controller {
             config.width = Int(width * 2)
             config.height = 124
             config.showsCursor = false
-            let image = try await SCScreenshotManager.captureImage(
-                contentFilter: SCContentFilter(desktopIndependentWindow: window), configuration: config)
+            // A WeChat window closed or hidden mid-read never answers; waiting on it left every later read "busy" until a restart (2026-11-12).
+            guard let image = await Hands.shot(SCContentFilter(desktopIndependentWindow: window), config) else { return nil }
             guard let bytes = image.dataProvider?.data as Data? else { return nil }
             // Data's own hash only looks at its first bytes, which never change here: hash all of it.
             let band = bytes.withUnsafeBytes { raw -> Int in
@@ -61,15 +62,19 @@ extension Controller {
             request.recognitionLevel = .accurate
             request.usesLanguageCorrection = false
             try VNImageRequestHandler(cgImage: image).perform([request])
-            let found = (request.results ?? []).compactMap { o -> (x: CGFloat, right: CGFloat, text: String, others: [String])? in
+            let found = (request.results ?? []).compactMap { o -> (x: CGFloat, right: CGFloat, top: CGFloat, bottom: CGFloat, text: String, others: [String])? in
                 let guesses = o.topCandidates(3).map(\.string)
-                return guesses.first.map { (o.boundingBox.minX * width, o.boundingBox.maxX * width, $0, Array(guesses.dropFirst())) }
+                return guesses.first.map { (o.boundingBox.minX * width, o.boundingBox.maxX * width, 1 - o.boundingBox.maxY, 1 - o.boundingBox.minY, $0, Array(guesses.dropFirst())) }
             }
             // Everything left of the end of the search box is the chat list, not the title. While the owner types a search the box
             // shows their words instead of 搜索, and those would be read as the title: the list keeps its width, so the last edge seen holds.
             let searchEnd = found.first(where: { $0.text.contains("搜索") })?.right ?? 0
             let edge = searchEnd > 0 ? searchEnd : known
-            let title = found.filter { $0.x > edge && !$0.text.contains("搜索") }.sorted { $0.text.count > $1.text.count }
+            let right = found.filter { $0.x > edge && !$0.text.contains("搜索") }
+            // The strip also catches the top of the first message, half its height cut off, which reads as a long string of nonsense: longer than
+            // the title, so it came first and an unnamed group was matched by it (Joe 2026-11-12). The title is the top row; messages are always below it.
+            let row = right.min { $0.top < $1.top }
+            let title = right.filter { row != nil && ($0.top + $0.bottom) / 2 < row!.bottom }.sorted { $0.text.count > $1.text.count }
             // A misread character is often right in the reader's second guess, kept apart: only following the chat may lean on it.
             return (band, title.map(\.text), title.flatMap(\.others), searchEnd)
         } catch {

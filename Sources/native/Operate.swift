@@ -921,6 +921,16 @@ extension Controller {
                 try? await Task.sleep(nanoseconds: 700_000_000)
                 guard stillOurs() else { return takenOver }
             }
+            // Typed before the box is open, the name lands wherever the focus is, which is the open chat's input: the owner's draft (seen 2026-11-12).
+            // An open box drops its list down with 搜索网络结果 in it; until that shows, nothing is typed.
+            guard let empty = await Hands.captureLive(win, scale: 2, source: area) else { return ["ok": false, "error": "看不到搜索框"] }
+            let open = await Task.detached { Hands.recognize(empty, size: area.size) }.value
+                .contains { ["搜索网络结果", "最近在搜"].contains(Hands.normalize($0.text)) }
+            guard open else {
+                if attempt < 2 { continue }
+                return ["ok": false, "error": "微信的搜索框没打开，没有输入"]
+            }
+            guard stillOurs() else { return takenOver }
             typed = true
             typeShort(name)
             try? await Task.sleep(nanoseconds: 1_400_000_000)
@@ -931,9 +941,11 @@ extension Controller {
                 || lines.contains(where: { line in headings.contains { Hands.normalize(line.text) == $0 } }) { break }
         }
         let below = lines.first { line in headings.contains { Hands.normalize(line.text) == $0 } }?.box.maxY ?? 0
-        // Chats only: what comes under 聊天记录 is messages that mention the name.
-        let history = lines.first { $0.box.minY >= below && Hands.normalize($0.text) == "聊天记录" }?.box.minY ?? .greatestFiniteMagnitude
-        let rows = lines.filter { $0.box.minY >= below && $0.box.minY < history && Hands.sameChat(name, $0.text) }
+        // Chats only: what comes under 聊天记录 is messages that mention the name, and under 搜索网络结果 a web search for exactly what was typed,
+        // which read as the one exact match and would have been clicked instead of the chat (seen 2026-11-12).
+        let history = lines.first { $0.box.minY >= below && ["聊天记录", "搜索网络结果"].contains(Hands.normalize($0.text)) }?.box.minY ?? .greatestFiniteMagnitude
+        // A long name is cut short with an ellipsis: a group nobody named shows as 小林、老王、阿明… (2026-11-12).
+        let rows = lines.filter { $0.box.minY >= below && $0.box.minY < history && (Hands.sameChat(name, $0.text) || Hands.cutShort(name, $0.text)) }
         let exact = rows.first { Hands.normalize($0.text) == want }
         let names = Array(Set(rows.map(\.text)))
         // A short name that fits several people is not ours to choose between.
@@ -1107,6 +1119,7 @@ extension Controller {
         let now = CACurrentMediaTime()
         guard now - lastSummon > 0.3 else { return }
         lastSummon = now
+        learn("summon")
         let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
         // A system dialog can be the frontmost app without a window of its own to stick to: use the window behind it.
         let large = openWindows().filter { $0.frame.width > 300 && $0.frame.height > 200 }
@@ -1120,12 +1133,31 @@ extension Controller {
             toggleSide()
             return
         }
+        go(to: win.id, edge: win.frame.maxX)
+    }
+
+    /// From the goo's own menu, or the first start with no model yet: the panel opens where the goo is. Not on the app in front,
+    /// which a click on the goo never changes and which may be on another display (a tester with two displays, 2026-11-12:
+    /// 模型设置 seemed to do nothing, the panel had opened on the other screen).
+    func openHere() {
+        if goo.mode == .attached || goo.mode == .open, target != nil {
+            if !sideOpen { web.evaluateJavaScript("setOpen(true)") }
+            return
+        }
+        // A pet on the glass: the frontmost window of the screen it is on.
+        scan()
+        let on = { (frame: CGRect) in self.goo.screenRect.contains(CGPoint(x: frame.midX, y: frame.midY)) }
+        guard let win = platforms.first(where: { $0.sticky && on($0.frame) }) else { summon(); return }
+        go(to: win.id, edge: win.frame.maxX)
+    }
+
+    func go(to id: Int, edge: CGFloat) {
         closeSide()
         goo.sleeping = false
         goo.puddle = false
         goo.peekSide = 0
         goo.splatUntil = 0
-        goo.stick(to: win.frame.maxX, window: win.id)
+        goo.stick(to: edge, window: id)
         gooPanel.orderFront(nil)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
             guard let self, self.goo.mode == .attached else { return }

@@ -92,13 +92,13 @@ final class Controller: NSObject, NSApplicationDelegate {
     @objc func checkForUpdate() { updater.showOrCheck() }
     /// 做过的事…: every ask in the records and where Tako's folder is, wherever the goo is.
     @objc func showHistory() {
-        if !sideOpen { summon() }
-        web.evaluateJavaScript("showHistory()")
+        openHere()
+        if target != nil { web.evaluateJavaScript("showHistory()") }
     }
     /// 模型设置…: the panel's first card again (account or key), wherever the goo is.
     @objc func chooseModel() {
-        if !sideOpen { summon() }
-        web.evaluateJavaScript("chooseModel()")
+        openHere()
+        if target != nil { web.evaluateJavaScript("chooseModel()") }
     }
     var statistics: Bool?   // nil where there is nothing to switch: a development build
     @objc func toggleStatistics() {
@@ -348,17 +348,21 @@ final class Controller: NSObject, NSApplicationDelegate {
         }
     }
 
-    func showMenu(_ event: NSEvent, in view: NSView) {
+    func showMenu(_ event: NSEvent, in view: NSView) { learn("menu"); NSMenu.popUpContextMenu(menu(), with: event, for: view) }
+
+    /// The Dock icon carries the same menu: when the goo is out of sight (its window minimized, another Space) it is the only way in.
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? { goo == nil ? nil : menu(dock: true) }
+
+    func menu(dock: Bool = false) -> NSMenu {
         let menu = NSMenu()
         let pet = goo.mode == .free || goo.mode == .grabbed
         let name = appName.isEmpty ? "窗口" : appName
         let toggle = NSMenuItem(title: pet ? "粘回\(name)" : "从\(name)上扒下来", action: #selector(toggleStick), keyEquivalent: "")
         toggle.target = self
         toggle.isEnabled = !pet || target != nil
+        // The shortcut lives here now: a greyed-out line of its own read as a broken setting (a tester, 2026-11-12).
+        toggle.toolTip = "点一下 Tako 就能跟它说话；在任意窗口按 ⌃⌥T，它直接过来。"
         menu.addItem(toggle)
-        let shortcut = NSMenuItem(title: "随时叫它：⌃⌥T", action: nil, keyEquivalent: "")
-        shortcut.isEnabled = false
-        menu.addItem(shortcut)
         menu.addItem(outfitMenu())
         menu.addItem(.separator())
         let history = NSMenuItem(title: "做过的事…", action: #selector(showHistory), keyEquivalent: "")
@@ -382,10 +386,11 @@ final class Controller: NSObject, NSApplicationDelegate {
         let update = NSMenuItem(title: updater.menuTitle, action: #selector(checkForUpdate), keyEquivalent: "")
         update.target = self
         menu.addItem(update)
+        if dock { return menu }   // the Dock adds its own 退出
         let quit = NSMenuItem(title: "退出 Tako", action: #selector(quit), keyEquivalent: "")
         quit.target = self
         menu.addItem(quit)
-        NSMenu.popUpContextMenu(menu, with: event, for: view)
+        return menu
     }
 
     /// 装扮: follow the occasions (nothing chosen means this), wear one hat from the wardrobe, or none at all.
