@@ -39,6 +39,8 @@ class Hands:
             self.feedback.count(f"tool.{params.get('tool')}" if result.get("success") else f"tool_failed.{params.get('tool')}.{fb.failure_kind(reason)}")
             return result
         if method in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval"):
+            if sys.platform == "win32" and method == "item/commandExecution/requestApproval":
+                return {"decision": "decline"}
             if not job:
                 return {"decision": "decline"}
             # The owner is asked only about what can't be taken back (Joe 2026-11-04: keep the cards that matter, interrupt as little as possible).

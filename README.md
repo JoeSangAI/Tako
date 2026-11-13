@@ -4,6 +4,8 @@
 
 <h1 align="center">Tako</h1>
 
+Windows 原生适配正在开发，构建方法和当前限制见 [Windows 开发预览](docs/WINDOWS.md)，尚未正式发布。
+
 <h3 align="center">黏在哪里，哪里就有了智能。</h3>
 
 <p align="center">Mac 上的黏人智能体。把小章鱼拖到任何窗口上，说一句话：它看得见这个窗口，也会替你操作。<br>不用切到聊天框，不用复述屏幕，说完就能去忙别的。发送键它不按，留给你。</p>

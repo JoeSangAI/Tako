@@ -1,6 +1,7 @@
 """What the model is told and what it is allowed: every prompt, the tools it can ask for, and the two configurations a thread can run under."""
 from __future__ import annotations
 
+import sys
 import feedback as fb
 from settings import CONFIG, HAS_WECHAT, HAS_WORKBENCH, OWNER
 
@@ -83,6 +84,9 @@ WORKBENCH_RULE = (f"- tell_workbench：{OWNER} 让你记下来、补充或回答
 
 def personal(text):
     """The prompts are written for anyone; this makes them about this owner and what this Mac actually has."""
+    if sys.platform == "win32":
+        text = text.replace("这台 Mac", "这台 Windows 电脑")
+        text += "\n当前运行于 Windows。窗口工具使用 Windows 辅助功能；不支持 AppleScript。未接入的操作会明确返回错误，不要声称已经执行。\n"
     return (text.replace("@@WECHAT_INTRO@@", WECHAT_INTRO)
             .replace("@@READ_WECHAT@@", READ_WECHAT_RULE if HAS_WECHAT else WECHAT_FILES_RULE)
             .replace("@@WORKBENCH@@", WORKBENCH_RULE + FEEDBACK_RULE)
@@ -105,6 +109,11 @@ BRAIN_CONFIG = {"features.apps": False, "features.tool_suggest": False, "feature
                     "unified-computer-use@openai-bundled", "computer-use@openai-bundled", "chrome@openai-bundled", "browser@openai-bundled",
                     "outlook-email@openai-curated", "teams@openai-curated", "github@openai-curated", "sharepoint@openai-curated",
                     "google-drive@openai-curated", "canva@openai-curated")}}
+if sys.platform == "win32":
+    # The preview uses the native window bridge. Shell and third-party tools stay
+    # disabled until Windows command isolation has passed its own acceptance.
+    BRAIN_CONFIG.update({"features.shell_tool": False, "features.unified_exec": False,
+                         "features.plugins": False, "mcp_servers": {}})
 
 
 def tool(name, description, properties, optional=()):

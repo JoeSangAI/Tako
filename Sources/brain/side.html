@@ -30,6 +30,9 @@
     box-shadow: 4px 0 18px rgba(0, 0, 0, .14); will-change: transform; transition: background-color .3s, border-color .3s; }
   body.open #card { display: flex; animation: grow .24s cubic-bezier(.2, .9, .3, 1); }
   body.closing #card { display: flex; animation: shrink .16s ease-in forwards; }
+  body.windows #card { width: 100%; border: 0; border-radius: 0; box-shadow: none; animation: none; }
+  body.windows.open #grip { display: none; }
+  body.windows header { padding-left: 14px; }
   @keyframes grow { from { transform: translateX(-100%); } to { transform: none; } }
   @keyframes shrink { to { transform: translateX(-100%); } }
   #grip { position: fixed; top: 0; bottom: 0; left: calc(var(--w) - 5px); width: 10px; cursor: ew-resize; z-index: 2; display: none; touch-action: none; }
@@ -255,7 +258,9 @@ const $ = (id) => document.getElementById(id);
 const token = new URLSearchParams(location.search).get('t') || '';
 const api = (path, body) => fetch(`${path}${path.includes('?') ? '&' : '?'}t=${encodeURIComponent(token)}`,
   body ? { method: 'POST', body: JSON.stringify(body) } : {}).then((r) => r.json());
-const native = window.webkit?.messageHandlers?.goo;
+const native = window.webkit?.messageHandlers?.goo || window.chrome?.webview;
+const computerName = window.chrome?.webview ? '电脑' : 'Mac';
+if (window.chrome?.webview) document.body.classList.add('windows');
 
 // ---- geometry: the side window never resizes for us; we tell it which part takes clicks ----
 const MIN = 280, MAX = 712;
@@ -721,11 +726,11 @@ function show(s) {
     if (!first || seen) { $('log').replaceChildren(empty); seen = 0; s = { ...s, events: [] }; switched = true; }
   }
   document.body.classList.toggle('wechat', s.kind !== 'window');
-  const opening = s.chat ? s.greeting || '告诉 Tako 你想做什么。' : '把 Tako 拖到任意窗口上松手，或者在任意窗口按 ⌃⌥T。';
+  const opening = s.chat ? s.greeting || '告诉 Tako 你想做什么。' : `把 Tako 拖到任意窗口上松手，或者在任意窗口按 ${window.chrome?.webview ? 'Ctrl+Alt+T' : '⌃⌥T'}。`;
   if (emptyLine.textContent !== opening) { emptyLine.textContent = opening; empty.style.animation = 'none'; void empty.offsetWidth; empty.style.animation = ''; }
   showTry(s);
   document.body.dataset.app = s.app || '';
-  setText($('who'), s.chat ? `我在看：${s.chat}` : '还没盯着哪段对话，点这里选');
+  setText($('who'), s.chat ? `我在看：${s.chat}` : window.chrome?.webview ? '把 Tako 拖到要看的窗口' : '还没盯着哪段对话，点这里选');
   const ear = s.listening !== null && s.listening !== undefined;
   $('tick').classList.toggle('ear', ear);
   $('tick').title = ear ? '点一下不听了' : '';
@@ -863,7 +868,7 @@ function showLoginChoices(box) {
   box.append(noticeLine('title', setup.choosing ? '模型设置' : SETUP_WORDS.login[0]));
   if (setup.choosing) box.append(noticeLine('body', setup.current ? `现在用的是 ${setup.current}。选一个换上，不选就照旧。` : '选一个接上。'));
   // Every way in is one tap from here: what this Mac is already logged in to comes first (a tester, 2026-11-12: a new install stalls on each extra step).
-  const rows = [...offices.map((o) => ({ id: o.id, name: useName(o.name), line: '这台 Mac 上已经装了，用你在它那里的登录和积分', go: () => useOffice(o.id) })),
+  const rows = [...offices.map((o) => ({ id: o.id, name: useName(o.name), line: `这台 ${computerName} 上已经装了，用你在它那里的登录和积分`, go: () => useOffice(o.id) })),
     { id: 'chatgpt', name: '用 ChatGPT 登录', line: 'ChatGPT 会员，在浏览器里确认', go: () => api('/setup/next', {}).then(setSetup) },
     { id: 'key', name: '用 API key', line: 'DeepSeek、通义千问、Kimi、智谱，或中转站', go: () => { keyForm = true; showNotice(); } }];
   for (const r of rows) {
@@ -1020,7 +1025,7 @@ function showKeyForm(box, actions) {
   const custom = keyDraft.service === 'custom';
   box.append(noticeLine('title', '用你自己的模型 key'), noticeLine('body', custom
     ? '任何支持 OpenAI Responses 接口的服务商或中转站都行。填地址和 key，Tako 会列出能用的模型。'
-    : '选一家，粘贴它的 API key，Tako 会自己核对。按那一家的价格计费，key 只存在这台 Mac 上。'));
+    : `选一家，粘贴它的 API key，Tako 会自己核对。按那一家的价格计费，key 只存在这台 ${computerName} 上。`));
   const chips = document.createElement('div');
   chips.className = 'chips';
   for (const s of services) {

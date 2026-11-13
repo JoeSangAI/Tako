@@ -9,6 +9,7 @@ import contextlib
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from settings import CONFIG, LIGHT_MODEL, MODEL, RUNTIME
@@ -101,7 +102,8 @@ def address(base_url):
 def _curl(url, key, body=None):
     """Through the system's curl: it trusts what this Mac trusts (a proxy's certificate in the Keychain), as Codex does and Python's own SSL doesn't.
     The key goes in on stdin, never in an argument another process could see. Returns (status, body); status 0 when nothing answered."""
-    command = ["/usr/bin/curl", "-sS", "--max-time", "15", "-H", "@-", "-w", "\n%{http_code}", url]
+    executable = str(Path(os.environ.get("SystemRoot", "C:/Windows")) / "System32/curl.exe") if sys.platform == "win32" else "/usr/bin/curl"
+    command = [executable, "-sS", "--max-time", "15", "-H", "@-", "-w", "\n%{http_code}", url]
     if body is not None:
         command[5:5] = ["-X", "POST", "--data", body]
     headers = f"Authorization: Bearer {key}\n" + ("Content-Type: application/json\n" if body is not None else "")

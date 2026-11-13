@@ -12,6 +12,7 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import sys
 import tempfile
 from collections import defaultdict, deque
 from typing import Awaitable, Callable
@@ -49,6 +50,7 @@ class CodexRuntime:
         self.executable = executable
         self.on_request = on_request
         self.process = None
+        self._windows_job = None
         self._next_id = 0
         self._pending: dict[int, asyncio.Future] = {}
         self._events: dict[str, deque] = defaultdict(deque)
@@ -72,6 +74,14 @@ class CodexRuntime:
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, limit=8 * 1024 * 1024,
             env={**os.environ, "CODEX_SQLITE_HOME": str(CODEX_STATE), **provider.codex_env(own_key)})
+        if sys.platform == "win32":
+            from windows_process import Job
+            try:
+                self._windows_job = Job(self.process.pid)
+            except BaseException:
+                self.process.kill()
+                await self.process.wait()
+                raise
         self.closed = False
         self._reader = asyncio.create_task(self._read())
         self._stderr = asyncio.create_task(self._drain_stderr())
@@ -270,6 +280,8 @@ class CodexRuntime:
                 except asyncio.TimeoutError:
                     self.process.kill()
                     await self.process.wait()
+        if self._windows_job:
+            self._windows_job.close()
         for task in [self._reader, self._stderr, *self._workers]:
             if task is not None:
                 task.cancel()

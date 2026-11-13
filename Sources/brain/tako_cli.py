@@ -21,8 +21,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from platform_paths import runtime_root
 
-HOME = Path(os.environ.get("TAKO_HOME") or Path.home() / "Library" / "Application Support" / "Tako")
+HOME = runtime_root()
 
 
 def door():

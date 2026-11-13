@@ -1,21 +1,29 @@
 #!/bin/bash
-# Only main and version tags ever leave this checkout, nothing leaves unchecked, and a new VERSION on main becomes a release.
+# Main, the Windows preview, and version tags may leave; only main can release.
 set -uo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
 ZERO=0000000000000000000000000000000000000000
 COMMIT=""
+PREVIEW=""
 while read -r _local sha remote _remote_sha; do
   case "$remote" in
     refs/heads/main) [ "$sha" = "$ZERO" ] || COMMIT="$sha" ;;
+    refs/heads/windows-preview) [ "$sha" = "$ZERO" ] || PREVIEW="$sha" ;;
     refs/tags/v*) ;;
     *) echo "refusing to push $remote: this checkout keeps private history on other branches" >&2; exit 1 ;;
   esac
 done
 
 # The old private history stays on this Mac: nothing built on it may leave.
-if [ -n "$COMMIT" ] && git rev-parse -q --verify refs/heads/archive/pre-public >/dev/null && git merge-base --is-ancestor archive/pre-public "$COMMIT"; then
-  echo "refusing to push: this commit is built on the private history" >&2; exit 1
+for CHECK_COMMIT in "$COMMIT" "$PREVIEW"; do
+  if [ -n "$CHECK_COMMIT" ] && git rev-parse -q --verify refs/heads/archive/pre-public >/dev/null && git merge-base --is-ancestor archive/pre-public "$CHECK_COMMIT"; then
+    echo "refusing to push: this commit is built on the private history" >&2; exit 1
+  fi
+done
+
+if [ -n "$PREVIEW" ] && ! git merge-base origin/main "$PREVIEW" >/dev/null; then
+  echo "refusing to push: Windows preview must share the public main history" >&2; exit 1
 fi
 
 "$ROOT/scripts/check_public.sh" || { echo "push stopped: the public check failed" >&2; exit 1; }

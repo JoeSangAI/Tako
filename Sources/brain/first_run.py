@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import signal
+import sys
 import subprocess
 import threading
 import time
@@ -234,7 +235,10 @@ class Setup:
         if process and process.poll() is None:
             self.cancelled = True
             with contextlib.suppress(OSError):
-                os.killpg(process.pid, signal.SIGKILL)
+                if sys.platform == "win32":
+                    process.kill()
+                else:
+                    os.killpg(process.pid, signal.SIGKILL)
 
     def _set_settings_aside(self):
         """Only for the button that says so: the file keeps its contents and its folder, under another name."""
@@ -284,6 +288,16 @@ class Setup:
         return True
 
     def _install(self):
+        if sys.platform == "win32":
+            from windows_install import install
+            from settings import RUNTIME
+            try:
+                install(RUNTIME / "tools")
+                return True
+            except (OSError, ValueError, KeyError, StopIteration, subprocess.SubprocessError):
+                self.failed = "Codex 没装上，检查网络后再试一次。"
+                self._count("failed.install")
+                return False
         if subprocess.run(["/bin/sh", "-c", self.INSTALL], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=600, env={**os.environ, "CODEX_NON_INTERACTIVE": "1"}).returncode:
             self.failed = "Codex 没装上，检查网络后再试一次。"
             self._count("failed.install")
@@ -374,6 +388,17 @@ def _installed():
     """Every Codex on this Mac, in the order it would be used: whatever the login shell knows, then the places installers and version managers put it."""
     home = Path.home()
     newest_first = lambda pattern: sorted(home.glob(pattern), key=lambda path: [int(n) for n in re.findall(r"\d+", str(path.relative_to(home)))], reverse=True)
+    if sys.platform == "win32":
+        from settings import RUNTIME
+        import json
+        places = []
+        with contextlib.suppress(OSError, ValueError, KeyError):
+            selected = Path(json.loads((RUNTIME / "tools/current.json").read_text(encoding="utf-8"))["path"])
+            if not selected.is_absolute() and ".." not in selected.parts:
+                places.append(RUNTIME / "tools" / selected)
+        places += [home / ".local/bin/codex.exe", home / ".codex/bin/codex.exe",
+                   Path(os.environ.get("LOCALAPPDATA", str(home / "AppData/Local"))) / "Programs/OpenAI/Codex/bin/codex.exe"]
+        return list(dict.fromkeys(p for p in [*(str(p) for p in places if p.is_file()), shutil.which("codex.exe")] if p))
     places = [home / ".local/bin/codex", home / ".codex/bin/codex", Path("/opt/homebrew/bin/codex"), Path("/usr/local/bin/codex"), home / ".npm-global/bin/codex",
               # A login shell doesn't read .zshrc, so a version manager's PATH never reaches the app.
               *newest_first(".nvm/versions/node/*/bin/codex"), *newest_first(".local/share/fnm/node-versions/*/installation/bin/codex"),
