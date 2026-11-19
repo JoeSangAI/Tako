@@ -131,7 +131,8 @@ def handle(message):
     method, params, ident = message.get("method"), message.get("params") or {}, message.get("id")
     note("request", method=method, params={k: v for k, v in params.items() if k != "prompt"} if method != "session/prompt" else
          {"sessionId": params.get("sessionId"), "text": "".join(p.get("text", "") for p in params.get("prompt") or []),
-          "images": sum(p.get("type") == "image" for p in params.get("prompt") or [])})
+          "images": sum(p.get("type") == "image" for p in params.get("prompt") or []),
+          "imageBytes": sum(len(p.get("data") or "") * 3 // 4 for p in params.get("prompt") or [] if p.get("type") == "image")})
     if method == "initialize":
         sessions = {"delete": {}, "close": {}} if PLAYS != "workbuddy" else {}
         send({"id": ident, "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": True, "sessionCapabilities": sessions, "promptCapabilities": {"image": True}}}})

@@ -2150,6 +2150,28 @@ class AnOfficeAgentAsTheBrain(Base):
         self.assertEqual(prompt["params"]["images"], 1)
 
 
+    def test_a_big_picture_goes_light_and_the_original_path_goes_along(self):
+        if sys.platform != "darwin":
+            self.skipTest("sips is the Mac's")
+        picture = self.tako.home / "海报.png"
+        picture.write_bytes(noise_png(900, 900))
+        self.tako.call("/ask", {"text": "换成这张", "files": [str(picture)]})
+        self.answered("好的")
+        prompt = [row for row in self.agent("request") if row["method"] == "session/prompt" and "换成这张" in row["params"]["text"]][0]
+        self.assertIn(str(picture), prompt["params"]["text"], "the model is told where the original is")
+        self.assertEqual(prompt["params"]["images"], 1)
+        self.assertLess(prompt["params"]["imageBytes"], picture.stat().st_size // 2, "what goes up is much lighter than the original")
+
+
+def noise_png(width, height):
+    """A real PNG that is big on disk, as a phone's screenshot or a poster export often is."""
+    import struct
+    import zlib
+    rows = b"".join(b"\0" + bytes((x * 255 // width, y * 255 // height, 128)[c] for x in range(width) for c in range(3)) for y in range(height))
+    chunk = lambda kind, data: struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows, 0)) + chunk(b"IEND", b"")
+
+
 class QoderAsTheBrain(Base):
     config = {"office": {"agent": "qoder", "cli": "{home}/bin/agent"}}
 

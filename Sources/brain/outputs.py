@@ -64,6 +64,24 @@ def file_pictures(path, first=1, count=6):
         return [base64.b64encode(page.read_bytes()).decode() for page in pages if page.is_file()]
 
 
+LIGHT_PICTURE_BYTES = 400_000  # A picture handed over above this goes to the model as a smaller copy.
+
+
+def light_picture(path, work):
+    """What the model looks at, not what it works with: a phone poster or screenshot is often a few MB of PNG, and every request
+    of the turn uploads it again, so on a slow uplink it never arrives. A JPEG at the size the model sees anyway carries the same."""
+    source = Path(path)
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        if os.name == "nt" or not work or source.stat().st_size <= LIGHT_PICTURE_BYTES:
+            return str(source)
+        light = Path(work) / f"{source.stem}.看图.jpg"
+        subprocess.run(["/usr/bin/sips", "-Z", "1600", "-s", "format", "jpeg", "-s", "formatOptions", "80", str(source), "--out", str(light)],
+                       capture_output=True, timeout=30, check=False)
+        if light.is_file() and 0 < light.stat().st_size < source.stat().st_size:
+            return str(light)
+    return str(source)
+
+
 def file_in_title(title):
     """A window that only names its document: WPS doesn't hold a Word file open, so no process can say where it is. WeChat's folder first, then Spotlight, and only when one file fits."""
     name = Path(str(title or "").replace("[只读]", "").strip()).name
