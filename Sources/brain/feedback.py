@@ -23,7 +23,7 @@ RESULTS = ("完成", "没做到", "放弃")
 # What they wished it would do, and where it let them down: fixed words too, so nothing anyone said can travel in them.
 WANTS = ("替我操作软件", "少动手自动做完", "批量做重复的事", "定时自动做", "跨软件搬内容", "看懂这个界面", "一步步教我", "读长文件", "做成文件交付", "写得更像我", "记住我的习惯", "帮我拿主意", "其他")
 STUCK = ("太慢", "理解错了", "结果要大改", "要确认太多", "缺权限", "读不到窗口内容", "点错地方", "找不到入口", "不知道怎么说", "连不上", "没做完就停了", "其他")
-# Why a tool didn't work, as one fixed word read off the reason it gave the model (Joe 2026-11-11: counts alone can't say what to fix).
+# Why a tool didn't work, as one fixed word read off the reason it gave the model; a count alone does not identify the failure.
 # The first rule that fits wins; nothing of the reason itself leaves, only the word.
 FAILURE_KINDS = (("owner_moved", ("动了鼠标", "切走了窗口")), ("not_front", ("在前台", "到前台", "真鼠标", "真键鼠")), ("several", ("有几个", "里有几个")),
                  ("no_chat", ("没搜到", "没找到叫", "不在当前可读", "打不开")), ("title", ("标题读到",)), ("no_cursor", ("光标不在", "没有光标")),

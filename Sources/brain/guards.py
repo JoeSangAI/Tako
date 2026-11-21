@@ -99,11 +99,11 @@ def clipped(text, limit=1500):
 
 
 def workbench_packet(args, said, today):
-    """Only the owner's own words reach the workbench, under the identity of the message they came from."""
+    """Only the owner's own words reach the external task service, under the identity of the message they came from."""
     text, kind = str(args.get("text") or "").strip(), args.get("kind")
     source = next((key for key, words in reversed(said) if text and text in words), None)
     if not source:
-        raise ValueError(f"这不是 {OWNER} 的原话。工作台只收 TA 自己说的话，请 TA 说一句，或逐字摘 TA 说过的话。")
+        raise ValueError(f"这不是 {OWNER} 的原话。外部事项服务只收 TA 自己说的话，请 TA 说一句，或逐字摘 TA 说过的话。")
     digest = hashlib.sha256("|".join((str(kind), str(args.get("item")), text)).encode()).hexdigest()[:12]
     source_id = f"tako-{source}-{digest}"
     if kind == "capture":

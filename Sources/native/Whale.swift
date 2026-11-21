@@ -206,7 +206,7 @@ extension Goo {
         k.wagPhase += wagSpeed * dt
 
         // The tail, the drawing's own (the one in the film), pinned to the skin low on her back with its root tucked in behind
-        // it; mood lifts and wags it. Seen from the front it is behind her and out of sight (Joe 2026-11-08); it comes round
+        // it; mood lifts and wags it. Seen from the front it is behind her and out of sight; it comes round
         // into view as she turns side on, holding on to a window's edge.
         let side = clamp(abs(turn) / Goo.sideTurn, 0, 1) * tailIn
         if side > 0.02 && !puddle {

@@ -385,7 +385,7 @@ extension Goo {
         turn += (turnGoal - turn) * min(1, dt * 5)
 
         var look: V
-        // the whale girl's looks are softened (Joe 2026-11-08): no side-eye from the corners, she looks down a little instead
+        // the whale girl's looks are softened: no side-eye from the corners, she looks down a little instead
         let soft = costume.isWhale && costume.dressed > 0.5
         switch state {
         case "reading", "working": look = soft ? V(-0.5, 0.35 + sin(CGFloat(clock) * 2) * 0.15) : V(-1, sin(CGFloat(clock) * 2) * 0.4)

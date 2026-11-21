@@ -1,13 +1,13 @@
-// The two switches Tako needs in System Settings. The owner is asked as rarely as the system allows (Joe 2026-11-04):
+// The two switches Tako needs in System Settings. The owner is asked as rarely as the system allows:
 // each switch once, and nothing Tako can put right itself. Accessibility is checked the moment the list changes and every
 // second until it is on; the system's own prompt comes once, on the first start, after that only the panel's card asks.
-// The list changing while the system still says no means its record for Tako has gone stale (seen on a friend's Mac
-// 2026-11-04): Tako clears its own record by itself, so the next switch-on takes. Screen Recording only counts in a process
+// The list changing while the system still says no means its record for Tako has gone stale.
+// Tako clears its own record, so the next switch-on takes. Screen Recording only counts in a process
 // started after it was switched on: a fresh copy of Tako is asked, and once it says yes, Tako restarts itself when idle.
 //
 // The system ties each switch to the app's designated requirement, not its name. A Tako signed with the same certificate keeps
 // its switches across versions; one built ad hoc is a new app to the system every time it is built, and the switch still
-// showing on belongs to the old build (GitHub issue 2, 2026-11-07). So the requirement each switch was last on under is kept:
+// showing on belongs to the old build (GitHub issue 2). So the requirement each switch was last on under is kept:
 // off now under another one, or off in an ad-hoc build, means the record is stale, and Tako clears it once for this build.
 import ApplicationServices
 import AppKit
@@ -130,7 +130,7 @@ extension Controller {
         return true
     }
 
-    /// Only Tako's own line in the list, never anyone else's. Works without an administrator (tried 2026-11-07, macOS 15).
+    /// Only Tako's own line in the list, never anyone else's. Works without an administrator on macOS 15.
     func clearRecord(_ service: String) -> Bool {
         let id = Bundle.main.bundleIdentifier ?? "com.joesang.tako"
         let task = Process()

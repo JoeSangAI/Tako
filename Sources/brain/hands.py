@@ -41,7 +41,7 @@ class Hands:
         if method in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval"):
             if not job:
                 return {"decision": "decline"}
-            # The owner is asked only about what can't be taken back (Joe 2026-11-04: keep the cards that matter, interrupt as little as possible).
+            # The owner is asked only about what can't be taken back.
             if method == "item/fileChange/requestApproval":
                 await asyncio.sleep(0.1)  # the item's own start event carries the paths
                 paths = [str(path) for path in job.changing.get(params.get("itemId")) or [] if path]
@@ -127,7 +127,7 @@ class Hands:
             if job:
                 job.blocked.append(result.get("why") or "front")
                 job.left_for_owner = {"window": str(result.get("id") or args.get("window") or job.window_id or ""), "app": result.get("app"), "bundle": result.get("bundle")}
-                # WeChat shows little to Accessibility, so a click there wants the real pointer; its own ways behind the owner's back are these two (Tako 0.2.39 counts, 2026-11-11).
+                # WeChat shows little to Accessibility, so a click there wants the real pointer; its own ways behind the owner's back are these two.
                 wechat = "微信里要换对话、放文字或文件，用 fill_input 的 chat，在后台排着、到了自己放；要看对话用 read_wechat。" if result.get("bundle") == WECHAT else ""
                 return {"ok": False, "error": f"{result.get('error')}，先没做。不要让 {OWNER} 切窗口，也不要说在等TA。{wechat}先换条路：文件、命令、脚本接口、聊天记录；换不了就把其余做完，最后说清差什么。"}
             # The owner just pressed a button on the panel: a few seconds for their hand to settle is all this takes.
@@ -148,7 +148,7 @@ class Hands:
     @staticmethod
     def _bridged(job, window, bundle=None):
         """A step left for the owner, then another way on that same window that worked (a click WeChat refused, then the hand-over queued; a drag refused, then a menu): nothing is left.
-        Kept, it woke a model turn on their arrival to do again what was done, and counted as a step short (Tako 0.2.39 counts, 2026-11-11)."""
+        Kept, it woke a model turn on their arrival to do again what was done, and counted as a step short."""
         left = job and job.left_for_owner
         if left and ((window and str(window) == left["window"]) or (bundle == WECHAT and left.get("bundle") == WECHAT)):
             job.left_for_owner = None
@@ -179,7 +179,7 @@ class Hands:
                 del self.held[key]
 
     def _hands_on(self, job, window):
-        """A job's hands on a window other than its own, doing something there; a look is not that, and the result of one belongs where it was asked (Joe 2026-11-09: asked in Finder to mail a file, Tako worked the mailbox and stayed on Finder).
+        """A job's hands on a window other than its own, doing something there; a look is not that, and the result of one belongs where it was asked.
         That window now shows the job's conversation, its line goes there, and the owner going to it brings Tako along."""
         found = str((window or {}).get("id") or "")
         if not job or found in ("", "0", job.window_id or "") or window.get("bundle") == WECHAT:
@@ -201,7 +201,7 @@ class Hands:
                 if seen.get("error") and not seen.get("noAnswer"):  # the window has gone
                     return
                 front = bool(seen.get("front"))
-                # Only the owner's own going there: a window that came up by itself (an app opened for the job) is no reason, and they get only the result (Joe 2026-11-09).
+                # Only the owner's own going there: a window that came up by itself (an app opened for the job) is no reason, and they get only the result.
                 went = front and not was_front and float(seen.get("input", 99)) < OWNER_WENT_SECONDS
                 if went and job in self.active and (await self.native("followTo", timeout=5, window=window)).get("ok"):
                     await asyncio.sleep(0.4)  # the panel moves over with the goo before it opens there
@@ -213,7 +213,7 @@ class Hands:
 
     @staticmethod
     def _fill_key(job, window, chat):
-        """One hand-over waits per place it goes: two invitations for two people both get there (Joe 2026-11-10, the second pushed the first out). Asked again for the same place, the newest stands."""
+        """One hand-over waits per place it goes: Queue each destination independently. A new hand-over replaces the one for the same destination."""
         return ("fill", Hands._conversation(job), normalized(chat) if chat else str(window or ""))
 
     def _fills(self, conversation):
@@ -230,7 +230,7 @@ class Hands:
         mark = self.held[key] = {"name": job.name, "events": job.events, "key": job.key, "what": what, "where": where, "app": app, "window": window or (WECHAT if chat else None), "chat": chat or job.wechat_chat,
                                  "trouble": f"{what} 备好了，切到{app}就自动放进去。", "placed": asyncio.Event()}
         self._later(self._place_when_back(key, mark, text, files, window, chat, job))
-        # Facts, not orders: told "don't try again, don't look", the model obeyed that over the owner saying the chat was open (2026-11-06).
+        # Report the failed attempt as context. The owner can still direct a retry.
         why = why or f"{app}的输入框要用真鼠标放字"
         return {"ok": True, "message": f"还没放进去，排着：{why}。{OWNER} 到{app}、手停下时系统自己放，不用你再做什么。跟 {OWNER} 照实说“排着，切过去就放”，不要说已经放进去了。给同一个地方再调 fill_input 会换掉排着的这条，给别的人或窗口的各排各的，按顺序放；cancel:true 取消（带 chat 只取消给那个人的）。"}
 
@@ -491,17 +491,17 @@ class Hands:
             packet = workbench_packet(args, self.said, local_today())
         except ValueError as exc:
             return self._reply(str(exc), ok=False)
-        # The workbench's own client owns its session check and idempotency; TAKO keeps no copy of either.
+        # The external task service's client owns its session check and idempotency; TAKO keeps no copy of either.
         done = await asyncio.to_thread(subprocess.run, [sys.executable, str(WORKBENCH_CARDS), "respond", "--base", WORKBENCH, "--packet", "-"],
                                        input=json.dumps(packet, ensure_ascii=False), capture_output=True, text=True, timeout=70)
         try:
             result = json.loads(done.stdout)
         except ValueError:
-            return self._reply("工作台没有给出结果，不确定写进去没有，先读 /api/desk 核对，不要直接重试。", ok=False)
+            return self._reply("外部事项服务没有给出结果，不确定写进去没有，先读 /api/desk 核对，不要直接重试。", ok=False)
         if done.returncode:
             conflict = "事项刚变过，重新读一次再写。" if result.get("http_status") == 409 else "不确定写进去没有，先读 /api/desk 核对，不要直接重试。"
-            return self._reply(f"工作台没收：{result.get('error')} {conflict}", ok=False)
-        return self._reply(str(result.get("message") or "工作台收到了。"))
+            return self._reply(f"外部事项服务未接受这次写入：{result.get('error')} {conflict}", ok=False)
+        return self._reply(str(result.get("message") or "外部事项服务收到了。"))
 
     async def _read_wechat(self, name, limit):
         chats = await asyncio.to_thread(reader.find_chats, name)
@@ -703,7 +703,7 @@ class Hands:
             if others:
                 return {"ok": False, "error": f"微信里有几个「{chat}」：{'、'.join(others[:5])}。问 {OWNER} 是哪一个，再填，chat 写全名"}
         why = None
-        # A web page fills from inside, in the background, whatever editor it uses: nothing to wait for (Joe 2026-11-04).
+        # A web page fills from inside, in the background, whatever editor it uses: nothing to wait for.
         if job and not chat:
             shown = await self.native("resolve", window=window)
             if shown.get("ok") and shown.get("bundle") in webfill.BROWSERS:
@@ -751,7 +751,7 @@ class Hands:
                 return [*(seen.get("lines") or []), *(seen.get("others") or [])]
             if want:
                 showing = await header()
-                # Not showing it, or the header can't be read (2026-11-10: the OCR turned 赵梓彤's title into nonsense): open the chat the draft was written for.
+                # Not showing it, or the header can't be read: open the chat the draft was written for.
                 if not await asyncio.to_thread(self.is_showing, want, showing):
                     opened = await hand("openChat", timeout=15, window=window, name=want)
                     if opened.get("needsFront"):
@@ -788,7 +788,7 @@ class Hands:
         problem = await asyncio.to_thread(change_problem, source, copy)
         if problem:
             return self._reply(problem, ok=False)
-        # The original is backed up before anything happens, so this goes ahead without a card (Joe 2026-11-04). What changed is in the answer.
+        # The original is backed up before anything happens, so this goes ahead without a card. What changed is in the answer.
         backup = await asyncio.to_thread(back_up, source)
         # The card's 看副本 leaves the copy open beside the original. It has done its job; if it won't go, nothing depends on it.
         await self.native("closeDocument", timeout=25, document=str(copy), held=True)

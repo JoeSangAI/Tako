@@ -91,7 +91,7 @@ class Chats:
             match = difflib.get_close_matches(key, near, n=1, cutoff=0.82)
             if match:
                 return key, self.index[match[0]]
-        # A group nobody named is titled with its other members' names (Joe 2026-11-10: a five-person group titled with four names left the panel on the chat before).
+        # A group nobody named is titled with its other members' names.
         # Every line is tried, like the names above: the longest one may be a misread line from under the title.
         lines = [line for line in titles if len(normalized(line)) >= 4]
         groups = self._unnamed_groups() if lines else []
@@ -132,7 +132,7 @@ class Chats:
 
     def which_chat(self, titles):
         """The chat a header read means: (key, chat) or (None, None). The one answer to "which chat is open": the panel follows it, and a fill checks against it,
-        so Tako never tells the owner it is in a chat and then refuses to write there (2026-11-06)."""
+        so Tako never tells the owner it is in a chat and then refuses to write there."""
         key, chats = self._candidates(titles)
         if not chats:
             return None, None
@@ -203,8 +203,7 @@ class Chats:
 
     def _shown_on(self, key, window_id):
         """Another conversation a window shows instead of its own, or None. The one the owner just tapped a line to go to comes first: that line is what they want to see.
-        Otherwise a window a job worked shows that job's conversation, so the owner finds it where it was done, unless the window's own conversation moved since
-        (Joe 2026-11-10: a Chrome window kept showing the job that had once worked it, and the line he tapped for its own job never cleared)."""
+        Otherwise a window a job worked shows that job's conversation, so the owner finds it where it was done, unless the window's own conversation has changed since the job last worked there."""
         going = self.going
         if going and going["window"] == window_id:
             self.going = None
@@ -234,7 +233,7 @@ class Chats:
 
     async def settle_chat(self):
         """Before a word on WeChat is taken: which chat is open now. A chat just clicked may still be resolving, and before the first title is read there is none;
-        a job filed under the chat before, or under no chat, can't be found again (Joe 2026-11-10)."""
+        a job filed under the chat before, or under no chat, can't be found again."""
         if not HAS_WECHAT or (self.window or {}).get("bundle") != WECHAT:
             return
         deadline = time.time() + SETTLE_SECONDS
@@ -338,7 +337,7 @@ class Chats:
                 ratio = difflib.SequenceMatcher(None, draft["text"], sent).ratio()
                 note_metric(kind="draft", filled=draft["filled"], ratio=round(ratio, 3), draft_chars=len(draft["text"]), sent_chars=len(sent),
                             seconds=int(draft["last"] - draft["time"]))
-                # The measure of a hand-over is whether it was used (Joe 2026-11-11): sent as it was, sent changed, or not sent at all.
+                # The measure of a hand-over is whether it was used: sent as it was, sent changed, or not sent at all.
                 self.feedback.count("draft.sent_as_is" if ratio >= 0.95 else "draft.sent_changed" if ratio >= 0.5 else "draft.sent_other")
                 if draft["text"].strip() != sent.strip():
                     self._later(self._learn(draft["text"], sent))

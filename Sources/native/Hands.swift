@@ -50,7 +50,7 @@ enum Hands {
         }
     }
 
-    /// ScreenCaptureKit never answers for a minimized window or a hidden app's (seen 2026-11-02), and the whole tool call would wait for it.
+    /// ScreenCaptureKit never answers for a minimized window or a hidden app's, and the whole tool call would wait for it.
     static func shot(_ filter: SCContentFilter, _ config: SCStreamConfiguration) async -> CGImage? {
         await withCheckedContinuation { (done: CheckedContinuation<CGImage?, Never>) in
             let lock = NSLock()
@@ -668,7 +668,7 @@ extension Controller {
     }
 
     /// Where these characters really are. A run's own frame won't say: Chrome cuts it down to what shows of it, so a long paragraph with its first lines on screen
-    /// looks on screen whatever part of it is meant, and what is out of view lies flat against the page's edge (both seen 2026-11-02).
+    /// looks on screen whatever part of it is meant, and what is out of view lies flat against the page's edge.
     nonisolated static func bounds(of found: (element: AXUIElement, location: Int, length: Int, exact: Bool, page: CGRect?)) -> CGRect {
         var range = CFRange(location: found.location, length: found.length), answer: CFTypeRef?, box = CGRect.zero
         if let asked = AXValueCreate(.cfRange, &range),
@@ -688,8 +688,8 @@ extension Controller {
     // MARK: documents
 
     /// Runs AppleScript with osascript, so a hung app can't freeze the goo. The server has checked what it talks to.
-    /// The first script to an app stops at the system asking the owner whether TAKO may control it, and nothing comes back until they answer
-    /// (Chrome, 2026-11-04: the job waited the full limit and gave up). So that is checked first: the question goes up on its own and the job hears at once.
+    /// The first script to an app blocks while the system asks the owner for permission.
+    /// Checking first lets the permission prompt appear while the job gets an immediate response.
     func script(_ source: String, to bundle: String? = nil, within limit: Double = 80) async -> [String: Any] {
         await Task.detached { () -> [String: Any] in
             if let bundle {
@@ -782,7 +782,7 @@ extension Controller {
     }
 
     /// Closes the document so its file can be replaced. Refuses unless the window shows exactly this document, saved.
-    /// The app holding the file says which document it is and whether it has really gone: a title can't, with a copy of the same name in the next tab (seen 2026-11-02).
+    /// The app holding the file says which document it is and whether it has really gone: a title can't, with a copy of the same name in the next tab.
     @MainActor
     func closeDocument(_ path: String, onlyIfHeld: Bool = false) async -> [String: Any] {
         let name = URL(fileURLWithPath: path).lastPathComponent

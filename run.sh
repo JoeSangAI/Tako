@@ -6,7 +6,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 APP="/Applications/Tako.app"
 BINARY="$APP/Contents/MacOS/Tako"
 
-# A restart kills whatever job the owner has going (it happened 2026-11-04). Wait for it to end, or say TAKO_FORCE=1.
+# A restart kills whatever job the owner has going. Wait for it to end, or say TAKO_FORCE=1.
 if [ -z "${TAKO_FORCE:-}" ] && pgrep -x Tako >/dev/null; then
   # Only jobs begun by the Tako running now: one that was killed keeps saying 在做 forever. Its brain rewrites agent.json on every start.
   # working.json lists them (records.py); a Tako from before it kept them in asked.json.

@@ -100,7 +100,7 @@ final class Enchant {
     var inkOnWindow: CGColor { host.goo?.onDark == true ? NSColor(white: 0.93, alpha: 1).cgColor : ink }
 
     /// Dark or light is read off the strip the panel sits by, but a ring lands anywhere on the window: a dark sidebar, a photo, a
-    /// terminal in a light app. A black ring on black was simply not there (2026-11-06). So each line drawn on the window has the
+    /// terminal in a light app. A black ring on black was simply not there. So each line drawn on the window has the
     /// other colour laid under it, a little wider: on a matching background it melts away, on the wrong one it is the line's edge.
     var edgeOnWindow: CGColor { (host.goo?.onDark == true ? ink : NSColor.white.cgColor).copy(alpha: 0.9)! }
 

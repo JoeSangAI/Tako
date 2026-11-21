@@ -1,4 +1,4 @@
-"""Getting a friend's Mac past the login step, against a stand-in for `codex login`: no browser, no network, no real account.
+"""First-run login, against a stand-in for `codex login`: no browser, no network, no real account.
 Run: python3 tests/test_first_run.py
 """
 import json

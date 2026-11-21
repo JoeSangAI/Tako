@@ -94,11 +94,11 @@ extension Controller {
         }
     }
 
-    /// The window to drop it on: only near its right edge, where it lives (Joe 2026-11-04: over the middle of a window it is just being carried, or set down as a pet).
+    /// The window to drop it on: only near its right edge, where it lives.
     /// The one it is already feeling for keeps it over a wider band, so the feelers don't flicker at the boundary. A window in front hides the ones behind it.
     func windowNear(_ c: V, keeping held: Int? = nil) -> (id: Int, frame: CGRect)? {
         for w in platforms where c.y > w.frame.minY - 8 && c.y < w.frame.maxY + 8 {
-            let (inside, outside): (CGFloat, CGFloat) = w.id == held ? (110, 116) : (90, 96)  // Joe 2026-11-04: 56/64 was a bit narrow
+            let (inside, outside): (CGFloat, CGFloat) = w.id == held ? (110, 116) : (90, 96)
             let past = c.x - w.frame.maxX
             if past >= -inside && past <= outside { return w.sticky ? (w.id, w.frame) : nil }
             if w.frame.contains(CGPoint(x: c.x, y: c.y)) { return nil }
@@ -151,8 +151,7 @@ extension Controller {
             return
         }
         // Nothing to hold yet: the window it lost if that is back, a window of the same app, or at first the window in front.
-        // (At first it used to look for WeChat: behind another window, the goo and a panel opened there were out of sight,
-        // and a new install's first card with them, 2026-11-12.)
+        // Choosing the front window for a fresh attach keeps the panel and the first-run card visible.
         var best: (id: Int, frame: CGRect)?
         var bestInfo: [String: Any]?
         for info in ordinary {
@@ -199,7 +198,7 @@ extension Controller {
         let x = room >= minimumWidth ? frame.maxX : visible.maxX - minimumWidth
         sideX = x
         // The panel's own window ends where this screen ends. Reaching past the edge, most of it lay on the display beside this one,
-        // and the system then shows the whole panel there or not at all (a tester with two displays, 2026-11-12).
+        // and the system then shows the whole panel there or not at all.
         let width = min(sidePanelWidth, max(minimumWidth, visible.maxX - x))
         let next = NSRect(x: x, y: primary.frame.maxY - frame.maxY, width: width, height: frame.height)
         if next.size == side.frame.size {

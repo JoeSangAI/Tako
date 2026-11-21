@@ -1,4 +1,4 @@
-"""What was said in the panel and what each ask came to, in one place the owner can open: Tako's folder, 对话记录/<day>.md (Joe 2026-11-10).
+"""What was said in the panel and what each ask came to, in one place the owner can open: Tako's folder, 对话记录/<day>.md.
 
 One record serves the panels after a restart, the memory of a new thread, the history and anyone the owner lets read it. It holds what the panel showed and nothing
 more: the owner's words, Tako's answers and notes, and each ask's ending and files. Never a chat's messages or a window's text by themselves.

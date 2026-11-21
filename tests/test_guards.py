@@ -168,10 +168,10 @@ class FilesPeopleSend(unittest.TestCase):
 
 
 class WhatTheOwnerAsked(unittest.TestCase):
-    """Joe 2026-11-03: after an update Tako had forgotten the morning's job. What the owner asked is kept on disk, and only that."""
+    """The owner's requests persist across app updates."""
 
     def test_only_the_owners_own_words_are_kept(self):
-        """Joe 2026-11-10: the records in Tako's folder hold what the panel showed and each ask's ending, never a chat or a window by itself."""
+        """The records in Tako's folder hold what the panel showed and each ask's ending, never a chat or a window by itself."""
         self.assertIn("records.begin, conversation_key(chat, events), (chat or {}).get(\"name\") or (window or {}).get(\"app\"), instruction, output)", TURNS)
         self.assertEqual(TURNS.count("records.begin"), 1)
         kept = source("records")
@@ -228,7 +228,7 @@ class ScriptGuard(unittest.TestCase):
 
 
 class CommandsOutOfTheSandbox(unittest.TestCase):
-    """Joe 2026-11-04: only what can't be taken back reaches the owner. Everything else just runs."""
+    """Only what can't be taken back reaches the owner. Everything else just runs."""
 
     def test_what_cant_be_taken_back_asks(self):
         for command in ("rm -rf ~/Desktop/old", "/bin/zsh -lc 'cd ~/a && git push origin main'", "find . -name '*.log' -delete", "find . -exec rm {} +",
@@ -378,10 +378,10 @@ class FeedbackLeavesOnlyFixedShapes(unittest.TestCase):
             self.assertTrue(receiver.NAME.fullmatch(f"想要|{word}"), word)
 
     def test_a_failure_is_one_fixed_word_and_never_its_reason(self):
-        # The reasons the native side and the brain really give, word for word.
+        # Real failure formats with fictional contact and OCR values.
         cases = {"用户 动了鼠标或切走了窗口，已停下，没有填": "owner_moved", "这一步要 微信 在前台才能做": "not_front",
-                 "微信里有几个“Chris”：Chris zhu、Chris Yin。问 用户 是哪一个，再填，chat 写全名": "several", "微信里没搜到“刘登科”": "no_chat",
-                 "微信标题读到的是「明碎刚1」，对不上「赵梓彤」，没有填": "title", "这个窗口的光标不在输入框里，先点一下输入框": "no_cursor",
+                 "微信里有几个“Captain”：Captain Moon Moth、Captain Cloud Rabbit。问 用户 是哪一个，再填，chat 写全名": "several", "微信里没搜到“联系人甲”": "no_chat",
+                 "微信标题读到的是「乱码甲17」，对不上「联系人乙」，没有填": "title", "这个窗口的光标不在输入框里，先点一下输入框": "no_cursor",
                  "这里是微信的发送键，留给用户自己按": "send", "没有辅助功能权限，填不进去": "permission", "这一步出错了（KeyError），没有做成。": "broke",
                  "随便什么 王总 Acme": "other", "": "other"}
         for reason, kind in cases.items():
@@ -606,7 +606,7 @@ class LearningFromEdits(unittest.TestCase):
         for switch in ('"features.shell_tool": False', '"features.unified_exec": False', '"features.plugins": False', '"mcp_servers": {}', '"web_search": "disabled"'):
             self.assertIn(switch, config)
 
-    def test_joes_turns_lose_what_could_send_past_the_guards(self):
+    def test_owner_turns_lose_what_could_send_past_the_guards(self):
         config = PROMPTS[PROMPTS.index("BRAIN_CONFIG = "):PROMPTS.index("def tool(")]
         for plugin in ("computer-use", "chrome@", "browser@", "outlook-email", "teams@"):
             self.assertIn(plugin, config)
@@ -637,13 +637,13 @@ class OwnerNamedPaths(unittest.TestCase):
         self.assertFalse(guards.same_chat("Ann", "Anna-市场"))
 
     def test_each_wechat_window_keeps_its_own_list_edge(self):
-        """Joe 2026-11-10: a chat opened in a window of its own has no list; the main window's edge threw its whole title away as list."""
+        """A chat opened in a window of its own has no list; the main window's edge threw its whole title away as list."""
         native = "".join(path.read_text() for path in (ROOT / "Sources/native").glob("*.swift"))
         self.assertNotIn("var listEnd:", native)
         self.assertIn("listEnds[", native)
 
     def test_a_group_nobody_named_is_known_by_its_members(self):
-        """Joe 2026-11-10: WeChat titled the group with its members' names and the head count; the panel stayed on the chat before."""
+        """WeChat titled the group with its members' names and the head count; the panel stayed on the chat before."""
         groups = [("g5@chatroom", 5, ["小林-市场", "老王-市场", "阿明", "苏苏-华南"]),
                   ("g4@chatroom", 4, ["小林-市场", "老王-市场", "阿明"]),
                   ("g9@chatroom", 9, ["小林-市场", "老王-市场", "阿明", "苏苏-华南", "大刘", "小美", "Kyle", "Rocky"])]
@@ -793,7 +793,7 @@ class Listening(unittest.TestCase):
 
 
 class FirstRun(unittest.TestCase):
-    """A friend's Mac: nothing here may assume the author's setup."""
+    """A fresh installation must work with the default settings."""
 
     def setUp(self):
         import first_run

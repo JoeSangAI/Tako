@@ -196,7 +196,7 @@ extension Controller {
             log("petted happy=\(goo.happy) wiggle=\(String(format: "%.2f", goo.wiggle)) tongue=\(goo.costume.tongue.path != nil)")
             fakeMouse = V(goo.visible.midX, goo.visible.minY + 40)
         }
-        // Joe 2026-11-04: over the middle of a window it is only carried; near the right edge it latches on and slides to its place.
+        // Over the middle of a window it is only carried; near the right edge it latches on and slides to its place.
         var dropOn: CGRect?
         at(47.0) { [self] in
             goo.costume.outfit = nil

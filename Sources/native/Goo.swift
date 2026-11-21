@@ -758,7 +758,7 @@ final class Goo {
 
     var isAttachedLike: Bool { mode == .attached }
 
-    /// Holding on to a window's edge it turns its head part way to the window, to show itself side on (Joe 2026-11-08);
+    /// Holding on to a window's edge it turns its head part way to the window, to show itself side on;
     /// anywhere else it faces out. Radians, negative toward the left.
     static let sideTurn: CGFloat = 0.55
     var turnGoal: CGFloat { mode == .attached && perch == nil && hop == nil && leap == nil && latch == nil ? -Goo.sideTurn : 0 }
@@ -821,8 +821,7 @@ final class Goo {
                 mode = .attached
                 if !wasOpen { host.toggleSide() }
             } else {
-                // A click is a word to it, wherever it is: a pet that only hopped when clicked never led anyone to the panel
-                // (a tester, 2026-11-12). It takes the frontmost window of the screen it is on and opens there.
+                // A click opens the panel on the frontmost window of the goo's display.
                 mode = .free
                 pop = 0.9
                 host.openHere()

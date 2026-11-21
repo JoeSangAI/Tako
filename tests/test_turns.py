@@ -202,7 +202,7 @@ class AQuestion(Base):
         self.tako.idle(3)
 
     def test_leaves_no_empty_folders_behind(self):
-        """Only the record of what was said: an answer with no file makes no folder (Joe 2026-11-10)."""
+        """Only the record of what was said: an answer with no file makes no folder."""
         self.tako.ask("你好")
         self.tako.until(lambda s: self.tako.said(s), "an answer")
         self.tako.idle()
@@ -530,7 +530,7 @@ class ATool(Base):
 
 
 class AReplacement(Base):
-    """Joe 2026-11-04: the original is backed up first, so replacing it asks nothing."""
+    """The original is backed up first, so replacing it asks nothing."""
 
     def replace(self, wait=True):
         folder = self.tako.output / "稿"
@@ -572,7 +572,7 @@ class AReplacement(Base):
 
 
 class TwoTiers(Base):
-    """Joe 2026-11-03: different work on different models. The owner's jobs on the stronger one, the throwaway threads on the light one."""
+    """Different work on different models. The owner's jobs on the stronger one, the throwaway threads on the light one."""
     config = {"model": "gpt-6.1-sol", "light_model": "gpt-6.1-terra"}
 
     def test_the_owners_job_and_a_greeting_each_get_their_own_model(self):
@@ -764,7 +764,7 @@ class TheOwnerMovesOn(Base):
 
 
 class WhereItsHandsAre(Base):
-    """Asked on one window, working another (Joe 2026-11-09: asked in Finder to mail a file, Tako worked the mailbox while it stayed on Finder).
+    """Asked on one window, working another.
     Going to the window it is working brings Tako and the job there; the line about it goes where the work ended up."""
     CHROME = {"ok": True, "id": 5, "app": "Google Chrome", "bundle": "com.google.Chrome", "title": "QQ邮箱", "stuck": False}
 
@@ -803,7 +803,7 @@ class WhereItsHandsAre(Base):
         self.assertEqual(self.tako.state()["app"], "Keynote")
 
     def test_a_window_that_comes_up_by_itself_isnt_followed(self):
-        """Joe 2026-11-09: a PPT opened behind a WeChat job is not somewhere they want to watch; they want the result where they asked."""
+        """Opening a file for a chat job leaves the result in the originating chat."""
         self.by_itself = True
         self.work_the_mailbox([{"pause": 1.2}])
         self.tako.until(lambda s: self.sent("step"), "working the mailbox", 4)
@@ -843,7 +843,7 @@ class WhereItsHandsAre(Base):
         return self.tako.until(lambda s: any(row["name"] == "QQ邮箱" for row in s["others"]), "its line here", 3)
 
     def test_a_tap_shows_that_job_and_its_line_is_gone(self):
-        """Joe 2026-11-10: the tap took him to Chrome, where Tako showed the other job that had worked it; back on WeChat the line he had tapped was still there."""
+        """Tapping a job shows that job even if the window has another conversation, and clears the tapped line."""
         seen = self.mailbox_job_of_its_own()
         row = next(row for row in seen["others"] if row["name"] == "QQ邮箱")
         self.tako.call("/go", {"key": row["key"], "window": row["window"]})
@@ -878,7 +878,7 @@ class WhereItsHandsAre(Base):
         self.tako.until(lambda s: "邮箱自己的事做完了" in self.tako.said(s), "its own, newer than the job that worked it", 3)
 
     def test_a_job_still_going_has_a_line_to_tap_too(self):
-        """Joe 2026-11-10: going back to a job from another one is his choice, running or not."""
+        """Going back to a job from another one is the owner's choice whether the job is running or finished."""
         self.work_the_mailbox([{"pause": 1.2}])
         self.tako.until(lambda s: self.sent("step"), "working the mailbox", 4)
         self.tako.stick("Safari", "com.apple.Safari", "另一个页面", "2")
@@ -888,7 +888,7 @@ class WhereItsHandsAre(Base):
 
 
 class TheRecord(Base):
-    """Joe 2026-11-10: what Tako was asked and made is found again in one folder the owner chose: 对话记录 a day at a time, 产出文件 only for what was made."""
+    """What Tako was asked and made is found again in one folder the owner chose: 对话记录 a day at a time, 产出文件 only for what was made."""
 
     def records(self):
         return "".join(path.read_text() for path in (self.tako.output / "对话记录").glob("*.md"))
@@ -973,7 +973,7 @@ class TheRecord(Base):
 
 
 class ARestart(Base):
-    """Joe 2026-11-09: two restarts emptied every panel and the answer he went back for was gone. A week of each conversation stays on this Mac."""
+    """A restart can empty the panel in memory, so job history must survive on disk. A week of each conversation stays on this Mac."""
 
     def test_what_was_said_in_a_window_is_still_there_after_a_restart(self):
         self.tako.ask(steps({"say": "给刘珊总的话写好了"}))
@@ -1052,7 +1052,7 @@ class NeedingTheRealPointer(Base):
         self.assertEqual(len(self.tako.owner_turns()), 2, "it must not come back to what they called off")
 
     def test_another_way_that_worked_is_not_left_for_later(self):
-        """A step refused for want of the front, then another way on the same window that worked: nothing is left, so nothing waits and no model turn comes back for it (Tako 0.2.39 counts, 2026-11-11)."""
+        """A step refused for want of the front, then another way on the same window that worked: nothing is left, so nothing waits and no model turn comes back for it."""
         self.back = threading.Event()
         self.tako.native["step"] = lambda c: {"ok": False, "needsFront": True, "why": "not_front", "error": "这一步后台做不了"} if c["step"]["action"] == "drag" else {"ok": True, "did": "点了 排列"}
         self.tako.native["isBack"] = lambda c: {"ok": self.back.is_set()}
@@ -1111,7 +1111,7 @@ class NeedingTheRealPointer(Base):
 
 
 class FillingAWebPage(Base):
-    """A page in a browser at the back fills from inside: its rich editor too, read back, with nothing clicked and nobody asked over (Joe 2026-11-04)."""
+    """A page in a browser at the back fills from inside: its rich editor too, read back, with nothing clicked and nobody asked over."""
     LYRICS = "[Verse]\n需求又改了\nBug 又多了"
     FILL = {"call": "fill_input", "args": {"text": LYRICS, "field": "Lyrics"}}
 
@@ -1323,7 +1323,7 @@ class HandingAFileToAnotherApp(Base):
         self.assertNotIn("bringForward", [c["command"] for c in self.tako.commands])
 
     def test_a_refused_click_then_a_queued_hand_over_waits_only_as_the_hand_over(self):
-        """WeChat refuses a click behind the owner; the model then queues the hand-over, which places itself. Left as well as a step, the owner arriving woke a model turn to do it again (Tako 0.2.39 counts, 2026-11-11)."""
+        """WeChat refuses a click behind the owner; the model then queues the hand-over, which places itself. Left as well as a step, the owner arriving woke a model turn to do it again."""
         self.tako.native["step"] = lambda c: {"ok": False, "needsFront": True, "why": "not_front", "id": 9, "app": "微信", "bundle": self.WECHAT, "error": "这一步后台做不了：要真键鼠，微信 不在前台"}
         click = {"call": "operate_window", "args": {"window": "9", "steps": [{"action": "click", "text": "小林"}]}}
         self.tako.ask(steps(click, self.SEND, {"say": "切到微信就会放好"}))
@@ -1356,7 +1356,7 @@ class HandingAFileToAnotherApp(Base):
         self.assertEqual(len(self.sent("fill")), 1, "the latest one, once")
 
     def test_two_people_each_get_theirs_one_after_the_other(self):
-        # 2026-11-10: invitations for Chris and 刘登科; the second pushed the first out and only one went in.
+        # Queue each destination independently so both files are handed over.
         shown = ["别的对话"]
         self.tako.native["openChat"] = lambda c: (shown.__setitem__(0, c["name"]), {"ok": True})[1] if self.still.is_set() else {"ok": False, "needsFront": True, "id": 9, "app": "微信", "error": "要前台"}
         self.tako.native["titles"] = lambda c: {"ok": True, "lines": [shown[0]]}
@@ -1373,10 +1373,10 @@ class HandingAFileToAnotherApp(Base):
         self.assertEqual({c["name"] for c in self.sent("openChat")}, {"小林", "小王"}, "each opens its own chat")
 
     def test_a_title_still_drawing_is_read_again_before_giving_up(self):
-        # 2026-11-10: just opened, the header read as nonsense, and the PowerPoint for 赵梓彤 was refused.
+        # OCR can return another title or garbled text until the new chat header has finished drawing.
         self.here.set()
         self.still.set()
-        looks = iter(["别的对话", "明碎刚1，风女问文川士", "小林"])
+        looks = iter(["别的对话", "乱码甲17，乱码乙29", "小林"])
         self.tako.native["titles"] = lambda c: {"ok": True, "lines": [next(looks, "小林")]}
         self.tako.ask(steps(self.SEND, {"say": "好了"}))
         self.tako.idle()
@@ -1436,7 +1436,7 @@ class HandingAFileToAnotherApp(Base):
         self.assertEqual(self.sent("fill"), [])
 
     def test_when_it_could_not_place_it_the_model_hears_so_next_time(self):
-        # 2026-11-06: the queued draft failed to find the group, the owner opened it and said "just paste", and Tako still thought it was queued.
+        # After a queued draft fails, the next turn learns that it is no longer queued.
         self.queued()
         self.tako.native["openChat"] = lambda c: {"ok": False, "error": "微信里没搜到“小林”"}
         self.here.set()
@@ -1619,7 +1619,7 @@ class Inside(unittest.IsolatedAsyncioTestCase):
         loop.cancel()
 
     async def test_which_chat_is_open_has_one_answer(self):
-        """2026-11-06: the panel followed the group from its title, and the fill, judging the same title more strictly, said it wasn't open."""
+        """The panel and the fill use the same group title match."""
         chats, reader = __import__("chats"), __import__("wechat_reader")
         root = self.home / "wx"
         (root / "work").mkdir(parents=True, exist_ok=True)
@@ -1653,7 +1653,7 @@ class Inside(unittest.IsolatedAsyncioTestCase):
         return prompts
 
     async def test_a_word_said_while_the_panel_is_still_finding_the_chat_goes_to_the_chat_open(self):
-        """Joe 2026-11-10: a job asked right after opening a chat was filed under 微信 or the chat before, and its line could not take him back."""
+        """Wait for the current chat to resolve before filing the job."""
         await self.wechat_with_names(["小花"])
         following = asyncio.create_task(self.tako.follow_header(["小花"]))
         await asyncio.sleep(0)  # the title came in first, as it does from the app, and is still being looked up
@@ -1671,7 +1671,7 @@ class Inside(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([e["text"] for e in self.tako.events if e["role"] == "owner"], ["帮我回一下"])
 
     async def test_a_group_nobody_named_is_followed_by_its_members(self):
-        """Joe 2026-11-10: the header read four people's names and (5), and the panel stayed on the chat before."""
+        """An unnamed group is identified by the members and count in its header."""
         await self.wechat_with_names([])
         reader = __import__("wechat_reader")
         groups = [("g5@chatroom", 3, ["小林", "老王-市场"])]
@@ -1680,7 +1680,7 @@ class Inside(unittest.IsolatedAsyncioTestCase):
         reader.unnamed_groups, reader.contact_signature = (lambda: groups), (lambda: (1,))
         await self.tako.follow_header(["小林、老王–市场 (3)"])
         self.assertEqual(self.tako.chat["username"], "g5@chatroom")
-        # Joe 2026-11-12: the top of a message under the title read as a longer line of nonsense, and only the longest line was tried.
+        # Prefer the header above a longer message line.
         await self.tako.follow_header(["某个别的群 (8)"])
         await self.tako.follow_header(["儿是十食之用做祝油啊，赵！丛！十其之用油，", "小林、老王–市场 (3)"])
         self.assertEqual(self.tako.chat["username"], "g5@chatroom")
@@ -1697,7 +1697,7 @@ class Inside(unittest.IsolatedAsyncioTestCase):
         self.assertIn("「某个新建的项目群」的聊天记录这次没读到", prompts[-1], "the model knows it has only the window to go on")
 
     async def test_a_chat_job_goes_back_to_its_chat_wherever_its_hands_were(self):
-        """Joe 2026-11-10: a job asked in a chat that looked something up in Chrome took him to Chrome, not the chat."""
+        """A job asked in a chat returns to that chat after a lookup in another app."""
         job = self.turns.Job(self.chat("小林"), [], {"id": "9", "app": "微信", "bundle": "com.tencent.xinWeChat"})
         self.tako._hands_on(job, {"id": "5", "app": "Google Chrome", "bundle": "com.google.Chrome"})
         self.assertEqual((job.goes_to, job.wechat_chat), ("com.tencent.xinWeChat", "小林"))
@@ -1777,13 +1777,13 @@ class Inside(unittest.IsolatedAsyncioTestCase):
         self.assertIn("第一条", prompts[-1])
 
     async def test_a_restart_remembers_what_the_owner_asked_and_how_it_ended(self):
-        """Joe 2026-11-03: “excel 弄好了吗” right after an update, and Tako had forgotten the morning's job."""
+        """A new thread after restart can recall the owner's request and its outcome."""
         reads, prompts = await self.wechat([self.row(1, "附件3 在这里")])
         await self.tako.turn("把她发的表填好")
         folder = next(iter(self.tako.named.values()), None)
         # What a restarted app has: nothing in memory, a new thread.
         self.tako.thread, self.tako.events, self.tako.saved, self.tako.brain_lost = None, [], {}, False
-        await self.tako.turn("excel 弄好了吗")
+        await self.tako.turn("示例表格处理完了吗")
         self.assertIn("把她发的表填好", prompts[-1])
         self.assertIn("结局：答完了", prompts[-1])
         self.assertNotIn("附件3 在这里", prompts[-1].split("聊天记录")[0], "the memory holds the owner's words, not the chat")

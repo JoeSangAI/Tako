@@ -70,7 +70,7 @@ final class Controller: NSObject, NSApplicationDelegate {
     var stopSource: DispatchSourceSignal?, collapseSource: DispatchSourceSignal?, reportSource: DispatchSourceSignal?
     var headerBusy = false, lastBand = 0, canCapture = false, captureAsked = false
     var listEnds: [Int: CGFloat] = [:]        // per WeChat window, where its chat list ends, as of the last time its search box showed. A chat opened in a window of its own has no list,
-                                              // and the main window's edge cut its whole title off as list (Joe 2026-11-10: the panel stayed on the chat before)
+                                              // and the main window's edge cut its whole title off as list
     var headerAt: CFTimeInterval = 0          // a click in WeChat may have opened another chat: read the title then, not on the next round
     var stackUntil: CFTimeInterval = 0, wasPressed = false   // windows may be reordering until then: check every frame
     var lastWindowSign: CGFloat = 0, windowShakes: [CFTimeInterval] = []
@@ -360,7 +360,7 @@ final class Controller: NSObject, NSApplicationDelegate {
         let toggle = NSMenuItem(title: pet ? "粘回\(name)" : "从\(name)上扒下来", action: #selector(toggleStick), keyEquivalent: "")
         toggle.target = self
         toggle.isEnabled = !pet || target != nil
-        // The shortcut lives here now: a greyed-out line of its own read as a broken setting (a tester, 2026-11-12).
+        // The shortcut lives here now: a greyed-out line of its own read as a broken setting.
         toggle.toolTip = "点一下 Tako 就能跟它说话；在任意窗口按 ⌃⌥T，它直接过来。"
         menu.addItem(toggle)
         menu.addItem(outfitMenu())

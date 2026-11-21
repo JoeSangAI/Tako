@@ -1,4 +1,4 @@
-// The owner showing Tako what they mean (Joe 2026-11-04). Holding ⌃ on the window it is stuck to, the pointer points:
+// The owner showing Tako what they mean. Holding ⌃ on the window it is stuck to, the pointer points:
 // dragged across text it selects as the app always would, dragged anywhere else or round in a loop it circles,
 // a press circles the one thing under it. A ring is a finger, not a picture: what is pointed at is found right then,
 // behind the window (a link's address, an image, a button, a run of text, a file), because the window may scroll before

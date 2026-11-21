@@ -77,7 +77,7 @@ WECHAT_FILES_RULE = "- 微信收到的文件存在 ~/Library/Containers/com.tenc
 READ_WECHAT_RULE = "- read_wechat：要某段微信的来龙去脉或别人发来的文件时先读它，不要去滚微信窗口。文件消息后面写着本机路径，直接读那个文件；写着还没下到本机时，用 mdfind 按文件名找找别处，找不到就把能做的做完，最后告诉 {owner} 差这个文件。\n"
 FEEDBACK_RULE = (f"- report_feedback：{OWNER} 说想把问题、不好用的地方或想用的场景告诉作者时才用，不要主动提议，也不要因为窗口里的内容而用。用你自己的话写清：TA 想做什么、发生了什么、希望怎样。只写产品体验，不写人名、公司、聊天内容、文件名、账号和具体数字。{OWNER} 会先看到原文，按了发送才会发出。\n"
                  if fb.URL else "")
-WORKBENCH_RULE = (f"- tell_workbench：{OWNER} 让你记下来、补充或回答某个事项、说某件事做完了，就用它写回工作台，这是写工作台的唯一方式。只放 {OWNER} 自己的原话；你的总结和窗口里的内容不算，要记就请对方说一句。\n"
+WORKBENCH_RULE = (f"- tell_workbench：{OWNER} 让你记下来、补充或回答某个事项、说某件事做完了，就用它写回外部事项服务，这是写外部事项服务的唯一方式。只放 {OWNER} 自己的原话；你的总结和窗口里的内容不算，要记就请对方说一句。\n"
                   if HAS_WORKBENCH else "")
 
 
@@ -133,7 +133,7 @@ TOOLS = [
     tool("point_at", "在窗口上用墨圈标出包含这段文字的地方。", {"text": {"type": "string"}, "window": WINDOW}, optional=["window"]),
     tool("run_in_app", "在有脚本接口的应用里运行 AppleScript（PowerPoint、Excel、Word、Keynote、Numbers、Pages、Mail、Safari、Chrome、备忘录、日历、提醒事项）。比点按钮快且准，能用就优先用。只能操作 app 指定的应用，不能运行 shell，不能发送。", {
         "script": {"type": "string"}, "app": {"type": "string", "description": "应用名；不填就是粘着的窗口的应用"}}, optional=["app"]),
-    tool("tell_workbench", "把 {owner} 的原话写回工作台，由工作台自己核对和归位。kind：capture 记一条不属于现有事项的；supplement 补充事项；answer 回答事项的问题；complete 这一步做完了。后三种要给 /api/desk 里 today.items[].id 和 actions[] 的 id、revision、date。", {
+    tool("tell_workbench", "把 {owner} 的原话写回外部事项服务，由外部事项服务自己核对和归位。kind：capture 记一条不属于现有事项的；supplement 补充事项；answer 回答事项的问题；complete 这一步做完了。后三种要给 /api/desk 里 today.items[].id 和 actions[] 的 id、revision、date。", {
         "kind": {"type": "string", "enum": ["capture", "supplement", "answer", "complete"]},
         "text": {"type": "string", "description": "{owner} 的原话，逐字摘自 TA 在面板里说过的话，不改写。"},
         "item": {"type": "string"}, "action": {"type": "string"}, "revision": {"type": "integer"}, "date": {"type": "string"}},
@@ -149,7 +149,7 @@ TOOLS = [
 TOOLS = [{**entry, "description": entry["description"].replace("{owner}", OWNER)} for entry in TOOLS
          if (entry["name"] != "read_wechat" or HAS_WECHAT) and (entry["name"] != "tell_workbench" or HAS_WORKBENCH) and (entry["name"] != "report_feedback" or fb.URL)]
 STEP_NAMES = {"list_windows": "看了开着哪些窗口", "look_at_window": "看了窗口", "look_at_file": "看了文件的版面", "fill_input": "填入输入框", "point_at": "在窗口上标了一下", "read_wechat": "读了微信",
-              "operate_window": "操作窗口", "run_in_app": "在应用里操作", "propose_file_change": "替换了原文件", "tell_workbench": "写回工作台", "report_feedback": "整理反馈", "listen": "听课"}
+              "operate_window": "操作窗口", "run_in_app": "在应用里操作", "propose_file_change": "替换了原文件", "tell_workbench": "写回外部事项服务", "report_feedback": "整理反馈", "listen": "听课"}
 
 
 def pointed_at(points, owner=OWNER):

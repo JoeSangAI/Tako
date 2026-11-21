@@ -111,7 +111,7 @@ def make_output_dir(chat):
 
 
 def make_work_dir(chat):
-    """The turn's scratch, where commands run: what it needs on the way and nobody asked for (Joe 2026-11-10: a cleanup's 772 files sat among the work)."""
+    """The turn's scratch, where commands run: what it needs on the way and nobody asked for."""
     path = WORK / dt.datetime.now(ZONE).strftime("%Y-%m-%d") / folder_name(chat)
     path.mkdir(parents=True, exist_ok=True)
     return path

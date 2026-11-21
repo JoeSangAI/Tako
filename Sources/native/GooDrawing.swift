@@ -156,8 +156,8 @@ extension Goo {
 
     func drawFace() {
         let r = radius
-        // The looks are Tako's, when and why; an outfit may draw them in its own manner. The whale girl's are softened
-        // (Joe 2026-11-08: a sly look is not her): lined eyes with a lift at the outer corner where Tako's lids drop, a
+        // The looks are Tako's, when and why; an outfit may draw them in its own manner. The whale girl's are softened with
+        // lined eyes with a lift at the outer corner where Tako's lids drop, a
         // second catch of light, her cat's mouth where Tako smirks or bares its teeth.
         let soft = costume.isWhale && costume.dressed > 0.5
         let wide = 1 + pop * 0.22 + (mode == .grabbed ? 0.12 : 0)

@@ -1,24 +1,60 @@
 #!/bin/bash
 # Only main and version tags ever leave this checkout, nothing leaves unchecked, and a new VERSION on main becomes a release.
-set -uo pipefail
+set -euo pipefail
+export GIT_NO_REPLACE_OBJECTS=1
 
 ROOT="$(git rev-parse --show-toplevel)"
-ZERO=0000000000000000000000000000000000000000
 COMMIT=""
-while read -r _local sha remote _remote_sha; do
+tips=()
+objects=()
+published=()
+new_ref=0
+private_tip="$(git rev-parse -q --verify refs/heads/archive/pre-public || true)"
+while read -r _local sha remote remote_sha; do
   case "$remote" in
-    refs/heads/main) [ "$sha" = "$ZERO" ] || COMMIT="$sha" ;;
-    refs/tags/v*) ;;
+    refs/heads/main|refs/tags/v*) ;;
     *) echo "refusing to push $remote: this checkout keeps private history on other branches" >&2; exit 1 ;;
   esac
+  [[ "$sha" =~ ^0+$ ]] && continue
+  tip="$(git rev-parse --verify "$sha^{commit}")"
+  if [ -n "$private_tip" ]; then
+    if git merge-base --is-ancestor "$private_tip" "$tip"; then
+      echo "refusing to push: $remote is built on the private history" >&2
+      exit 1
+    else
+      status=$?
+      [ "$status" = 1 ] || exit "$status"
+    fi
+  fi
+  tips+=("$tip")
+  objects+=("$sha")
+  [ "$remote" != refs/heads/main ] || COMMIT="$tip"
+  if [[ "$remote_sha" =~ ^0+$ ]]; then
+    new_ref=1
+  elif old="$(git rev-parse -q --verify "$remote_sha^{commit}")"; then
+    published+=("^$old")
+  fi
 done
 
-# The old private history stays on this Mac: nothing built on it may leave.
-if [ -n "$COMMIT" ] && git rev-parse -q --verify refs/heads/archive/pre-public >/dev/null && git merge-base --is-ancestor archive/pre-public "$COMMIT"; then
-  echo "refusing to push: this commit is built on the private history" >&2; exit 1
+[ "${#tips[@]}" -gt 0 ] || exit 0
+
+# A new ref has no old tip in the hook input. Use refs from the destination
+# to exclude already published ancestry, without trusting local tracking refs.
+if [ "$new_ref" = 1 ]; then
+  remote_refs="$(git ls-remote -- "$2")"
+  while read -r sha _ref; do
+    if [ -n "$sha" ] && old="$(git rev-parse -q --verify "$sha^{commit}")"; then
+      published+=("^$old")
+    fi
+  done <<< "$remote_refs"
 fi
 
-"$ROOT/scripts/check_public.sh" || { echo "push stopped: the public check failed" >&2; exit 1; }
+# Include the ref targets even if reachable on the remote, plus every commit newly reachable there.
+new_commits="$(git rev-list "${tips[@]}" ${published[@]+"${published[@]}"})"
+while IFS= read -r sha; do
+  [ -z "$sha" ] || objects+=("$sha")
+done <<< "$new_commits"
+"$ROOT/scripts/check_public.sh" --commits "${objects[@]}" || { echo "push stopped: the public check failed" >&2; exit 1; }
 [ -n "$COMMIT" ] || exit 0
 
 VERSION="$(git show "$COMMIT:VERSION" | tr -d '[:space:]')"

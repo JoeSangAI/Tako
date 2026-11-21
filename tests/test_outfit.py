@@ -87,7 +87,7 @@ class Wardrobe(unittest.TestCase):
         self.assertIn('Sources/art/*.png "$APP/Contents/Resources/"', (ROOT / "scripts/build_app.sh").read_text())
 
     def test_her_moves_are_her_own(self):
-        # Every outfit has its own moves (Joe 2026-11-08): hers borrow none of the corgi's, and the scenes she plays her
+        # Every outfit has its own moves: hers borrow none of the corgi's, and the scenes she plays her
         # own way skip Tako's props.
         code = (ROOT / "Sources/native/Whale.swift").read_text()
         for corgi in ("startZoomies", "zooming", "trotLeg", "isCorgi", "wiggle +="):
@@ -98,8 +98,7 @@ class Wardrobe(unittest.TestCase):
         self.assertIn("costume.isWhale && Goo.whaleActs.contains(a)", (ROOT / "Sources/native/Acts.swift").read_text())
 
     def test_she_is_worn_not_a_second_body(self):
-        # An outfit changes the look, never the body (Joe 2026-11-08: the whale girl's own limbs broke how Tako sticks to a
-        # window): no limbs or hands of its own, no shape of its own for being stuck on, on the panel or held; the face's
+        # An outfit changes the look while the body handles attachment: no limbs or hands of its own, no shape of its own for being stuck on, on the panel or held; the face's
         # looks stay Tako's. Legs, strands and the reaching limb are drawn by Goo for every outfit.
         code = (ROOT / "Sources/native/Whale.swift").read_text()
         for body in ("tentacle", "whaleLimbs", "maidPose", "handPaths", "mode == .attached", "mode == .open", "holdingOn"):

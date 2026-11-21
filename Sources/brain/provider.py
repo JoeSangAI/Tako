@@ -16,7 +16,7 @@ from settings import CONFIG, LIGHT_MODEL, MODEL, RUNTIME
 FILE = RUNTIME / "provider.json"
 ENV = "TAKO_PROVIDER_KEY"
 # All of them answer OpenAI's Responses API, which is all Codex speaks. `page` is where the owner makes a key.
-# DeepSeek and Qwen were run through Tako's scenes (2026-11-07); Kimi and GLM only by their documentation until someone with a key tries.
+# DeepSeek and Qwen were run through Tako's scenes; Kimi and GLM only by their documentation until someone with a key tries.
 PRESETS = {
     "deepseek": {"name": "DeepSeek", "base_url": "https://api.deepseek.com/v1", "model": "deepseek-flash", "page": "https://platform.deepseek.com/api_keys"},
     "qwen": {"name": "通义千问", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "model": "qwen3.8-flash", "page": "https://bailian.console.aliyun.com/?tab=model#/api-key"},

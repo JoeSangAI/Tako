@@ -46,7 +46,7 @@ extension Controller {
             config.width = Int(width * 2)
             config.height = 124
             config.showsCursor = false
-            // A WeChat window closed or hidden mid-read never answers; waiting on it left every later read "busy" until a restart (2026-11-12).
+            // A WeChat window closed or hidden mid-read never answers; waiting on it left every later read "busy" until a restart.
             guard let image = await Hands.shot(SCContentFilter(desktopIndependentWindow: window), config) else { return nil }
             guard let bytes = image.dataProvider?.data as Data? else { return nil }
             // Data's own hash only looks at its first bytes, which never change here: hash all of it.
@@ -72,7 +72,7 @@ extension Controller {
             let edge = searchEnd > 0 ? searchEnd : known
             let right = found.filter { $0.x > edge && !$0.text.contains("搜索") }
             // The strip also catches the top of the first message, half its height cut off, which reads as a long string of nonsense: longer than
-            // the title, so it came first and an unnamed group was matched by it (Joe 2026-11-12). The title is the top row; messages are always below it.
+            // the title, so it came first and an unnamed group was matched by it. The title is the top row; messages are always below it.
             let row = right.min { $0.top < $1.top }
             let title = right.filter { row != nil && ($0.top + $0.bottom) / 2 < row!.bottom }.sorted { $0.text.count > $1.text.count }
             // A misread character is often right in the reader's second guess, kept apart: only following the chat may lean on it.

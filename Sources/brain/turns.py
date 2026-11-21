@@ -94,8 +94,8 @@ class Job:
 
     @property
     def goes_to(self):
-        """Where a tap on its line takes the owner. A chat's job goes back to that chat, whatever it looked up elsewhere: the person, the answer and any draft are there
-        (Joe 2026-11-10: a job asked in a chat took him to Chrome). Any other job goes where the work ended up, else its own window."""
+        """Where a tap on its line takes the owner. A chat's job goes back to that chat, whatever it looked up elsewhere: the person, the answer and any draft are there.
+        Any other job goes where the work ended up, else its own window."""
         if self.wechat_chat:
             return WECHAT
         return (self.hands_on or {}).get("id") or self.window_id
@@ -180,7 +180,7 @@ class Turns:
         """Today's items and the owner's habits go to the shared thread once and again only when they change, so a turn doesn't pay for them twice."""
         news = []
         desk = self._desk_text()
-        for key, text in (("desk", f"今天的事项（精简版，够用就不要再查工作台）：\n{desk}" if desk else ""), ("voice", voice_block(voice_notes()))):
+        for key, text in (("desk", f"今天的事项（精简版，够用就不要再查外部事项服务）：\n{desk}" if desk else ""), ("voice", voice_block(voice_notes()))):
             if text and self.told.get(key) != (self.thread, text):
                 self.told[key] = (self.thread, text)
                 news.append(text)

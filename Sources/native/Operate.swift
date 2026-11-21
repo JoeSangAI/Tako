@@ -35,7 +35,7 @@ let askFirstBundles: Set<String> = ["com.liguangming.Shadowrocket", "com.apple.s
 // Browsers that don't run on Chrome's engine: what looks like a text area there may be a web chat.
 let webBundles: Set<String> = ["com.apple.Safari", "org.mozilla.firefox", "com.apple.SafariTechnologyPreview"]
 let sendWords = ["发送", "发出", "寄出", "send", "reply all"]
-// Only what can't be taken back asks first (Joe 2026-11-04: keep the cards that matter). Stop, remove from a list, disconnect: undone with one more click.
+// Only what can't be taken back asks first. Stop, remove from a list, disconnect: undone with one more click.
 let riskyWords = ["提交", "submit", "支付", "付款", "pay", "购买", "buy", "下单", "checkout", "删除", "delete",
                   "清空", "发布", "publish", "post", "注销", "退出登录", "sign out", "log out", "卸载", "uninstall", "格式化", "erase",
                   "抹掉", "重置", "reset", "转账", "transfer"]
@@ -107,14 +107,14 @@ extension Controller {
     // MARK: what can be pressed
 
     /// Electron and Chromium hide their contents from Accessibility until somebody asks. Electron takes the first request; Chrome refuses it
-    /// and answers only to the second (which also returns an error, seen 2026-11-01), and other apps animate oddly under it, so it comes only after a refusal.
+    /// and answers only to the second (which also returns an error), and other apps animate oddly under it, so it comes only after a refusal.
     @MainActor
     func askForAccessibleContent(_ win: Win) async {
         let app = AXUIElementCreateApplication(win.pid)
         if AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue) != .success {
             AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
             guard askedForContent.insert(win.pid).inserted else { return }
-            // Chrome takes a moment to build what it has just been asked for, and it can be several: a first look without the page can't press anything in it (seen 2026-11-02).
+            // Chrome takes a moment to build what it has just been asked for, and it can be several: a first look without the page can't press anything in it.
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             guard drawsLikeChrome(win.pid), let window = axWindow(pid: win.pid, frame: win.frame, id: win.id) else { return }
             for _ in 0..<14 {
@@ -215,7 +215,7 @@ extension Controller {
         goo.reachGoal = nil
     }
 
-    /// Chrome stops drawing a window that lies under its own windows, and takes away what is inside it. Under another app's it carries on (both seen 2026-11-01).
+    /// Chrome stops drawing a window that lies under its own windows, and takes away what is inside it. Under another app's it carries on.
     /// Raised while the app is in the background, it only moves up among the app's own: what the owner has in front stays in front.
     @MainActor
     func surface(_ win: Win) async {
@@ -399,7 +399,7 @@ extension Controller {
             }
             return false
         }
-        // A page with no cursor in it says yes to all of this too. Only a real text field can be believed without reading the words back (seen 2026-11-02).
+        // A page with no cursor in it says yes to all of this too. Only a real text field can be believed without reading the words back.
         var role: CFTypeRef?
         AXUIElementCopyAttributeValue(field, kAXRoleAttribute as CFString, &role)
         let isTextField = textRoles.contains(role as? String ?? "")
@@ -415,7 +415,7 @@ extension Controller {
         var settable: DarwinBoolean = false
         guard AXUIElementIsAttributeSettable(field, kAXValueAttribute as CFString, &settable) == .success, settable.boolValue,
               AXUIElementSetAttributeValue(field, kAXValueAttribute as CFString, after as CFString) == .success else { return false }
-        // Taken, even if it can't be read back yet: typing it again would write it twice (seen 2026-11-01).
+        // Taken, even if it can't be read back yet: typing it again would write it twice.
         return await settles(on: { $0 == after }) || isTextField
     }
 
@@ -639,7 +639,7 @@ extension Controller {
             }
             usleep(12000)
         }
-        // By whole characters: an emoji cut in half types as garbage. To an app in the background, one each: Chrome drops anything more (seen 2026-11-01).
+        // By whole characters: an emoji cut in half types as garbage. To an app in the background, one each: Chrome drops anything more.
         let most = pid == nil ? 16 : 1
         var units: [UInt16] = []
         for character in text {
@@ -666,8 +666,8 @@ extension Controller {
     }
 
     /// A page where one press may place an order or pay: by the window's title, or a browser page's address.
-    /// The button that does it can carry any name, or one Accessibility doesn't give (2026-11-07: an order went through on a Tmall
-    /// confirm_order page with no card), so on such a page every press, key and typed word asks, whatever it is called.
+    /// Checkout controls can have arbitrary labels or no Accessibility label.
+    /// On these pages, every press, keystroke and text entry requires approval.
     @MainActor
     func checkoutPage(_ win: Win) async -> String? {
         var places = [currentTitle(id: win.id)]
@@ -791,7 +791,7 @@ extension Controller {
             let screen = CGPoint(x: win.frame.minX + x, y: win.frame.minY + y)
             let amount = Int32(max(-100, min(100, step["amount"] as? Double ?? -5)))
             if await !scrollBehindTheOwner(at: screen, lines: Int(amount), in: win) {
-                // Sending the wheel to that window alone doesn't move WeChat or WPS (tried 2026-11-03): only with the owner already here and idle.
+                // Sending the wheel to that window alone doesn't move WeChat or WPS: only with the owner already here and idle.
                 guard await ownerSettles(on: win) else { return waitForFront(win) }
                 await withRealPointer {
                     mouse(.mouseMoved, at: screen)
@@ -912,7 +912,7 @@ extension Controller {
         // The box sometimes drops what is typed while it is still opening: check it arrived, and type again if not.
         for attempt in 0..<3 {
             guard stillOurs() else { return takenOver }
-            // Typing again on top of what did arrive searches for the name twice and finds nothing (2026-11-06): each try starts from an empty box.
+            // Typing again on top of what did arrive searches for the name twice and finds nothing: each try starts from an empty box.
             if attempt > 0 {
                 press(53, flags: [])
                 try? await Task.sleep(nanoseconds: 400_000_000)
@@ -921,7 +921,7 @@ extension Controller {
                 try? await Task.sleep(nanoseconds: 700_000_000)
                 guard stillOurs() else { return takenOver }
             }
-            // Typed before the box is open, the name lands wherever the focus is, which is the open chat's input: the owner's draft (seen 2026-11-12).
+            // Typed before the box is open, the name lands wherever the focus is, which is the open chat's input: the owner's draft.
             // An open box drops its list down with 搜索网络结果 in it; until that shows, nothing is typed.
             guard let empty = await Hands.captureLive(win, scale: 2, source: area) else { return ["ok": false, "error": "看不到搜索框"] }
             let open = await Task.detached { Hands.recognize(empty, size: area.size) }.value
@@ -942,9 +942,9 @@ extension Controller {
         }
         let below = lines.first { line in headings.contains { Hands.normalize(line.text) == $0 } }?.box.maxY ?? 0
         // Chats only: what comes under 聊天记录 is messages that mention the name, and under 搜索网络结果 a web search for exactly what was typed,
-        // which read as the one exact match and would have been clicked instead of the chat (seen 2026-11-12).
+        // which read as the one exact match and would have been clicked instead of the chat.
         let history = lines.first { $0.box.minY >= below && ["聊天记录", "搜索网络结果"].contains(Hands.normalize($0.text)) }?.box.minY ?? .greatestFiniteMagnitude
-        // A long name is cut short with an ellipsis: a group nobody named shows as 小林、老王、阿明… (2026-11-12).
+        // A long name is cut short with an ellipsis: a group nobody named shows as 小林、老王、阿明….
         let rows = lines.filter { $0.box.minY >= below && $0.box.minY < history && (Hands.sameChat(name, $0.text) || Hands.cutShort(name, $0.text)) }
         let exact = rows.first { Hands.normalize($0.text) == want }
         let names = Array(Set(rows.map(\.text)))
@@ -1023,7 +1023,7 @@ extension Controller {
         RegisterEventHotKey(UInt32(kVK_ANSI_T), UInt32(controlKey | optionKey), id, GetApplicationEventTarget(), 0, &hotKey)
         _ = id
         id.id = 1
-        // Some apps (Chrome, seen 2026-10-30) keep the combination from reaching a hot key; the monitor still sees it.
+        // Some apps (including Chrome) keep the combination from reaching a hot key; the monitor still sees it.
         let isShortcut = { (event: NSEvent) -> Bool in
             event.modifierFlags.intersection([.control, .option, .command, .shift]) == [.control, .option] && event.keyCode == UInt16(kVK_ANSI_T)
         }
@@ -1075,7 +1075,7 @@ extension Controller {
             try? await Task.sleep(nanoseconds: UInt64(max(0, flight * 0.4 - 0.25) * 1e9))
             if !chat.isEmpty, win.bundle == weChatBundle {
                 // Already showing it is nothing to do; otherwise its search box, the pointer put back after. Activating is not instant, and the hand that pressed the line
-                // is still settling: going straight on found WeChat "not in front" and gave up without a word (Joe 2026-11-10). So it waits for both, a few seconds at most.
+                // may still be settling. Wait a few seconds for WeChat to reach the foreground and for the owner to be idle.
                 // Only a hand still settling is waited out: a pointer taken mid-way or WeChat left is the owner moving on, and that is left alone.
                 let start = CACurrentMediaTime()
                 var opened: [String: Any] = [:]
@@ -1137,8 +1137,7 @@ extension Controller {
     }
 
     /// From the goo's own menu, or the first start with no model yet: the panel opens where the goo is. Not on the app in front,
-    /// which a click on the goo never changes and which may be on another display (a tester with two displays, 2026-11-12:
-    /// 模型设置 seemed to do nothing, the panel had opened on the other screen).
+    /// which a click on the goo never changes and which may be on another display.
     func openHere() {
         if goo.mode == .attached || goo.mode == .open, target != nil {
             if !sideOpen { web.evaluateJavaScript("setOpen(true)") }

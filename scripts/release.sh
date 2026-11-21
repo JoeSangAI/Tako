@@ -60,7 +60,7 @@ PY
     echo "built Tako $VERSION: $(du -h "$DIST/Tako.zip" | cut -f1), update $(du -h "$DIST/Tako-update.zip" | cut -f1)"
     ;;
   publish)
-    # The uplink here can be ~25 KB/s and GitHub drops an upload that stalls (HTTP 408), so the 20 MB whole app is the part that fails.
+    # A slow uplink can stall uploads to GitHub (HTTP 408), especially for the full app archive.
     # A relay with a fast uplink makes all of it take seconds; without one, the 1 MB update that installed copies fetch goes public first
     # and the whole app follows with retries.
     # Until it lands, latest.json sends new installs and a changed Python to the previous whole app, which then offers this update.

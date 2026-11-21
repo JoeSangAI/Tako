@@ -245,7 +245,7 @@ def scripting_off(error):
     return bool(re.search(r"JavaScript.*(turned off|Apple Events|Apple 事件)|允许.*Apple 事件.*JavaScript", error or "", re.I | re.S))
 
 
-# ---- handing files to a page's upload box (GitHub issue 3, 2026-11-07) ----
+# ---- handing files to a page's upload box (GitHub issue 3) ----
 # Clicking an upload button opens the system's file chooser, which nothing behind the owner's back can work. The page's own
 # file box takes files directly: the bytes come over in pieces as data (base64), become File objects in the page, and the box
 # gets them the way a drop would, with the input and change events its uploader listens for. Nothing is clicked, except, when
