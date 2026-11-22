@@ -1,8 +1,8 @@
 // The two switches Tako needs in System Settings. The owner is asked as rarely as the system allows:
 // each switch once, and nothing Tako can put right itself. Accessibility is checked the moment the list changes and every
-// second until it is on; the system's own prompt comes once, on the first start, after that only the panel's card asks.
-// The list changing while the system still says no means its record for Tako has gone stale.
-// Tako clears its own record, so the next switch-on takes. Screen Recording only counts in a process
+// second until it is on; the system's own prompt comes once, when the one next step (`Ladder.next`) gets to it, never over the
+// model card of a new install; after that only the panel's card asks.
+// The list changing while the system still says no means its record for Tako has gone stale: Tako clears its own record by itself, so the next switch-on takes. Screen Recording only counts in a process
 // started after it was switched on: a fresh copy of Tako is asked, and once it says yes, Tako restarts itself when idle.
 //
 // The system ties each switch to the app's designated requirement, not its name. A Tako signed with the same certificate keeps
@@ -27,10 +27,9 @@ func signingIdentity() -> (requirement: String, adhoc: Bool) {
 }
 
 extension Controller {
-    /// At launch: the system's prompt on the first start only.
+    /// At launch: only looking. The system's prompt waits for its turn (`askSwitch`).
     func checkTrustAtLaunch() {
         (signedAs, adhocSigned) = signingIdentity()
-        let asked = UserDefaults.standard.bool(forKey: askedAccessibilityKey)
         trusted = AXIsProcessTrusted()
         log("accessibility trusted=\(trusted) signing=\(adhocSigned ? "adhoc" : "certificate")\(trusted ? "" : " record=\(staleRecord("accessibility") ? "stale" : "current")")")
         if trusted {
@@ -38,10 +37,7 @@ extension Controller {
         } else if staleRecord("accessibility"), repairOnce("accessibility") {
             repairedOnce = true    // the list changes when the record goes: that notice must not clear it a second time
             repairAccessibility()  // the switch on screen belongs to another build: clear it, so one switch-on takes
-        } else {
-            trusted = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": !asked] as CFDictionary)
         }
-        if !trusted { UserDefaults.standard.set(true, forKey: askedAccessibilityKey) }
         // The system tells everyone when the list of trusted apps changes; the timer covers a notice that never came.
         DistributedNotificationCenter.default().addObserver(forName: NSNotification.Name("com.apple.accessibility.api"), object: nil, queue: .main) { [weak self] _ in
             // The new answer takes a moment to reach this process. Still no after that: the switch the owner moved didn't take.
@@ -52,12 +48,35 @@ extension Controller {
                 self.repairAccessibility()
             }
         }
-        trustTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        lookAtSwitchesSoon()
+    }
+
+    /// The switches looked at again: every second while Accessibility is off, every two while Screen Recording is (the screen is
+    /// asked for as soon as Accessibility is settled, one question at a time), and once both are on, every half minute to
+    /// notice one being switched off.
+    func lookAtSwitchesSoon() {
+        trustTimer?.invalidate()
+        let every: TimeInterval = !trusted ? 1 : !canCapture ? 2 : 30
+        trustTimer = Timer.scheduledTimer(withTimeInterval: every, repeats: false) { [weak self] _ in
             guard let self else { return }
-            self.trustTicks += 1
-            // Once on, a look every half minute is enough to notice it being switched off.
-            if !self.trusted || self.trustTicks % 30 == 0 { self.recheckTrust() }
-            if self.trusted, !self.canCapture, self.captureAsked, self.trustTicks % 2 == 0 { self.restartOnceScreenIsOn() }
+            self.recheckTrust()
+            if !self.canCapture { self.checkCapture() }
+            if self.trusted, !self.canCapture, self.captureAsked { self.restartOnceScreenIsOn() }
+            self.lookAtSwitchesSoon()
+        }
+        trustTimer?.tolerance = every * 0.1
+    }
+
+    /// The one next step is a switch (`Teaching.nextStep`): the system's own prompt, once ever for each. Screen Recording is asked
+    /// by the switches' own timer (`checkCapture`) once it is its turn; the panel's card says the rest.
+    func askSwitch(_ which: String) {
+        if which == "accessibility", !trusted, !UserDefaults.standard.bool(forKey: askedAccessibilityKey) {
+            UserDefaults.standard.set(true, forKey: askedAccessibilityKey)
+            trusted = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
+        }
+        if which == "screen", !screenTurn {
+            screenTurn = true
+            checkCapture()
         }
     }
 
@@ -71,6 +90,7 @@ extension Controller {
             remember("accessibility")
             makeRoom(animated: true)
             installPointing()
+            teaching.nextStep(lines: false)   // the next step may be the screen now
         }
     }
 
@@ -86,7 +106,7 @@ extension Controller {
             tellPermissions()
             return
         }
-        guard trusted, !captureAsked else { return }
+        guard trusted, screenTurn, !captureAsked else { return }
         captureAsked = true
         let stale = staleRecord("screen")
         screenWhy = stale ? "identity" : "off"
@@ -163,6 +183,31 @@ extension Controller {
         UserDefaults.standard.set(true, forKey: "askedScreenCapture")
         _ = CGRequestScreenCaptureAccess()
         tellPermissions()
+    }
+
+    /// The owner is on their way to the Screen Recording list: make sure Tako is in it first. The system lists an app only when
+    /// it asks, and takes one ask per process, so a fresh copy asks; a record gone since the first start (the list cleared, a
+    /// reinstall, a system update) left the card pointing at a list with no Tako in it. Already listed, nothing shows.
+    func openScreenRecordingList() {
+        guard !canCapture, let binary = Bundle.main.executableURL else { return openPrivacy("Privacy_ScreenCapture") }
+        DispatchQueue.global().async { [weak self] in
+            let task = Process()
+            task.executableURL = binary
+            task.arguments = ["--list-for-capture"]
+            task.standardOutput = FileHandle.nullDevice
+            task.standardError = FileHandle.nullDevice
+            let ran = (try? task.run()) != nil
+            if ran {
+                // The request answers at once; two seconds is for a Mac too busy to start it.
+                let done = DispatchSemaphore(value: 0)
+                DispatchQueue.global().async { task.waitUntilExit(); done.signal() }
+                if done.wait(timeout: .now() + 2) == .timedOut { task.terminate() }
+            }
+            DispatchQueue.main.async {
+                self?.log("screen capture listed by a fresh process ran=\(ran)")
+                self?.openPrivacy("Privacy_ScreenCapture")
+            }
+        }
     }
 
     func openPrivacy(_ pane: String) {

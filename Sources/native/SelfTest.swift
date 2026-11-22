@@ -105,8 +105,8 @@ extension Controller {
         }
         at(17.2) { [self] in
             report("after window closed")
-            // Three quick pokes.
-            for k in 0..<3 {
+            // Poked on and on (Taps.inkAt quick taps): ink, and off it goes.
+            for k in 0..<Taps.inkAt {
                 at(Double(k) * 0.25) { [self] in
                     fakeMouse = goo.c
                     goo.press(goo.c)
@@ -309,6 +309,19 @@ extension Controller {
         enchant.hide()   // it started out on a window: that window's ink border goes, so a recording holds only the goo
         fakeMouse = V(middle + 170, floor - 150)
         func quiet() { goo.nextAct = goo.clock + 600; goo.nextWander = goo.clock + 600; goo.lastMoved = goo.clock }
+        if asked.contains("entrusted") {
+            quiet()
+            say("空手")
+            at(1.5) { [self] in goo.carrying = true; say("拿着") }
+            at(3.5) { [self] in goo.presentHand(text: "草稿备好了，交给你。"); say("递") }
+            at(6.5) { [self] in goo.takeHandBack("later"); say("稍后") }
+            at(9.0) { [self] in goo.presentHand(text: "草稿备好了，交给你。"); say("再递") }
+            at(12.0) { [self] in goo.takeHandBack("ignored"); say("轻轻收回") }
+            at(14.5) { [self] in goo.presentHand(text: "草稿备好了，交给你。") }
+            at(17.0) { [self] in goo.takeHandBack("done"); say("✓ 做完了") }
+            at(19.0) { [self] in say("空手"); log("showcase done") }
+            return
+        }
         if asked.contains("stuck") {
             // ",stuck": where it spends most of its day, which the floor scenes never show: stuck on a window (idle, reading,
             // working it), then sitting at the top left of its panel. A throwaway window of its own to stick to, and a drawn

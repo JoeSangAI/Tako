@@ -409,7 +409,7 @@ class AcpRuntime:
         return {}
 
     async def start_thread(self, cwd, *, sandbox="read-only", approval_policy="on-request", dynamic_tools=None, developer_instructions=None,
-                           model=None, effort=None, config=None):
+                           model=None, effort=None, config=None, base_instructions=None):
         tools = bool(dynamic_tools)
         key = (developer_instructions or "", tools)
         agent = self.agents.get(key)

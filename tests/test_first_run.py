@@ -34,11 +34,13 @@ case "$1 $2" in
 esac
 [ -f "$here/settings_error" ] && { cat "$here/settings_error" >&2; exit 1; }
 [ -f "$here/fails_with" ] && { cat "$here/fails_with" >&2; exit 1; }
-printf 'Starting local login server on http://localhost:1455.\nIf your browser did not open, navigate to this URL to authenticate:\n\n%s\n' "$LINK" >&2
+echo "$$" >> "$here/login-starts"
 # npm puts a script in front of the real Codex: two processes, like here.
+[ ! -p "$here/login-lifetime" ] || exec 9>"$here/login-lifetime"
 sleep 60 &
 echo $! > "$here/child"
 echo $$ > "$here/parent"
+printf 'Starting local login server on http://localhost:1455.\nIf your browser did not open, navigate to this URL to authenticate:\n\n%s\n' "$LINK" >&2
 while [ ! -f "$here/authorized" ]; do sleep 0.05; done
 kill %1 2>/dev/null
 touch "$here/logged_in"
@@ -60,13 +62,6 @@ class Companion:
 
     async def start_over(self):
         pass
-
-
-def alive(pid_file):
-    pid = int(pid_file.read_text())
-    # A process that has exited but whose parent hasn't collected it yet holds nothing.
-    state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
-    return bool(state) and not state.startswith("Z")
 
 
 class LoginStep(unittest.TestCase):
@@ -94,6 +89,7 @@ class LoginStep(unittest.TestCase):
             setattr(module, name, value)
         self.companion = Companion()
         self.setup = first_run.Setup(self.companion)
+        self.setup.adopt = False  # never this Mac's own office logins; `OfficeLogin` turns it on with its stand-ins
         self.addCleanup(self.setup.cancel)
 
     def press(self):
@@ -141,20 +137,27 @@ class LoginStep(unittest.TestCase):
         self.assertEqual(self.companion.submitted, ["start_over"])
 
     def test_cancel_leaves_nothing_behind_and_it_can_be_tried_again(self):
+        # Both the wrapper and its child inherit this pipe. EOF means both
+        # closed it, independently of whether either PID has been reaped.
+        lifetime = self.bin / "login-lifetime"
+        os.mkfifo(lifetime)
+        fd = os.open(lifetime, os.O_RDONLY | os.O_NONBLOCK)
+        self.addCleanup(os.close, fd)
+        def alive():
+            try:
+                return bool(os.read(fd, 1))
+            except BlockingIOError:
+                return True
         self.press()
         self.until(lambda s: s.get("link"), "the page's address")
-        deadline = time.time() + 3
-        while not (self.bin / "parent").exists() and time.time() < deadline:
-            time.sleep(0.02)
-        parent, child = self.bin / "parent", self.bin / "child"
-        self.assertTrue(alive(parent) and alive(child))
+        self.assertTrue(alive())
         self.setup.cancel()
         seen = self.until(lambda s: not s["busy"], "the login gone")
         self.assertEqual((seen["step"], seen["error"]), ("login", ""))
         deadline = time.time() + 3
-        while (alive(parent) or alive(child)) and time.time() < deadline:
+        while alive() and time.time() < deadline:
             time.sleep(0.02)
-        self.assertFalse(alive(parent) or alive(child), "something is still holding the login's port")
+        self.assertFalse(alive(), "the login wrapper or its child still holds the pipe")
         self.press()
         self.assertEqual(self.until(lambda s: s.get("link"), "a second try")["link"], LINK)
 
@@ -165,8 +168,7 @@ class LoginStep(unittest.TestCase):
         for thread in threads:
             thread.join()
         self.until(lambda s: s.get("link"), "the page's address")
-        found = subprocess.run(["pgrep", "-f", str(self.codex)], capture_output=True, text=True).stdout.split()
-        self.assertEqual(len(found), 1)
+        self.assertEqual((self.bin / "login-starts").read_text().splitlines(), [(self.bin / "parent").read_text().strip()])
 
     def test_says_the_real_reason_and_never_the_generic_one(self):
         for said, wanted in (
@@ -395,6 +397,36 @@ class OfficeLogin(unittest.TestCase):
         self.assertEqual(self.setup.state()["step"], "ready")
         self.assertEqual(self.companion.submitted, ["start_over", "start_over"])
 
+    def settled(self):
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            seen = self.setup.state()
+            if seen["step"] != "finding":
+                return seen
+            time.sleep(0.02)
+        self.fail("still looking")
+
+    def test_a_login_already_on_this_mac_is_taken_up_without_asking(self):
+        """a login this Mac already has is used, and the panel only says which; nobody picks or types."""
+        first_run._installed = lambda: []
+        (self.bin / "qoder_logged_in").write_text("")
+        self.setup.adopt = True
+        self.assertEqual(self.setup.state()["step"], "finding", "a moment of looking, not a card to choose from")
+        seen = self.settled()
+        self.assertEqual((seen["step"], seen["service"], seen["found"]), ("ready", "qoder", "Qoder"))
+        self.assertEqual(self.companion.submitted, ["start_over"])
+
+    def test_nothing_logged_in_is_the_one_simple_step(self):
+        self.setup.adopt = True
+        self.assertEqual(self.settled()["step"], "login")
+        self.assertFalse(office.FILE.exists())
+
+    def test_the_owners_own_choice_is_never_overridden(self):
+        self.workbuddy_logged_in()
+        self.setup.adopt = True
+        self.setup.use_login()
+        self.assertEqual(self.settled()["step"], "login", "back to ChatGPT by the owner's own tap: nothing is taken up instead")
+
     def test_back_to_chatgpt_forgets_the_office_agent(self):
         self.workbuddy_logged_in()
         self.setup.use_office("workbuddy")
@@ -528,7 +560,7 @@ class CodexOnlyWhenNeeded(unittest.TestCase):
         self.setup.use_key("deepseek", "sk-good")
         seen = self.until(lambda s: not s["busy"], "the install over")
         self.assertEqual(seen["step"], "install")
-        self.assertIn("Codex 没装上", seen["error"])
+        self.assertIn("没装上", seen["error"])
 
     def until(self, wanted, what):
         return LoginStep.until(self, wanted, what)

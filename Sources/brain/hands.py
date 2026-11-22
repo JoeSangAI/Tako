@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import datetime
+import hashlib
 import json
+import os
 import secrets
 import subprocess
 import sys
@@ -11,21 +14,31 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
+import chats
 import feedback as fb
 import webfill
 import wechat_reader as reader
+from back_watch import BackWatch
 from chats import render
 from guards import LOCAL_NAMES, SCRIPTABLE, clipped, full_chat_name, lasting_command, normalized, overwritten_paths, plain_command, same_chat, risky_script, unsafe_script, workbench_packet
 from outputs import back_up, change_problem, file_in_title, file_pictures, output_roots, replace_file
-from settings import CONFIG, HAS_WECHAT, conversation_key, OWNER, WECHAT, WORKBENCH, WORKBENCH_CARDS, local_today, note_metric
+from file_access import protected_denial
+from entrusted import display_time
+from settings import CONFIG, DINGTALK, HAS_WECHAT, conversation_key, OWNER, WECHAT, WORKBENCH, WORKBENCH_CARDS, ZONE, local_today, note_metric
 
 FEEDBACK_KINDS = {"bug": "出了问题", "rough": "不好用", "wish": "想用的场景"}
 COMING_BACK_SECONDS = 1800  # How long the last step of a job waits for the owner to come back to its window.
 OWNER_WENT_SECONDS = 3  # A window coming to the front this soon after the owner's own click or key is them going there.
+LATE = "这一轮开始后才交来的文件"  # why a card asks: the turn was already running when the owner handed it over (Hands._late)
 PICK_UPS = 2  # Turns a step that needs the window in front may start by itself before it stops asking the model.
 
 
 class Hands:
+    def _back_observer(self):
+        if not hasattr(self, "_back_watch"):
+            self._back_watch = BackWatch(self.native)
+        return self._back_watch
+
     async def on_server_request(self, method, params):
         # A throwaway thread is never on this list, so it has no tools and can ask for nothing. If it ever tried, no running job answers for it.
         job = self.on_thread.get(params.get("threadId"))
@@ -45,15 +58,16 @@ class Hands:
             if method == "item/fileChange/requestApproval":
                 await asyncio.sleep(0.1)  # the item's own start event carries the paths
                 paths = [str(path) for path in job.changing.get(params.get("itemId")) or [] if path]
-                if paths and await asyncio.to_thread(self._backed_up, paths):
+                late = self._late(job, paths)
+                if paths and not late and await asyncio.to_thread(self._backed_up, paths):
                     job.touched.update(path for path in paths if not any(Path(path).resolve().is_relative_to(root.resolve()) for root in output_roots()))
                     note_metric(kind="approval", by="itself", what="file")
                     return {"decision": "accept"}  # Not for the session: the next change gets its own backup.
                 text = "改动文件：" + "、".join(paths) if paths else f"改动文件：{params.get('grantRoot') or '不知道改哪里'}"
-                why = str(params.get("reason") or "")[:200]
+                why = LATE if late else str(params.get("reason") or "")[:200]
             else:
                 text = plain_command(params.get("command")) or "运行命令"
-                why = lasting_command(params.get("command") or text)
+                why = lasting_command(params.get("command") or text) or (LATE if self._late(job, [], params.get("command") or text) else "")
                 if not why:
                     note_metric(kind="approval", by="itself", what="command")
                     # Writing over a file with > or tee: what was there is backed up first, and the next time asks again so it gets its own.
@@ -72,6 +86,15 @@ class Hands:
         if method == "mcpServer/elicitation/request":
             return {"action": "decline"}
         raise RuntimeError("unsupported_server_request")
+
+    @staticmethod
+    def _late(job, paths, command=""):
+        """Files the owner handed over while this turn was running (`Turns._steer`): where it may write was fixed when it started,
+        so writing them is asked on the usual card rather than taken as a thing of its own."""
+        if not job.late:
+            return []
+        command = " ".join(command) if isinstance(command, list) else str(command or "")
+        return [late for late in job.late if late in command or any(os.path.realpath(path) == late or Path(path).resolve().is_relative_to(late) for path in paths)]
 
     @staticmethod
     def _backed_up(paths):
@@ -107,7 +130,7 @@ class Hands:
         request = secrets.token_hex(4)
         future = self.loop.create_future()
         self.waiting[request] = future
-        self.outbox.put({"id": request, "command": command, "expires": time.time() + timeout, **{k: v for k, v in args.items() if v is not None}})
+        self.outbox.put({"id": request, "command": command, "expires": time.monotonic() + timeout, **{k: v for k, v in args.items() if v is not None}})
         try:
             return await asyncio.wait_for(future, timeout)
         except asyncio.TimeoutError:
@@ -164,10 +187,11 @@ class Hands:
             return
         mark = self.held[key] = {"name": job.name, "events": job.events, "key": job.key, "window": window, "chat": job.wechat_chat, "trouble": f"差一步在后台做不了。不用专门切过去，你之后用到 {app} 时我接上。"}
         deadline = time.time() + COMING_BACK_SECONDS
+        observations = self._back_observer().observe(window, 2, immediate=False)
         try:
-            while self.held.get(key) is mark and time.time() < deadline:
-                await asyncio.sleep(2)
-                seen = await self.native("isBack", timeout=5, window=window)
+            async for seen in observations:
+                if self.held.get(key) is not mark or time.time() >= deadline:
+                    return
                 if seen.get("error") and not seen.get("noAnswer"):  # The window has gone.
                     return
                 if seen.get("ok") and self.held.get(key) is mark:
@@ -175,6 +199,7 @@ class Hands:
                     await self.turn(f"{app} 回到前台了。把刚才差的那一步做完，做完说一声。", where=(job.chat, job.events, job.window))
                     return
         finally:
+            await observations.aclose()
             if self.held.get(key) is mark:
                 del self.held[key]
 
@@ -182,7 +207,7 @@ class Hands:
         """A job's hands on a window other than its own, doing something there; a look is not that, and the result of one belongs where it was asked.
         That window now shows the job's conversation, its line goes there, and the owner going to it brings Tako along."""
         found = str((window or {}).get("id") or "")
-        if not job or found in ("", "0", job.window_id or "") or window.get("bundle") == WECHAT:
+        if not job or found in ("", "0", job.window_id or "") or window.get("bundle") in (WECHAT, DINGTALK):
             return
         job.hands_on = {"id": found, "app": window.get("app"), "bundle": window.get("bundle")}
         if job.chat:
@@ -278,12 +303,12 @@ class Hands:
         mark["result"] = result
         if result.get("ok"):
             said = str(result.get("message") or "").replace(" 用户 ", "你")
-            self.limb_news = [*self.limb_news, f"（刚才排着的一步系统已做完：{mark['what']} 放进了{mark['where']}的输入框，没有发送。不要再放一次。）"][-5:]
+            self._tell_threads(f"（刚才排着的一步系统已做完：{mark['what']} 放进了{mark['where']}的输入框，没有发送。不要再放一次。）", key=mark["key"])
             self._say_to_owner(mark["events"], f"{mark['what']} 放进{mark['where']}了。{said}")
         else:
             why = result.get('error') or '这一步没走通'
             # The model was told it is queued and not to try again; left at that, "just paste it" next gets nothing done.
-            self.limb_news = [*self.limb_news, f"（刚才排着的一步没做成：{mark['what']} 没放进{mark['where']}，{why}。现在没有排着的了，{OWNER} 再要就重新调 fill_input。）"][-5:]
+            self._tell_threads(f"（刚才排着的一步没做成：{mark['what']} 没放进{mark['where']}，{why}。现在没有排着的了，{OWNER} 再要就重新调 fill_input。）", key=mark["key"])
             self._say_to_owner(mark["events"], f"{mark['what']} 没放进{mark['where']}：{why}。{ending}")
 
     def _waiting_fill_note(self):
@@ -310,16 +335,18 @@ class Hands:
         """A ring nobody saw is no answer: it goes round again when the owner gets to that window. Only the latest one for a window."""
         self.rings[window] = mark = object()
         deadline = time.time() + COMING_BACK_SECONDS
+        observations = self._back_observer().observe(window, 1, immediate=False)
         try:
-            while self.rings.get(window) is mark and time.time() < deadline:
-                await asyncio.sleep(1)
-                seen = await self.native("isBack", timeout=5, window=window)
+            async for seen in observations:
+                if self.rings.get(window) is not mark or time.time() >= deadline:
+                    return
                 if seen.get("error"):
                     return
                 if seen.get("front"):
                     await self.native("point", text=text, window=window)
                     return
         finally:
+            await observations.aclose()
             if self.rings.get(window) is mark:
                 del self.rings[window]
 
@@ -356,6 +383,45 @@ class Hands:
     async def _run_tool(self, name, args, job):
         # Tied to where it was asked: the goo may be on another window by now.
         window = str(args.get("window") or "") or job.window_id
+        needs_window = name in ("look_at_window", "operate_window", "point_at") or (name == "fill_input" and not args.get("chat") and not args.get("cancel")) or (name == "run_in_app" and not args.get("app")) or (name == "listen" and args.get("action") == "start")
+        if needs_window and not window:
+            return self._reply("这段对话没有窗口。只按主人交代的事做；要操作某个应用须明确指定它，不读取或操作碰巧在前台的窗口。", ok=False)
+        if name == "entrust":
+            if args.get("action") == "list":
+                return self._reply(self.entrusted.memory(full=True) or "手里没有托付。")
+            if args.get("action") == "quiet":
+                if not str(args.get("quote") or "").strip() or str(args["quote"]).strip() not in job.owner_words:
+                    return self._reply("只认这一轮主人原话，请逐字给 quote", ok=False)
+                self.entrusted.ladder.stop_asking()
+                return self._reply("好，不再主动问要不要记着；主人自己再托付一件事时恢复。")
+            if args.get("action") == "ask":
+                try:
+                    watch = bool(chats.HAS_WECHAT and job.chat and job.chat.get("kind", "wechat") == "wechat")
+                    item = self.entrusted.ask(args, job, watch=watch)
+                except ValueError as exc:
+                    return self._reply(str(exc), ok=False)
+                self.keep_now()
+                return self._reply(f"好，id={item['id']}。这句问话会接在你的答复末尾，主人点「好」或说好才算托付；你的答复里不要再问一遍。"
+                                   + ("草稿里的承诺要等草稿发出去才算数。" if item.get("draft") else ""))
+            try:
+                fresh = not self.entrusted.items.get(str(args.get("id") or ""))
+                item = self.entrusted.change(args, job)
+            except ValueError as exc:
+                return self._reply(str(exc), ok=False)
+            self.keep_now()
+            teach = self.entrusted.ladder.first_kept(item) if fresh and args.get("action", "keep") == "keep" else ""
+            result = await self.native("entrustedSync", **self.entrusted.native_state(), **({"teach": teach} if teach else {}), timeout=30)
+            scheduled = item.get("due") is not None and item["id"] in result.get("scheduled", [])
+            if item.get("state") != "held":
+                note = "已放下，系统通知已撤回。" if result.get("ok") else "已放下；系统通知撤回尚未确认，不能说已经撤回。"
+            else:
+                state = ("scheduled" if scheduled else "disabled" if result.get("allowed") is False else "failed") if item.get("due") else ""
+                note = ""
+                if state and state != self.entrusted.notice_state:
+                    note = "通知已排好。" if scheduled else ("通知未开启" if state == "disabled" else "通知未排好") + "；Tako 运行时会递泡泡，退出后无法保证提醒。"
+                    self.entrusted.notice_state = state
+            when = f"到点时间（系统时区）：{display_time(item['due'])}。回答主人时若说时间，以此为准。" if item.get("state") == "held" and item.get("due") is not None else ""
+            return self._reply(f"已记录，id={item['id']}。{when}{note}")
         if name == "list_windows":
             result = await self.native("windows")
             lines = [f"{w['id']}｜{w['app']}｜{w['title']}" + ("｜TAKO 粘在这里" if w.get("stuck") else "") for w in result.get("windows", [])]
@@ -403,12 +469,23 @@ class Hands:
         result = await self._unless_needs_front(job, "look", window=window)
         if not result.get("ok"):
             return self._reply(result.get("error", "看不到窗口"), ok=False)
+        document = result.get("document") or await asyncio.to_thread(file_in_title, result.get("title"))
+        if job is not None and CONFIG.get("look_dedup", True) and result.get("id") and result.get("image"):
+            # A fingerprint holds no screen content. Include every native field, including the image,
+            # the requested window and the separately resolved file, so any change sends the whole view.
+            snapshot = json.dumps([job.thread, window, result, document], sort_keys=True, ensure_ascii=False, default=str)
+            fingerprint = hashlib.sha256(snapshot.encode()).digest()
+            if getattr(job, "last_look", None) == fingerprint:
+                return self._reply("这个窗口的画面、元素和文字与刚才看到的没有变化；元素编号仍按上一次结果使用。")
+            job.last_look = fingerprint
+        elif job is not None:
+            job.last_look = None
         lines = [f"窗口 id：{result.get('id')}", f"应用：{result.get('app')}", f"标题：{result.get('title')}"]
         if result.get("note"):
             lines.append(result["note"])
         if result.get("imageScale", 1) != 1:
             lines.append(f"截图比例：1 个窗口坐标点 = {result['imageScale']:.3f} 像素")
-        if document := result.get("document") or await asyncio.to_thread(file_in_title, result.get("title")):
+        if document:
             lines.append(f"文件：{document}")
         if result.get("elements"):
             lines.append("可以按的元素（编号 角色 名称 (x,y,宽,高)，编号到下次看窗口前有效）：\n" + str(result["elements"])[:14000])
@@ -421,6 +498,10 @@ class Hands:
     async def _look_at_file(self, path, first):
         try:
             pages = await asyncio.to_thread(file_pictures, path, max(1, first))
+        except PermissionError:
+            if protected_denial("Operation not permitted", path=Path(path).expanduser().absolute()):
+                await self.native("filePermission", timeout=5)
+            return self._reply("这个文件读不到；请检查文件权限和系统的文件与文件夹设置。", ok=False)
         except (OSError, subprocess.SubprocessError) as exc:
             return self._reply(f"这个文件转不成图片（{type(exc).__name__}），先读它的内容。", ok=False)
         if not pages:

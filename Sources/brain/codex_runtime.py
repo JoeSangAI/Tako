@@ -207,7 +207,8 @@ class CodexRuntime:
     async def start_thread(self, cwd: str, *, sandbox: str = "read-only", approval_policy: str = "on-request",
                            dynamic_tools: list[dict] | None = None,
                            developer_instructions: str | None = None,
-                           model: str | None = None, effort: str | None = None, config: dict | None = None):
+                           model: str | None = None, effort: str | None = None, config: dict | None = None,
+                           base_instructions: str | None = None):
         # Nothing outlives the app: threads are never written to Codex's history.
         params = {"cwd": cwd, "approvalPolicy": approval_policy,
                   "sandbox": sandbox, "ephemeral": True,
@@ -222,6 +223,8 @@ class CodexRuntime:
             params["dynamicTools"] = dynamic_tools
         if developer_instructions:
             params["developerInstructions"] = developer_instructions
+        if base_instructions is not None:
+            params["baseInstructions"] = base_instructions
         result = await self.request("thread/start", params)
         return result
 

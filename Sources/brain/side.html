@@ -28,10 +28,23 @@
     border: 1px solid var(--line); border-left: 0; border-radius: 0 var(--corner) var(--corner) 0;
     display: none; flex-direction: column; overflow: hidden; z-index: 1;
     box-shadow: 4px 0 18px rgba(0, 0, 0, .14); will-change: transform; transition: background-color .3s, border-color .3s; }
-  body.open #card { display: flex; animation: grow .24s cubic-bezier(.2, .9, .3, 1); }
-  body.closing #card { display: flex; animation: shrink .16s ease-in forwards; }
-  @keyframes grow { from { transform: translateX(-100%); } to { transform: none; } }
-  @keyframes shrink { to { transform: translateX(-100%); } }
+  /* The card grows out of the body and goes back into it. --ox/--oy is where the body is on this page (setOrigin); from there it swells past its size
+     a little and settles, like the body's own ink; closing, it is drawn back in. Content is in it all the way, no blank. */
+  #card { transform-origin: var(--ox, 0px) var(--oy, 50%); }
+  body.open #card { display: flex; animation: grow .32s linear; }
+  body.closing #card { display: flex; animation: shrink .22s cubic-bezier(.5, 0, .9, .5) forwards; }
+  @keyframes grow {
+    0% { transform: scale(.05, .04); border-radius: 999px; animation-timing-function: cubic-bezier(.2, .7, .4, 1); }
+    58% { transform: scale(1.035, .975); border-radius: var(--corner); animation-timing-function: ease-in-out; }
+    80% { transform: scale(.99, 1.012); }
+    100% { transform: none; }
+  }
+  @keyframes shrink {
+    0% { transform: none; }
+    25% { transform: scale(1.02, .985); border-radius: var(--corner); }
+    100% { transform: scale(.05, .04); border-radius: 999px; }
+  }
+  @media (prefers-reduced-motion: reduce) { body.open #card, body.closing #card { animation-duration: .01s; } }
   #grip { position: fixed; top: 0; bottom: 0; left: calc(var(--w) - 5px); width: 10px; cursor: ew-resize; z-index: 2; display: none; touch-action: none; }
   body.open #grip { display: block; }
   #grip::after { content: ""; position: absolute; left: 3px; top: 50%; width: 3px; height: 36px; margin-top: -18px; border-radius: 3px; background: var(--line); transition: background .15s; }
@@ -40,6 +53,9 @@
   header { height: var(--bar-h); flex: none; padding: 0 14px 0 54px; border-bottom: 1px solid var(--line); background: var(--bar); font-weight: 600; font-size: 12px; display: flex; align-items: center; gap: 6px; transition: background-color .3s; }
   #who { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: none; border: 0; padding: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; }
   #who:hover { color: var(--muted); }
+  /* A chat app's chat unconfirmed for long: the chat before is neither named nor shown, only hidden, so an unchanged chat comes back without a redraw. */
+  body.looking #log > * { visibility: hidden; }
+  body.looking #who { color: var(--muted); }
   body:not(.wechat) #who { cursor: default; }
   #tick { font-weight: 400; color: var(--muted); font-size: 11px; white-space: nowrap; }
   #picker { display: none; padding: 8px 12px; border-bottom: 1px solid var(--line); }
@@ -53,6 +69,13 @@
   /* 做过的事: every ask in the records, over the conversation until closed */
   #hist { flex: none; width: 26px; height: 26px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 7px; background: none; color: var(--muted); cursor: pointer; }
   #hist:hover, body.history #hist { background: var(--card); color: var(--ink); }
+  /* 收起: only puts the panel away; the conversation and what is being done stay, and it opens again where it was. */
+  #fold { flex: none; width: 26px; height: 26px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 7px; background: none; color: var(--muted); cursor: pointer; }
+  #fold:hover { background: var(--card); color: var(--ink); }
+  /* The desktop panel is moved by its header; a window's panel stays beside its window. */
+  body.floating header, body.floating header #who { cursor: grab; }
+  /* On its own on the desktop it has no window beside it: a whole card, every edge drawn and rounded. */
+  body.floating #card { border-left: 1px solid var(--line); border-radius: var(--corner); box-shadow: 0 6px 24px rgba(0, 0, 0, .16); }
   #history { display: none; position: absolute; left: 0; right: 0; top: var(--bar-h); bottom: 0; z-index: 4; background: var(--paper); flex-direction: column; }
   body.history #history { display: flex; }
   #history .hbar { flex: none; display: flex; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
@@ -85,6 +108,24 @@
   .owner a { color: inherit; }
   .empty { color: var(--muted); margin: auto; text-align: center; font-size: 12px; padding: 0 12px; animation: hello .5s ease; }
   .tip { color: var(--muted); font-size: 12px; text-align: center; padding: 2px 12px 8px; }
+  .held-list { margin: 8px 14px; text-align: left; color: var(--ink); flex-shrink: 0; }
+  .held-list h2 { margin: 0; padding: 4px 0; font-size: 13px; font-weight: 650; }
+  .held-list summary { cursor: pointer; color: var(--muted); font-size: 12px; padding: 8px 0; }
+  .held-scroll { max-height: 220px; overflow-y: auto; padding-right: 6px; }
+  .held-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px 10px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .held-task { position: relative; min-width: 0; padding-left: 20px; }
+  .held-task::before { content: ""; position: absolute; top: 5px; left: 0; width: 10px; height: 10px; border: 1px solid var(--muted); border-radius: 50%; }
+  .held-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+  .held-when { color: var(--muted); font-size: 12px; margin-top: 2px; overflow-wrap: anywhere; }
+  .held-row button { border: 0; background: transparent; color: inherit; padding: 0; cursor: pointer; font: inherit; text-align: left; }
+  .held-row button.held-title { text-decoration: underline; text-decoration-color: var(--muted); text-underline-offset: 3px; }
+  .held-row button.held-done { background: var(--btn); color: var(--btn-ink); border-radius: 8px; padding: 5px 9px; white-space: nowrap; }
+  .held-secondary { grid-column: 1 / -1; padding-left: 20px; color: var(--muted); font-size: 12px; }
+  .held-secondary button:hover, .held-restore:hover { text-decoration: underline; }
+  .ask-line { margin-top: 6px; color: var(--muted); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .ask-line button, .ladder-line button { border: 0; background: var(--card); color: var(--ink); border-radius: 8px; padding: 3px 10px; cursor: pointer; font: inherit; font-size: 12px; }
+  .ladder-line { margin: 6px 14px 8px; color: var(--muted); text-align: left; font-size: 12px; }
+  .ladder-line .row { display: flex; gap: 8px; margin-top: 5px; }
   .empty .try { margin-top: 10px; opacity: .8; line-height: 1.5; }
   .empty .try:empty { display: none; }
   .empty .try button { border: 0; border-radius: 9px; background: var(--card); color: var(--ink); font: inherit; padding: 6px 12px; cursor: pointer; }
@@ -133,6 +174,17 @@
   .steps summary::before { content: "▸ "; }
   .steps[open] summary::before { content: "▾ "; }
   .steps div { padding-left: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* one thing, everything the owner said in it: a row each, with where it stands (Turns._join, receipts) */
+  .items { margin: 0 0 8px; padding: 6px 8px; background: var(--card); border-radius: 10px; font-size: 12px; }
+  .items div { display: flex; gap: 6px; align-items: baseline; padding: 2px 0; }
+  .items .n { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .items .t { flex: 1; min-width: 0; }
+  .items .w { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .items .d { display: block; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+  .items .s { flex: none; font-size: 11px; color: var(--muted); }
+  .items .s.done { color: var(--ink); }
+  .items .s.ask { color: var(--btn-ink); background: var(--btn); border-radius: 4px; padding: 0 5px; }
+  .items .s.no { text-decoration: line-through; text-decoration-color: var(--muted); }
   #others { flex: none; padding: 0 14px; font-size: 11px; color: var(--muted); }
   #others div { padding-bottom: 6px; }
   /* A job done or waiting elsewhere: the line itself takes the owner there. */
@@ -225,7 +277,7 @@
 </head>
 <body>
 <section id="card" aria-label="Tako">
-  <header><button id="who" title="换一段对话" type="button">我在看：…</button><span id="tick"></span><button id="hist" type="button" title="做过的事" aria-label="做过的事"><svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M8 4.8V8l2.2 1.6" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></button></header>
+  <header><button id="who" title="换一段对话" type="button">Tako</button><span id="tick"></span><button id="hist" type="button" title="做过的事" aria-label="做过的事"><svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M8 4.8V8l2.2 1.6" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button id="fold" type="button" title="收起（双击 Tako 或按 esc 也行）" aria-label="收起"><svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8h8" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg></button></header>
   <section id="history" aria-label="做过的事">
     <div class="hbar"><input id="hq" placeholder="搜做过的事、文件名" aria-label="搜做过的事"></div>
     <div id="hlist"></div>
@@ -234,7 +286,9 @@
   </section>
   <div id="picker"><input id="q" placeholder="搜索对话名称" aria-label="搜索对话"><div id="hits"></div></div>
   <div id="notice" role="status"></div>
+  <div id="held-list" class="held-list" hidden></div>
   <div id="log"></div>
+  <div id="ladder-line" class="ladder-line" hidden></div>
   <div id="others" aria-live="polite"></div>
   <div id="live" aria-live="polite"></div>
   <div id="cards"></div>
@@ -249,7 +303,7 @@
   </form>
 </section>
 <div id="grip" role="separator" aria-label="拖动调整宽度" aria-orientation="vertical"></div>
-<script src="markdown-it.js?t=TOKEN" id="mdjs"></script>
+<script src="markdown-it.js?t=TOKEN"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 const token = new URLSearchParams(location.search).get('t') || '';
@@ -261,13 +315,31 @@ const native = window.webkit?.messageHandlers?.goo;
 const MIN = 280, MAX = 712;
 let width = 360, room = 99999, opened = false, seen = 0, gooState = '', gen = null, busy = false, catchingUp = true, cardsUp = false;
 const cardWidth = () => Math.max(MIN, Math.min(width, MAX, Math.max(MIN, room)));
+let origin = null;  // where the body is on this page (setOrigin)
 function layout() {
   const w = cardWidth();
   document.documentElement.style.setProperty('--w', `${w}px`);
+  placeOrigin();
   native?.postMessage({ region: [0, 0, w + 5, 100000], cardWidth: w });
 }
 window.setGeometry = (edge, nextRoom) => { room = nextRoom; layout(); };
+// Where the body is, in this page's coordinates: the card grows out of the nearest point of its own edge and goes back
+// into it there (from a point outside the card, the swelling card would be cut off by its own window).
+function placeOrigin() {
+  if (!origin) return;
+  const root = document.documentElement.style, h = document.documentElement.clientHeight || origin.y;
+  root.setProperty('--ox', `${Math.max(0, Math.min(cardWidth(), origin.x))}px`);
+  root.setProperty('--oy', `${Math.max(0, Math.min(h, origin.y))}px`);
+}
+window.setOrigin = (x, y) => { origin = { x, y }; placeOrigin(); };
 window.setWidth = (next) => { width = next; layout(); };
+// The desktop panel (the app says which): held by its header, the app moves the window with the pointer (`movePanel`).
+window.setFloating = (on) => document.body.classList.toggle('floating', on);
+document.querySelector('header').addEventListener('pointerdown', (e) => {
+  if (e.button !== 0 || !document.body.classList.contains('floating') || e.target.closest('#hist, #fold')) return;
+  e.preventDefault();
+  native?.postMessage({ moveStart: true });
+});
 let canMove = true, canRead = true;
 window.setCanMove = (can) => { canMove = can; showNotice(); };
 window.setCanRead = (can) => { canRead = can; showNotice(); };
@@ -301,11 +373,15 @@ window.setOpen = function setOpen(next) {
   layout();
   native?.postMessage({ open: next, wanted: width });
   if (next) {
-    tryTurn += 1;
     $('say').focus({ preventScroll: true });
     $('log').scrollTop = $('log').scrollHeight;
+    // Opened from an answer in the bubble (a press on it, a double click on the body): that answer is what shows.
+    aside = null; asideOpening = false;
+    const answered = asideAt && $('log').querySelector(`[data-at="${asideAt}"]`);
+    if (answered) answered.scrollIntoView({ block: 'start' });
+    asideAt = 0;
   } else {
-    closing = setTimeout(() => document.body.classList.remove('closing'), 170);
+    closing = setTimeout(() => document.body.classList.remove('closing'), 230);
   }
 };
 
@@ -467,6 +543,26 @@ function renderMarkdown(text) {
   });
   return out;
 }
+// The list of one thing: each thing the owner said in it and where it stands, from the model's own receipts (`Turns._take_receipts`).
+const ITEM_WORDS = { '收到': '收到，会一起改', '在改': '在改', '改好': '改好', '没改': '没改', '要你定': '要你定' };
+function itemsBlock(items) {
+  const box = document.createElement('div');
+  box.className = 'items';
+  items.forEach((item) => {
+    const row = document.createElement('div');
+    const n = document.createElement('span'), t = document.createElement('span'), state = document.createElement('span');
+    n.className = 'n'; n.textContent = `${item.n}.`;
+    // The owner's words, and under them what the model said it did with them: the detail lives here, not again in the answer.
+    const words = document.createElement('span'); words.className = 'w'; words.textContent = item.text; words.title = item.text;
+    t.className = 't'; t.append(words);
+    if (item.note) { const note = document.createElement('span'); note.className = 'd'; note.textContent = item.note; t.append(note); }
+    state.className = 's' + (item.state === '改好' ? ' done' : item.state === '要你定' ? ' ask' : item.state === '没改' ? ' no' : '');
+    state.textContent = ITEM_WORDS[item.state] || '';
+    row.append(n, t, state);
+    box.append(row);
+  });
+  return box;
+}
 function stepsBlock(steps) {
   const box = document.createElement('details');
   box.className = 'steps';
@@ -581,6 +677,7 @@ window.folderChosen = (path) => {
 };
 function bubble(event) {
   const row = document.createElement('div');
+  if (event.at) row.dataset.at = event.at;
   if (event.role === 'note') { row.className = 'note'; row.textContent = event.text; return row; }
   if (event.role === 'owner') {
     row.className = 'owner';
@@ -601,9 +698,116 @@ function bubble(event) {
   }
   row.className = 'tako';
   if (event.steps?.length) row.append(stepsBlock(event.steps));
+  if (event.items?.length) row.append(itemsBlock(event.items));
   // One answer that can't be drawn must not stop the panel from showing everything after it.
   try { row.append(renderMarkdown(event.text)); } catch { const plain = document.createElement('div'); plain.className = 'md'; plain.style.whiteSpace = 'pre-wrap'; plain.textContent = event.text; row.append(plain); }
+  if (event.ask?.line) row.append(askLine(event.ask));
   return row;
+}
+// Whether to keep a promise said in that turn (the ladder's second rung): Tako's own line under the answer, and 好 while it is
+// still open. Saying 好 does the same; letting it pass is no answer, never a no.
+let asking = new Set();
+function askLine(ask) {
+  const line = document.createElement('div');
+  line.className = 'ask-line'; line.dataset.ask = ask.id;
+  const words = document.createElement('span'); words.textContent = ask.line;
+  const yes = button('好', async () => {
+    yes.hidden = true;
+    const r = await api('/entrusted/accept', { id: ask.id }).catch(() => ({ ok: false }));
+    if (!r.ok) yes.hidden = !asking.has(ask.id);
+  });
+  yes.hidden = !asking.has(ask.id);
+  line.append(words, yes);
+  return line;
+}
+function showAsking(s) {
+  const open = new Set(s.ladder?.asking || []);
+  if ([...open].join() === [...asking].join()) return;
+  asking = open;
+  document.querySelectorAll('.ask-line').forEach((line) => { const b = line.querySelector('button'); if (b) b.hidden = !asking.has(line.dataset.ask); });
+}
+
+// ---- an answer in the speaking bubble ----
+// The owner spoke on the desktop with the panel closed (`sayFromKey(text, true)`): the panel stays closed and the bubble by the body shows this conversation's own news, read here from the same
+// /state the panel shows; nothing is kept for it and the brain makes no word for it. Whatever the owner has to act on (a
+// card, an error, words that did not go out) opens the panel instead, as before.
+let aside = null, asideAt = 0, asideOpening = false;
+// The answer as the bubble shows it, and whether it holds what only the panel shows (a list, code, a table, a heading, a link,
+// a picture, a file): such an answer is never short. A file says which folder it is in.
+function asidePlain(text) {
+  const md = String(text || '');
+  const rich = /```|^\s*([-*+]|\d+[.)])\s|^\s*\|.*\|\s*$|^\s*#{1,6}\s|!\[|\]\(|https?:\/\//m.test(md);
+  const home = (path) => path.replace(/^\/Users\/[^/]+/, '~');
+  const plain = md
+    .replace(/```[^\n]*\n?([\s\S]*?)```/g, '$1')
+    .replace(/!\[([^\]]*)\]\(<?[^)>]*>?\)/g, '$1')
+    .replace(/\[([^\]]+)\]\(<?([^)>]+)>?\)/g, (all, label, href) => {
+      let path = href.replace(/^file:\/\//, '');
+      try { path = decodeURI(path); } catch { /* as written */ }
+      return /^(\/|~\/)/.test(path) ? `${label}（在 ${home(path.replace(/\/[^/]*$/, '')) || '/'}）` : label;
+    })
+    .replace(/^\s*#{1,6}\s+/gm, '').replace(/^\s*[-*+]\s+/gm, '· ').replace(/\*\*|__|`/g, '')
+    .replace(/\n{2,}/g, '\n').trim();
+  return [plain, rich];
+}
+// What this state means for the bubble, given what the owner said (`a`, kept across reads): the step it is on, the answer to
+// those words, that the panel has to open, that it ended with nothing to say, or that the panel moved to another conversation.
+function asideNews(a, s) {
+  if (s.kind === 'desktop' && a.gen === null) a.gen = s.gen;
+  if (a.gen !== null && s.gen !== a.gen) return { gone: true };
+  const events = s.events || [];
+  for (const e of events) {
+    if (!a.mine) {
+      a.mine = e.role === 'owner' && (e.at || 0) >= a.since - 5 && String(e.text).startsWith(a.said);
+      // Said while it works: more of the same thing, so the bubble goes on with that thing's progress and its one answer.
+      if (a.mine && e.joined) a.from = (s.steps || []).length;
+      continue;
+    }
+    if (e.role === 'tako') a.answer = e;
+  }
+  if (a.mine && s.busy) a.busySeen = true;
+  const failed = a.mine && s.error && (s.error !== a.error || (a.busySeen && !s.busy));
+  a.error = s.error || '';
+  if ((s.pending || []).length || failed) return { open: true };
+  if (a.answer) {
+    const answer = a.answer, [plain, rich] = asidePlain(answer.text);
+    const text = answer.ask?.line ? `${plain}\n${answer.ask.line}` : plain;
+    a.answer = null; a.step = '';
+    return { answer: text, rich, said: a.said, at: answer.at, done: !s.busy };
+  }
+  if (a.busySeen && !s.busy) return { end: true };
+  if (!s.busy && !s.trouble) return null;
+  // The panel's own words for what it is doing: the step, the trouble with the model, or its 在想/在动手.
+  const steps = s.steps || [];
+  const step = s.trouble || (a.from !== undefined && steps.length <= a.from ? '收到，会一起改' : steps[steps.length - 1]) || (s.status === 'working' ? 'Tako 在动手…' : 'Tako 在想…');
+  if (step === a.step) return null;
+  a.step = step;
+  return { step };
+}
+// The words just handed over: from here the bubble takes what follows them.
+function startAside(text) {
+  aside = { said: text.trim(), since: Date.now() / 1000, gen: null, mine: false, busySeen: false, error: lastError, step: '', answer: null };
+  asideAt = 0;
+}
+// Opening for the owner goes through the app, which puts the desktop panel by the body first (`showDesktopPanel`).
+function openAside() {
+  aside = null; asideOpening = true;
+  native?.postMessage({ aside: { open: true } });
+  setTimeout(() => { asideOpening = false; }, 3000);
+}
+// True when this read's answer went to the bubble rather than the panel.
+function takeAside(s) {
+  if (!aside || opened) return false;
+  const news = asideNews(aside, s);
+  if (!news) return false;
+  if (news.gone) { aside = null; return false; }
+  if (news.open) { openAside(); return false; }
+  if (news.end) aside = null;
+  native?.postMessage({ aside: news });
+  if (news.answer === undefined) return false;
+  asideAt = news.at;
+  if (news.done) aside = null;
+  return true;
 }
 
 // ---- state from the server ----
@@ -618,8 +822,8 @@ function tellAct(s) {
 // An error from a click stays a few seconds; one from the server stays as long as the server says.
 let heldError = 0;
 function showError(text, hold) {
-  if (hold) heldError = Date.now() + 5000;
-  else if (Date.now() < heldError) return;
+  if (hold) heldError = performance.now() + 5000;
+  else if (performance.now() < heldError) return;
   setText($('err'), text || ''); $('err').classList.toggle('show', !!text);
 }
 // Pressed to go to a window that is no longer there: the line comes back and says so.
@@ -662,17 +866,18 @@ let liveKey = '', lastError = '';
 function showLive(s) {
   // A step that is over is not what it is doing now when the model can't be reached.
   const step = s.trouble || (s.busy ? s.steps[s.steps.length - 1] : '');
-  const key = `${s.busy}|${s.partial.length}|${s.steps.length}|${s.trouble}|${s.queued}`;
+  const items = s.busy ? s.items || [] : [];
+  const key = `${s.busy}|${s.partial.length}|${s.steps.length}|${s.trouble}|${JSON.stringify(items)}`;
   if (key === liveKey) return;
   liveKey = key;
   const box = $('live');
-  box.classList.toggle('show', s.queued || !!s.trouble || (s.busy && (!!s.partial || !!step)));
+  box.classList.toggle('show', !!s.trouble || (s.busy && (!!s.partial || !!step || items.length > 0)));
   box.replaceChildren();
-  if (!s.busy && !s.queued && !s.trouble) return;
+  if (!s.busy && !s.trouble) return;
   const stuckToEnd = $('log').scrollHeight - $('log').scrollTop - $('log').clientHeight < 40;
+  if (items.length) box.append(itemsBlock(items));
   if (step) { const now = document.createElement('div'); now.className = 'now'; now.textContent = step; box.append(now); }
   if (s.partial) { try { box.append(renderMarkdown(s.partial)); } catch { box.append(s.partial); } }
-  if (s.queued) { const wait = document.createElement('div'); wait.className = 'now'; wait.textContent = '你刚说的排在后面，这一轮完了就看。'; box.append(wait); }
   box.scrollTop = box.scrollHeight;
   if (stuckToEnd) $('log').scrollTop = $('log').scrollHeight;
 }
@@ -704,34 +909,41 @@ function showCards(cards) {
     el.append(title, body, actions);
     return el;
   }));
-  if (cards.length) { native?.postMessage({ pop: .6 }); window.setOpen(true); }
+  if (cards.length) { native?.postMessage({ pop: .6 }); if (!asideOpening) window.setOpen(true); }
 }
 function placeholder(s) {
   const isDeck = /Powerpoint|Keynote|wpsoffice/i.test(s.bundle);
   return s.kind === 'window' ? (isDeck ? '让 Tako 看看或改这份文件…' : '问 Tako 这个窗口…') : '跟 Tako 说…';
 }
-let doingSince = 0;
+let doingSince = null, desktopOldest = Infinity, desktopLoading = false, desktopDone = false, onDesktop = false;
 function show(s) {
   let switched = false;
   if (s.gen !== gen) {
     // another conversation: start from its own history on the next look
     const first = gen === null;
     gen = s.gen;
+    desktopOldest = Infinity; desktopDone = false;
     catchingUp = true;
     if (!first || seen) { $('log').replaceChildren(empty); seen = 0; s = { ...s, events: [] }; switched = true; }
   }
-  document.body.classList.toggle('wechat', s.kind !== 'window');
-  const opening = s.chat ? s.greeting || '告诉 Tako 你想做什么。' : '把 Tako 拖到任意窗口上松手，或者在任意窗口按 ⌃⌥T。';
+  onDesktop = s.kind === 'desktop';
+  document.body.classList.toggle('wechat', s.kind === 'wechat');  // only WeChat's chats can be picked from its list; DingTalk follows the chat open in it
+  let opening = s.chat ? s.greeting || '想让我做什么？直接说。' : '把我拖到一个窗口上，我就帮你看那个窗口。';
   if (emptyLine.textContent !== opening) { emptyLine.textContent = opening; empty.style.animation = 'none'; void empty.offsetWidth; empty.style.animation = ''; }
   showTry(s);
+  showHeld(s);
+  showAsking(s);
+  showLadder(s);
   document.body.dataset.app = s.app || '';
-  setText($('who'), s.chat ? `我在看：${s.chat}` : '还没盯着哪段对话，点这里选');
+  document.body.classList.toggle('looking', !!s.looking);
+  const appName = s.app || '聊天';
+  setText($('who'), s.looking ? '正在看…' : s.unknown ? `没认出${appName}里开着哪段对话，照常说就行` : s.kind === 'desktop' ? 'Tako 在这里' : s.chat || '选择对话');
   const ear = s.listening !== null && s.listening !== undefined;
   $('tick').classList.toggle('ear', ear);
   $('tick').title = ear ? '点一下不听了' : '';
   const doing = s.status === 'working' || s.status === 'thinking';
-  if (!doing) doingSince = 0; else if (!doingSince) doingSince = Date.now();
-  const doingFor = doing ? Date.now() - doingSince : 0;
+  if (!doing) doingSince = null; else if (doingSince === null) doingSince = performance.now();
+  const doingFor = doing ? performance.now() - doingSince : 0;
   setText($('tick'), s.trouble && s.busy ? '连模型不太顺…' : s.status === 'working' ? (doingFor > 120e3 ? '这活儿不小，八只手都上了…' : doingFor > 45e3 ? 'Tako 又多伸了一只手…' : 'Tako 在动手…') : s.status === 'thinking' ? (doingFor > 45e3 ? 'Tako 想得有点入神…' : 'Tako 在想…') : ear ? `在听 ${Math.floor(s.listening / 60)}:${String(s.listening % 60).padStart(2, '0')}` : '');
   showError(s.error);
   if ($('say').placeholder !== placeholder(s)) $('say').placeholder = placeholder(s);
@@ -739,16 +951,20 @@ function show(s) {
   updateSend();
   showNotice();
   let next = s.status === 'working' ? 'working' : s.status === 'thinking' ? 'thinking' : ear ? 'reading' : 'idle';
+  const inBubble = takeAside(s);
   showLive(s);
   showOthers(s.others || []);
   showCards(s.pending || []);
   if (s.events.length) {
     $('log').querySelector('.empty')?.remove();
-    s.events.forEach((event) => { $('log').append(bubble(event)); });
+    s.events.forEach((event) => {
+      $('log').append(bubble(event));
+      if (onDesktop && event.at) desktopOldest = Math.min(desktopOldest, event.at);
+    });
     if (!catchingUp && s.events.some((event) => event.role === 'tako')) sayRing();
     seen += s.events.length;
     // Old answers coming back with a conversation are not news: a panel the owner closed stays closed.
-    if (!catchingUp && s.events.some((event) => event.role === 'tako')) { native?.postMessage({ pop: 1, done: true }); window.setOpen(true); }
+    if (!catchingUp && s.events.some((event) => event.role === 'tako')) { native?.postMessage({ pop: 1, done: true }); if (!inBubble && !asideOpening) window.setOpen(true); }
     $('log').scrollTop = $('log').scrollHeight;
   }
   if (!switched) catchingUp = false;
@@ -758,21 +974,110 @@ function show(s) {
   tellAct(s);
 }
 const empty = document.createElement('div'), emptyLine = document.createElement('div'), tryLine = document.createElement('div');
-empty.className = 'empty'; emptyLine.textContent = '告诉 Tako 你想做什么。'; tryLine.className = 'try';
+empty.className = 'empty'; emptyLine.textContent = '想让我做什么？直接说。'; tryLine.className = 'try';
+const heldList = $('held-list');
 empty.append(emptyLine, tryLine);
+let heldItems = [], recentlyPutDown = [], frontChatItems = [], panelChatItems = [], heldRendered = '';
+window.setHeldItems = (items, recent = [], inFront = []) => {
+  heldItems = items || []; recentlyPutDown = recent; frontChatItems = inFront; renderHeld();
+};
+function showHeld(s) { panelChatItems = s.held_here || []; renderHeld(); }
+function renderHeld() {
+  const chatHere = new Set([...frontChatItems, ...panelChatItems]);
+  const signature = JSON.stringify([heldItems, recentlyPutDown, heldItems.map(item => chatHere.has(item.id))]);
+  if (signature === heldRendered) return;
+  heldRendered = signature;
+  const previousTop = heldList.querySelector('.held-scroll')?.scrollTop || 0;
+  const completedOpen = heldList.querySelector('.held-completed')?.open || false;
+  heldList.replaceChildren();
+  const visible = heldItems.length || recentlyPutDown.length;
+  heldList.hidden = !visible;
+  emptyLine.hidden = !!heldItems.length; tryLine.hidden = !!heldItems.length;
+  if (!visible) return;
+  const title = document.createElement('h2'); title.textContent = `待办 ${heldItems.length}`;
+  const scroll = document.createElement('div'); scroll.className = 'held-scroll'; heldList.append(title, scroll);
+  function actionButton(item, action, text, css) {
+    const button = document.createElement('button'); button.type = 'button';
+    button.className = css; button.textContent = text;
+    button.onclick = () => native?.postMessage({ heldAction: action, heldID: item.id });
+    return button;
+  }
+  for (const item of heldItems) {
+    const row = document.createElement('div'); row.className = 'held-row';
+    const task = document.createElement('div'); task.className = 'held-task';
+    const line = chatHere.has(item.id) ? document.createElement('div') : actionButton(item, 'look', item.text || '', 'held-title');
+    line.className = 'held-title'; line.textContent = item.text || ''; line.title = line.textContent;
+    const when = document.createElement('div'); when.className = 'held-when';
+    const place = item.place || {};
+    when.textContent = [item.due_display, place.app, place.title, place.chat].filter(Boolean).join(' · ') || '合适的时候';
+    if (item.ignored_streak >= 3) when.textContent += ' · 这件还要我留着吗？';
+    task.append(line, when);
+    const secondary = document.createElement('div'); secondary.className = 'held-secondary';
+    secondary.append(actionButton(item, 'later', '稍后', ''), ' · ', actionButton(item, 'cancel', '删除', ''));
+    row.append(task, actionButton(item, 'done', '✓ 做完了', 'held-done'), secondary);
+    scroll.append(row);
+  }
+  if (recentlyPutDown.length) {
+    const recent = document.createElement('details'); recent.className = 'held-completed'; recent.open = completedOpen;
+    const label = document.createElement('summary'); label.textContent = '已完成';
+    recent.append(label); scroll.append(recent);
+    for (const item of recentlyPutDown) {
+      const row = document.createElement('div'); row.className = 'held-row';
+      const line = document.createElement('div'); line.className = 'held-title'; line.textContent = item.text || '';
+      row.append(line, actionButton(item, 'restore', '恢复', 'held-restore'));
+      recent.append(row);
+    }
+  }
+  scroll.scrollTop = previousTop;
+}
 $('log').append(empty);
+// The one invitation the desktop panel draws itself, when the brain's one next step (`Ladder.next`) says so: the owner's own to-dos
+// and calendar. Seen today, it stays today; not taken up, it is gone after that. Only 好 here makes the system ask.
+const ladderLine = $('ladder-line');
+let ladderKey = '';
+function showLadder(s) {
+  const memoryInvite = s.ladder?.next === 'memory';
+  const sources = s.kind === 'desktop' && (s.ladder?.next === 'sources' || memoryInvite) && (memoryInvite || s.ladder?.sources === '') && !noticeUp && !(s.ladder?.asking || []).length;
+  const key = `${sources}:${memoryInvite}`;
+  if (key === ladderKey) return;
+  ladderKey = key;
+  ladderLine.replaceChildren();
+  ladderLine.hidden = !sources;
+  if (!sources) return;
+  api('/ladder/seen', { id: memoryInvite ? 'memory' : 'sources' }).catch(() => {});
+  const words = document.createElement('div'), row = document.createElement('div');
+  row.className = 'row';
+  words.textContent = memoryInvite ? '让我看看你在其他助手里聊过的事、日历和提醒事项？以后不用再说一遍。需要的内容会交给你接的模型。' : '你自己记的待办和日程里写到谁，见到TA、开会前我也提你一句。';
+  row.append(button('好', () => { ladderLine.hidden = true; if (memoryInvite) { api('/ladder/memory', { access: 'connected' }); } else { native?.postMessage({ connectSources: true }); } }));
+  ladderLine.append(words, row);
+}
+async function olderDesktop() {
+  if (!onDesktop || desktopLoading || desktopDone || !Number.isFinite(desktopOldest)) return;
+  desktopLoading = true;
+  const generation = gen, log = $('log'), height = log.scrollHeight, top = log.scrollTop;
+  try {
+    const old = await api(`/desktop/history?before=${encodeURIComponent(desktopOldest)}`);
+    if (generation !== gen || !onDesktop) return;
+    if (!old.events?.length) { desktopDone = true; return; }
+    const fragment = document.createDocumentFragment();
+    const day = document.createElement('div'); day.className = 'tip'; day.textContent = old.day; fragment.append(day);
+    old.events.forEach((event) => fragment.append(bubble(event)));
+    desktopOldest = Math.min(...old.events.map((event) => event.at));
+    log.prepend(fragment); log.scrollTop = top + log.scrollHeight - height;
+  } catch {} finally { desktopLoading = false; }
+}
+$('log').addEventListener('scroll', () => { if ($('log').scrollTop < 4) olderDesktop(); });
+$('log').addEventListener('wheel', (event) => { if (event.deltaY < 0 && $('log').scrollTop < 4) olderDesktop(); }, { passive: true });
 
-// ---- things to try: introduce ⌃ pointing and the shortcut where the owner can try them. The empty panel offers one
-// thing that can be done right now; doing it once is how it is learned, and then it is never offered again. No tour, no cards.
-const TRIES = [
-  ['ask', (s) => s.kind !== 'window' ? '看看这段对话，我该怎么回？' : '看看这个窗口，你能帮我做什么？', true],
-  ['point', () => '按住 ⌃，在窗口上点一下或圈一片：我就知道你指的是哪儿。'],
-  ['file', () => '文件和图片可以直接拖到我身上，或者拖进这里。'],
-  ['summon', () => '在任意窗口按 ⌃⌥T，或者把我拖到那个窗口右边：我就过去。'],
-  ['menu', () => '右键点我：换装扮、换模型、看做过的事。'],
-];
-let learned = null, tryTurn = 0, tryShown = '';
-window.setLearned = (names) => { learned = new Set(names); tryShown = ''; };
+// ---- one thing to try: the empty panel of a window or a chat offers asking about it, one tap, until it has been done once.
+// Nothing else is taught ahead of time; ⌃ and a ring are said when they would have helped.
+let TRIES = [];
+let learned = null, tryShown = '';
+window.setLearned = (names, catalog) => {
+  learned = new Set(names); tryShown = '';
+  TRIES = (catalog || []).filter(tip => tip.id === 'ask').map(() =>
+    ['ask', (s) => s.kind === 'desktop' ? '' : s.kind !== 'window' ? '看看这段对话，我该怎么回？' : '看看这个窗口，你能帮我做什么？', true]);
+};
 function learn(name) {
   if (!learned || learned.has(name)) return;
   learned.add(name); tryShown = '';
@@ -796,9 +1101,8 @@ function sayRing() {
 }
 function showTry(s) {
   const left = learned && s.chat && !noticeUp ? TRIES.filter(([name]) => !learned.has(name)) : [];
-  // The first ask comes before everything else; the rest take turns, one each time the panel opens.
-  const pick = !left.length ? null : left[0][0] === 'ask' ? left[0] : left[tryTurn % left.length];
-  const text = pick ? pick[1](s) : '';
+  const text = left.length ? left[0][1](s) : '';
+  const pick = text ? left[0] : null;
   if (text === tryShown) return;
   tryShown = text;
   tryLine.replaceChildren();
@@ -818,14 +1122,17 @@ let keyForm = false, keyDraft = { service: '', key: '', base_url: '', model: '' 
 // Or the office agent they already use (WorkBuddy, Qoder, 千问办公), on the login its app keeps: picked here when there are several.
 let officeChecking = '';  // which office agent's login is being read
 const PERMISSION_WORDS = {
-  accessibility: ['还差一步：打开“辅助功能”', '在系统设置的“辅助功能”列表里打开 Tako 的开关（不是“终端”），它才能操作这个窗口。打开后这张卡自己会消失。'],
-  screen: ['还差一步：打开录屏权限', '在系统设置的“录屏与系统录音”列表里打开 Tako 的开关，它才能看见这个窗口。打开后 Tako 会自己重开一次。'],
+  accessibility: ['还差一步：打开“辅助功能”', '在系统设置的“辅助功能”里打开 Tako 的开关，我才能帮你动窗口。开了这张卡自己就走。'],
+  screen: ['还差一步：打开“录屏与系统录音”', '在系统设置的“录屏与系统录音”里打开 Tako 的开关，我才能看见窗口。列表里没有 Tako，就点列表下面的“+”，在“应用程序”里选它。开了我会自己重开一次。'],
 };
 // The switch was opened a while ago and the system still says no: its record of Tako is stale, and clearing it is the fix.
 const STALE_AFTER = 12000;
 let permissionAsked = {}, repaired = null;
+let notificationNeeded = false, filePermissionNeeded = false;
+window.setFilePermissionNeeded = (needed) => { filePermissionNeeded = needed; showNotice(); };
+window.setNotificationNeeded = (needed) => { notificationNeeded = needed; showNotice(); };
 function askPermission(which) {
-  permissionAsked[which] = Date.now();
+  permissionAsked[which] = performance.now();
   native?.postMessage({ settings: which });
   showNotice();
   setTimeout(showNotice, STALE_AFTER + 100);
@@ -837,11 +1144,12 @@ let permissionState = { screen: '', adhoc: false, screenRepaired: null, accessRe
 window.setPermissionState = (state) => { permissionState = { ...permissionState, ...state }; showNotice(); };
 const ADHOC_HINT = '自己编译的 Tako 每次重新编译都会这样，用固定的证书签名就不会（见 docs/BUILDING.md）。';
 const SETUP_WORDS = {
-  install: ['还差一步：装上 Codex', 'key 已经存好了。用 key 要先装上 OpenAI 开源的 Codex，免费。', '安装 Codex', '正在装 Codex，大约一分钟…'],
-  update: ['还差一步：更新 Codex', '这台电脑上的 Codex 太旧，Tako 用不了它。更新后不用重新登录。', '更新 Codex', '正在更新 Codex，大约一分钟…'],
+  install: ['还差一步：装个小帮手', '密钥存好了。装好免费的小帮手就能开始，大约一分钟。', '装上', '正在装，大约一分钟…'],
+  update: ['还差一步：更新小帮手', '我跟模型说话用的那个小帮手太旧了。更新后不用重新登录。', '更新', '正在更新，大约一分钟…'],
   login: ['还差一步：接上一个模型', '', '', '在浏览器里确认，好了这里会自动继续…'],
-  config: ['还差一步：修好 Codex 的设置', 'Codex 读不了自己的设置文件，所以登录不上。可以把它改个名留在原处（不删），Codex 用默认设置继续。', '改名并继续'],
+  config: ['还差一步：修一下设置', '我跟模型说话用的那个小帮手读不懂自己的设置文件，所以登不上。可以把那个文件改个名留在原处（不删），用默认设置继续。', '改名并继续'],
   office: ['还差一步：接上 {name}', '', '再试一次'],
+  finding: ['看看这台 Mac 上有没有现成的登录…', '', '', '一会儿就好。'],
 };
 // The first card asks one thing: an account or a key. An account is an office agent found on this Mac, or ChatGPT last.
 function useName(name, tail = '') { const gap = /^[A-Za-z]/.test(name) ? ' ' : ''; return `用${gap}${name}${tail ? gap + tail : ''}`; }
@@ -865,7 +1173,7 @@ function showLoginChoices(box) {
   // Every way in is one tap from here: what this Mac is already logged in to comes first.
   const rows = [...offices.map((o) => ({ id: o.id, name: useName(o.name), line: '这台 Mac 上已经装了，用你在它那里的登录和积分', go: () => useOffice(o.id) })),
     { id: 'chatgpt', name: '用 ChatGPT 登录', line: 'ChatGPT 会员，在浏览器里确认', go: () => api('/setup/next', {}).then(setSetup) },
-    { id: 'key', name: '用 API key', line: 'DeepSeek、通义千问、Kimi、智谱，或中转站', go: () => { keyForm = true; showNotice(); } }];
+    { id: 'key', name: '用自己的密钥', line: 'DeepSeek、通义千问、Kimi、智谱等，粘贴就行', go: () => { keyForm = true; showNotice(); } }];
   for (const r of rows) {
     const failed = !!setup.error && setup.error_for === r.id && officeChecking !== r.id;
     box.append(choice(r.name, officeChecking === r.id ? '核对登录中…' : failed ? setup.error : r.line, r.go, failed));
@@ -893,13 +1201,13 @@ function showNotice() {
   const box = $('notice');
   const pending = setup && setup.step !== 'ready';
   const permission = !canMove ? 'accessibility' : !canRead ? 'screen' : null;
-  const stale = !!permission && !!permissionAsked[permission] && Date.now() - permissionAsked[permission] > STALE_AFTER
+  const stale = !!permission && permissionAsked[permission] !== undefined && performance.now() - permissionAsked[permission] > STALE_AFTER
     && (permission === 'accessibility' || permissionState.screen === 'off');
-  const key = JSON.stringify([permission, stale, repaired, !!permissionAsked.screen, permissionState, pending ? setup : null, update, busy, keyForm, keyChecking, officeChecking]);
+  const key = JSON.stringify([permission, stale, repaired, permissionAsked.screen !== undefined, permissionState, notificationNeeded, filePermissionNeeded, pending ? setup : null, update, busy, keyForm, keyChecking, officeChecking]);
   if (key === noticeKey) return;
   noticeKey = key;
   box.replaceChildren();
-  const up = !!(permission || pending || update);
+  const up = !!(permission || pending || update || notificationNeeded || filePermissionNeeded);
   box.classList.toggle('show', up);
   if (up !== noticeUp) { noticeUp = up; tellCards(); }
   const actions = document.createElement('div');
@@ -933,6 +1241,7 @@ function showNotice() {
     }
     actions.append(button('打开系统设置', () => askPermission(permission), !actions.childElementCount));
     box.append(noticeLine('title', title), noticeLine('body', body), actions);
+    if (setup) openForStep(permission);   // only once the model is known to be there: a new install opens on the model card first
     return;
   }
   if (pending && !updateFirst && (setup.step === 'key' || (setup.step === 'login' && keyForm && !setup.busy))) {
@@ -959,6 +1268,18 @@ function showNotice() {
       actions.append(button('取消', () => api('/setup/cancel', {}).then(setSetup)));
       box.append(actions);
     }
+    return;
+  }
+  if (!update && filePermissionNeeded) {
+    box.append(noticeLine('title', '检查文件与文件夹权限'), noticeLine('body', 'Tako 读不到这个文件。请检查系统设置中 Tako 对桌面、文稿和下载的权限，以及文件本身的权限。'));
+    actions.append(button('关闭', () => { filePermissionNeeded = false; showNotice(); }));
+    actions.append(button('打开系统设置', () => { filePermissionNeeded = false; askPermission('files'); }, true));
+    box.append(actions); return;
+  }
+  if (!update && notificationNeeded) {
+    box.append(noticeLine('title', '打开通知，提醒才不会错过'), noticeLine('body', '在系统通知设置里允许 Tako 发通知；开启后这里会自动恢复。'));
+    actions.append(button('打开系统设置', () => askPermission('notifications'), true));
+    box.append(actions);
     return;
   }
   if (!update) return;
@@ -992,7 +1313,7 @@ function showNotice() {
     notes.className = 'notes';
     notes.append(renderMarkdown(update.notes || ''));
     box.append(notes);
-    actions.append(button('知道了', () => say('dismiss'), true));
+    actions.append(button('关闭', () => say('dismiss'), true));
     box.append(actions);
   }
 }
@@ -1018,9 +1339,9 @@ function showKeyForm(box, actions) {
   if (!services.some((s) => s.id === keyDraft.service)) keyDraft.service = setup.service || services[0]?.id || '';
   const chosen = services.find((s) => s.id === keyDraft.service) || {};
   const custom = keyDraft.service === 'custom';
-  box.append(noticeLine('title', '用你自己的模型 key'), noticeLine('body', custom
-    ? '任何支持 OpenAI Responses 接口的服务商或中转站都行。填地址和 key，Tako 会列出能用的模型。'
-    : '选一家，粘贴它的 API key，Tako 会自己核对。按那一家的价格计费，key 只存在这台 Mac 上。'));
+  box.append(noticeLine('title', '用你已有的账号'), noticeLine('body', custom
+    ? '填服务地址和密钥，我会列出能用的模型。'
+    : '选你用的服务，粘贴它给你的密钥，我来核对。费用按那家的价格算，密钥只存在这台 Mac 上。'));
   const chips = document.createElement('div');
   chips.className = 'chips';
   for (const s of services) {
@@ -1038,7 +1359,7 @@ function showKeyForm(box, actions) {
   };
   box.append(chips);
   if (custom) box.append(field('地址，比如 https://api.example.com/v1', 'base_url'));
-  const input = field(`粘贴 ${custom ? '' : (chosen.name || '') + ' 的 '}API key`, 'key', 'password');
+  const input = field(`粘贴 ${custom ? '' : (chosen.name || '') + ' 的 '}密钥`, 'key', 'password');
   input.onpaste = () => setTimeout(() => {
     keyDraft.key = input.value.trim();
     const guess = guessService(keyDraft.key);
@@ -1058,7 +1379,7 @@ function showKeyForm(box, actions) {
     } else box.append(field('模型名', 'model'));
   } else if (custom && setup.error && !setup.models?.length && /模型名/.test(setup.error)) box.append(field('模型名', 'model'));
   if (!custom) {
-    const get = noticeLine('get', `还没有 ${chosen.name || ''} 的 key？去创建一个 →`);
+    const get = noticeLine('get', `还没有 ${chosen.name || ''} 的密钥？去创建一个 →`);
     get.onclick = () => { if (native) native.postMessage({ openURL: chosen.page }); else window.open(chosen.page); };
     box.append(get);
   }
@@ -1074,11 +1395,19 @@ function showKeyForm(box, actions) {
 }
 // Which service the owner's key is for ('' with a ChatGPT login), told to the goo: a DeepSeek key puts on the little whale.
 let gooService = null;
-// A new install has no model yet and nobody has told its owner the panel exists: it opens once by itself, on the step that is missing.
-let askedToOpen = false;
+// A step Tako can't work without (a model, then each switch) and nobody has told its owner the panel exists: it opens once by
+// itself for each, on the step that is missing (`openForStep`). The model ready, the app asks for the one next step (a switch).
+let openedFor = new Set(), foundTold = false;
+function openForStep(step) {
+  if (!step || openedFor.has(step)) return;
+  openedFor.add(step); native?.postMessage({ needsSetup: true });
+}
 function setSetup(next) {
   const waiting = (s) => !!s && s.step !== 'ready' && !s.choosing;
-  if (waiting(next) && !askedToOpen) { askedToOpen = true; native?.postMessage({ needsSetup: true }); }
+  if (waiting(next) && next.step !== 'finding') openForStep('model');
+  // A login this Mac already had was taken up: said once, nothing to press.
+  if (next?.found && !foundTold) { foundTold = true; const line = document.createElement('div'); line.className = 'tip'; line.textContent = `用的是你在 ${next.found} 的登录，已经接上了。`; $('log').append(line); }
+  if (next?.step === 'ready' && setup && setup.step !== 'ready') native?.postMessage({ nextStep: true });
   setup = next; showNotice();
   if (!['ready', 'key', 'login'].includes(next?.step)) return;
   const service = next.service || '';
@@ -1097,10 +1426,25 @@ async function checkSetup() {
   setTimeout(checkSetup, setup && setup.step === 'ready' ? 60000 : 2000);
 }
 
+// The app says when the chat open in a chat app changed (`tickSoon`), so a switch shows as soon as it is known, not on the next round.
+let tickTimer = 0, ticking = false, tickAgain = false, looking = false;
 async function tick() {
-  try { show(await api(`/state?after=${seen}`)); } catch { setText($('tick'), '连接中断'); }
-  setTimeout(tick, busy ? 250 : 1200);
+  clearTimeout(tickTimer);
+  if (ticking) { tickAgain = true; return; }
+  ticking = true;
+  try { const s = await api(`/state?after=${seen}`); show(s); looking = !!s.looking; } catch { setText($('tick'), '连接中断'); }
+  ticking = false;
+  if (tickAgain) { tickAgain = false; return tick(); }
+  tickTimer = setTimeout(tick, busy || looking ? 250 : 1200);
 }
+window.tickSoon = (ms) => { clearTimeout(tickTimer); tickTimer = setTimeout(tick, ms || 0); };
+// Opened onto a conversation it was just switched to (the desktop one, one from the history): the page reads it first,
+// so the card grows with the right conversation in it rather than the one before, emptied and filled.
+window.openFresh = async () => {
+  for (let i = 0; ticking && i < 40; i++) await new Promise((done) => setTimeout(done, 25));
+  await tick();
+  window.setOpen(true);
+};
 tick();
 checkSetup();
 checkStatistics();
@@ -1269,9 +1613,22 @@ $('f').onsubmit = async (e) => {
     // Never lose what the owner wrote: it goes back in the box.
     $('say').value = text; attachments = files; points = pointed; showAttached(); grow();
     showError('没发出去，Tako 的后台刚才断了一下，再按一次试试。', true);
+    if (aside) openAside();
   }
 };
+// The speaking key's words (spoken, or typed in its bubble): sent by the same send as the box, with whatever is circled or
+// attached here, so they come in as the newest line just as typed ones do. Anything half-typed in the box stays there.
+// `beside`: on the desktop with the panel closed, the answer goes to the bubble (`takeAside`).
+window.sayFromKey = (text, beside) => {
+  if (beside && !opened) startAside(text);
+  const typed = $('say').value;
+  $('say').value = text;
+  $('f').requestSubmit();
+  if (!$('say').value) { $('say').value = typed; grow(); updateSend(); }
+  if (beside) window.tickSoon?.(300);
+};
 $('add').onclick = () => { native?.postMessage({ pickFiles: true }); };
+$('fold').onclick = () => window.setOpen(false);
 $('who').onclick = () => {
   if (!document.body.classList.contains('wechat')) return;
   $('picker').classList.toggle('show');

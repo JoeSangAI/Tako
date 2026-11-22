@@ -104,8 +104,8 @@ class Wardrobe(unittest.TestCase):
         for body in ("tentacle", "whaleLimbs", "maidPose", "handPaths", "mode == .attached", "mode == .open", "holdingOn"):
             self.assertNotIn(body, code)
         arms = (ROOT / "Sources/native/Goo.swift").read_text()
-        start = arms.index("func drawArms()")
-        self.assertNotIn("isWhale", arms[start:arms.index("arms.path = joined", start)])
+        start = arms.index("func limbsPath(at time: Double)")   # the legs and the reaching limb, as drawArms draws them
+        self.assertNotIn("isWhale", arms[start:arms.index("return joined", start)])
         self.assertNotIn("drawWhaleFace", (ROOT / "Sources/native/GooDrawing.swift").read_text())
 
     def test_the_outfit_changes_nothing_but_the_look(self):

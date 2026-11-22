@@ -43,11 +43,13 @@ private let pointingCallback: CGEventTapCallBack = { _, type, event, refcon in
 extension Controller {
     // MARK: listening
 
-    /// Needs Accessibility, so it starts once that is there. Only presses, drags and scrolls: never a key.
+    /// Needs Accessibility. Pointer gestures are intercepted only for ⌃; the speaking key observes modifiers and passes unrelated keys on.
     func installPointing() {
-        guard pointTap == nil, trusted, !selfTest else { return }
-        let mask = (1 << CGEventType.leftMouseDown.rawValue) | (1 << CGEventType.leftMouseDragged.rawValue)
-            | (1 << CGEventType.leftMouseUp.rawValue) | (1 << CGEventType.scrollWheel.rawValue)
+        guard pointTap == nil, trusted, !selfTest, !measuring else { return }
+        let types: [CGEventType] = [.leftMouseDown, .leftMouseDragged, .leftMouseUp, .scrollWheel,
+                                    .rightMouseDown, .otherMouseDown, .rightMouseDragged, .otherMouseDragged,
+                                    .flagsChanged, .keyDown]
+        let mask = types.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << $1.rawValue) }
         guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
                                           eventsOfInterest: CGEventMask(mask), callback: pointingCallback,
                                           userInfo: Unmanaged.passUnretained(self).toOpaque()) else {
@@ -64,7 +66,7 @@ extension Controller {
 
     /// ⌃ alone: with ⌘, ⌥ or ⇧ it is some other shortcut.
     func onlyControl(_ flags: CGEventFlags) -> Bool {
-        flags.contains(.maskControl) && !flags.contains(.maskCommand) && !flags.contains(.maskAlternate) && !flags.contains(.maskShift)
+        flags.contains(.maskControl) && !flags.contains(.maskSecondaryFn) && !flags.contains(.maskCommand) && !flags.contains(.maskAlternate) && !flags.contains(.maskShift)
     }
 
     /// On the window it is stuck to, and that window is the one showing there: not a window lying over it.
@@ -81,7 +83,19 @@ extension Controller {
         }
         if event.getIntegerValueField(.eventSourceUserData) == ownPress { return pass }
         let at = event.location
+        if [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(type) { noteArrival() }
+        if type == .flagsChanged || type == .leftMouseDown { wakeLoop("tap") }   // ⌃ pointing shows its ink on the next frame
+        // A press on the chat app's own window may open another chat; typing or scrolling there may too (a search), but only a press says so at once.
+        if [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel].contains(type) { noteHeaderActivity(switching: type == .leftMouseDown && pointerOnTarget) }
+        if [.leftMouseDown, .leftMouseDragged, .rightMouseDown, .rightMouseDragged, .otherMouseDown, .otherMouseDragged, .scrollWheel].contains(type) { speaking.pointerActivity() }
+        if [.leftMouseDown, .rightMouseDown].contains(type) { speaking.pressed(at: at) }   // a press elsewhere puts an answer away
         switch type {
+        case .flagsChanged:
+            speaking.flags(event)
+            return pass
+        case .keyDown:
+            if speaking.keyDown(event) { return nil }
+            return pass
         case .scrollWheel:
             // The page moved under the rings: they no longer mark anything, but what they found stays in the panel.
             if target?.frame.contains(at) == true {

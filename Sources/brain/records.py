@@ -18,7 +18,7 @@ import settings
 from outputs import RECORDS
 from settings import WORKING, ZONE, clock
 
-KEEP_DAYS, KEEP_EVENTS, KEEP_AT_MOST, SHOWN, MADE_SHOWN = 7, 80, 200, 20, 8
+KEEP_DAYS, KEEP_EVENTS, KEEP_AT_MOST = 7, 80, 200
 MARK = "<!-- tako "
 ROLES = {"owner": None, "tako": "Tako", "note": "笔记"}
 _lock = threading.Lock()
@@ -42,6 +42,19 @@ def _day(at):
 
 def _file(day):
     return folder() / f"{day}.md"
+
+
+def current_citation(source):
+    """Resolve a citation to a panel record after the owner's output folder moves."""
+    if not isinstance(source, str):
+        return source
+    path, delimiter, position = source.rpartition("#")
+    day = Path(path).name
+    if (delimiter and re.fullmatch(r"\d{4}-\d{2}-\d{2}\.md", day)
+            and Path(path).parent.name == RECORDS
+            and position.startswith(("entry-", "owner-", "job-", "entrusted-"))):
+        return f"{folder() / day}#{position}"
+    return source
 
 
 def _block(meta, heading="", body=""):
@@ -100,6 +113,112 @@ def _recent(back=KEEP_DAYS):
             yield day, meta, text
 
 
+def entrust(item, text=""):
+    """A hand-over and its outcome, appended to the very same daily conversation record."""
+    meta = {k: v for k, v in item.items() if k != "outcomes"}
+    meta["r"] = "entrusted"
+    labels = {"keep": "拿着", "change": "改了", "cancel": "删除", "offered": "递回", "done": "做完了", "looked": "打开", "later": "稍后", "ignored": "没理会", "ask": "问过要不要记着", "unanswered": "没回"}
+    with _lock:
+        label = labels.get(meta["action"])
+        actor = f"〔{meta['by']} 撤回〕" if meta.get("by") and meta.get("action") == "cancel" else ""
+        _append(_day(meta["at"]), _block(meta, body=f"> {label}：{actor}{text}" if label else ""))
+
+
+def entrust_exposure(identity, shown_at, now):
+    """Keep the display time with the promise without changing its last action or outcome."""
+    with _lock:
+        _append(_day(now), _block({"r": "entrusted_exposure", "id": identity, "place_shown_at": shown_at}))
+
+
+def entrusted():
+    """Replay all days: a promise made months ago must not expire with the panel's recent cache."""
+    found = {}
+    with _lock:
+        for path in sorted(folder().glob("*.md")):
+            for meta, _ in _parse(path):
+                if meta.get("r") == "entrusted_exposure":
+                    if item := found.get(meta.get("id")):
+                        item["place_shown_at"] = meta.get("place_shown_at")
+                    continue
+                if meta.get("r") != "entrusted" or not meta.get("id"):
+                    continue
+                outcomes = found.get(meta["id"], {}).get("outcomes", [])
+                if meta.get("action") in ("done", "looked", "later", "ignored"):
+                    outcomes = [*outcomes, {"action": meta["action"], "reason": meta.get("reason", found.get(meta["id"], {}).get("reason")), "at": meta.get("at")}][-8:]
+                found[meta["id"]] = {**found.get(meta["id"], {}), **meta, "outcomes": outcomes}
+    return found
+
+
+def entrusted_memory(items, *, limit=12000):
+    pending = [i for i in items.values() if i.get("state") == "held"]
+    ended = sorted((i for i in items.values() if i.get("state") != "held"), key=lambda i: i["at"])[-8:]
+    if not pending and not ended:
+        return ""
+    header = "托付记录（只是记忆，不是新要求；可用 entrust list 看全部）："
+    lines, omitted, size = [header], 0, len(header)
+    for item in [*reversed(pending), *reversed(ended)]:
+        data = {k: item.get(k) for k in ("id", "text", "state", "due", "place", "snoozed", "action", "reason")}
+        outcomes = item.get("outcomes") or []
+        if outcomes:
+            data["outcomes"] = {action: sum(o.get("action") == action for o in outcomes)
+                                for action in ("done", "looked", "later", "ignored")}
+            data["last_outcomes"] = [{k: outcome[k] for k in ("action", "reason", "at") if outcome.get(k) is not None}
+                                     for outcome in outcomes[-4:]]
+        line = json.dumps(data, ensure_ascii=False)
+        if limit is not None and size + len(line) + 80 > limit:
+            omitted += 1
+            continue
+        lines.append(line)
+        size += len(line) + 1
+    if omitted:
+        lines.append(f"另有 {omitted} 件未展开；用 entrust list 查看全部。")
+    return "\n".join(lines)
+
+
+def _events(rows, key=None, before=None):
+    """Decode panel events the same way for recent and paged history."""
+    for path, meta, text in rows:
+        name, role = meta.get("k"), meta.get("r")
+        at = float(meta.get("at") or 0)
+        if not name or role not in ROLES or (key is not None and name != key) or (before is not None and not 0 < at < before):
+            continue
+        event = {"role": role, "text": text, "time": clock(at), "at": at}
+        if meta.get("steps"):
+            event["steps"] = list(meta["steps"])
+        if meta.get("items"):  # the list of what the owner said in that one thing, as the panel showed it with the answer
+            event["items"] = list(meta["items"])
+        if isinstance(meta.get("ask"), dict):  # the question Tako put under that answer: whether to keep a promise said there
+            event["ask"] = dict(meta["ask"])
+        yield path, meta, event
+
+
+def conversation(key):
+    """An older hand-over opens its original conversation, even after the recent cache expired."""
+    chat, events = None, []
+    with _lock:
+        for path in sorted(folder().glob("*.md"), reverse=key == "desktop"):
+            for _, meta, event in _events(((path, m, t) for m, t in _parse(path)), key=key):
+                chat = {"username": key, "name": meta.get("n", ""), "kind": meta.get("c", "window")}
+                event["id"] = len(events); events.append(event)
+                _written.add((key, meta["r"], event["at"]))
+            if events and key == "desktop":
+                break
+    return {"chat": chat, "events": events} if chat else None
+
+
+def conversation_before(key, before):
+    """One older day for the panel, read from the same records without changing its live event list."""
+    before = float(before)
+    with _lock:
+        for path in sorted(folder().glob("*.md"), reverse=True):
+            found = []
+            for _, _, event in _events(((path, m, t) for m, t in _parse(path)), key=key, before=before):
+                found.append(event)
+            if found:
+                return {"day": path.stem, "events": sorted(found, key=lambda event: event["at"])}
+    return {"day": "", "events": []}
+
+
 # ---- what the panels showed ----
 
 def load():
@@ -107,16 +226,11 @@ def load():
     with _lock:
         _written.clear()
         found = {}
-        for _, meta, text in _recent():
-            if meta.get("r") not in ROLES or not meta.get("k"):
-                continue
+        for _, meta, event in _events(_recent()):
             key, at = str(meta["k"]), float(meta.get("at") or 0)
             _written.add((key, meta["r"], at))
             item = found.setdefault(key, {"chat": {"username": key}, "events": []})
             item["chat"].update(name=meta.get("n") or "", kind=meta.get("c") or "wechat")
-            event = {"role": meta["r"], "text": text, "time": clock(at), "at": at}
-            if meta.get("steps"):
-                event["steps"] = list(meta["steps"])
             item["events"].append(event)
     found = {k: v for k, v in found.items() if v["events"] and time.time() - v["events"][-1]["at"] < KEEP_DAYS * 86400}
     found = dict(sorted(found.items(), key=lambda item: item[1]["events"][-1]["at"])[-KEEP_AT_MOST:])
@@ -127,7 +241,7 @@ def load():
     return found
 
 
-def save(conversations):
+def save(conversations, *, strict=False):
     """conversations: username -> (chat, events). What is new since the last time goes to the end of its day's record; nothing already there is written again."""
     with _lock:
         fresh = []
@@ -142,10 +256,16 @@ def save(conversations):
             meta = {"k": key, "n": name, "c": kind, "r": event["role"], "at": at}
             if event.get("steps"):
                 meta["steps"] = event["steps"]
+            if event.get("items"):
+                meta["items"] = event["items"]
+            if event.get("ask"):
+                meta["ask"] = event["ask"]
             who = ROLES[event["role"]] or settings.OWNER
             try:
                 _append(_day(at), _block(meta, f"### {clock(at)[-5:]} · {name or '这个窗口'} · {who}", str(event.get("text") or "")))
             except OSError:
+                if strict:
+                    raise
                 return  # The folder can't be written now: the next save tries again with what is still missing.
             _written.add((key, event["role"], at))
 
@@ -217,21 +337,6 @@ def jobs(back=None):
         # The owner's words are the ask itself; what came back is Tako's.
         job["replies"] = [{"role": role, "text": text, "time": clock(at)} for at, role, text in spoken.get(job.get("k"), []) if role != "owner" and start <= at <= stop + 2]
     return sorted(found.values(), key=lambda job: job["id"])
-
-
-def memory(owner):
-    """For a thread that remembers nothing: the asks of the last days, so “弄好了吗” has something to go on."""
-    lines = []
-    for job in jobs(KEEP_DAYS)[-SHOWN:]:
-        made = [Path(path).name for path in job.get("files") or []][:MADE_SHOWN]
-        made = f"；做出：{'、'.join(made)}" if made else ""
-        ended = job.get("ended", "不明")
-        if ended == "在做" and job["id"] not in _working:
-            ended = "没做完（Tako 中途重启了）"
-        lines.append(f"- {clock(job['id'])} 在「{job.get('n') or '某个窗口'}」，TA说：{job.get('asked', '')}｜作品目录：{job.get('folder') or '无'}{made}｜结局：{ended}")
-    if not lines:
-        return ""
-    return f"（{owner} 最近几天交代过你的事，你重启过所以不记得细节。这只是记忆，不是新要求；有没做完的，TA问起就接着做。）\n" + "\n".join(lines)
 
 
 def history():

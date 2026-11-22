@@ -47,6 +47,11 @@ class Setup:
         self.choosing = False  # The owner opened 模型设置 from the menu: the first card again, over a model that already works.
         self.seen = set()  # The steps shown since Tako started, each counted once (`_count`).
         self.outdated = False  # A turn was refused because this Codex is older than the model it is set to needs: only an update gets past that.
+        # Reuse an active Codex or office-agent login without asking. Check the office-agent login once per run,
+        # and the panel only says what was used. Never in an isolated run: a test must not take up this Mac's real logins.
+        self.adopt = not os.environ.get("TAKO_HOME")
+        self.finding = False  # looking at the office agents' logins on disk (a few seconds at most), once
+        self.found = ""       # the one taken up this run, for the panel to say so once
 
     def offices(self):
         return [{"id": key, "name": office.AGENTS[key]["name"]} for key in office.installed()]
@@ -86,7 +91,7 @@ class Setup:
             if problem or self.office_refused:
                 return {"step": "office", "busy": False, "error": self.failed or problem or office.stale_login(agent).replace("然后再说一次", "然后点“再试一次”"),
                         "office": agent["id"], "name": agent["name"], "offices": self.offices()}
-            return {"step": "ready", "busy": False, "error": "", "service": agent["id"]}
+            return {"step": "ready", "busy": False, "error": "", "service": agent["id"], **({"found": self.found} if self.found else {})}
         codex = find_codex()
         if (not codex and _installed()) or (codex and self.outdated):
             return {"step": "update", "busy": False, "error": self.failed}
@@ -104,8 +109,27 @@ class Setup:
             return {"step": "ready", "busy": False, "error": ""}
         if self.broken:
             return {"step": "config", "busy": False, "error": self.broken}
+        if self.adopt and not self.working:
+            self.adopt, self.finding = False, True
+            threading.Thread(target=self._adopt, daemon=True).start()
+        if self.finding:
+            return {"step": "finding", "busy": True, "error": ""}
         # The first card: an account (an office agent on this Mac, or ChatGPT, which Codex is installed for when it is picked) or a key.
         return {"step": "login", "busy": False, "error": self.failed, "error_for": self.failed_for, "services": provider.services(), "models": self.models, "offices": self.offices()}
+
+    def _adopt(self):
+        """An office agent on this Mac already logged in becomes the brain, as if picked: its login read from disk, at no cost."""
+        try:
+            for agent in office.installed():
+                found = {**office.AGENTS[agent], "id": agent}
+                if not office.problem(found):
+                    office.save(agent)
+                    self._count("ok.adopted")
+                    self.found = found["name"]
+                    self.companion.submit(self.companion.start_over())
+                    return
+        finally:
+            self.finding = False
 
     def current_name(self):
         """What the turns run on now, in the words of the first card."""
@@ -153,6 +177,7 @@ class Setup:
 
     def use_office(self, agent):
         """An office agent on this Mac as the brain, only from the panel's button. Its login is read first, at no cost, and kept only if it is good."""
+        self.adopt = False
         if agent not in office.installed():
             self.failed = "这台 Mac 上没找到它。"
             return False
@@ -172,10 +197,11 @@ class Setup:
     def use_key(self, service, key, base_url="", model=""):
         """The owner's own key, only from the panel's button: a service in `provider.PRESETS`, or any address that speaks Responses (`custom`, a relay).
         Checked first, at no cost, so a wrong one says so now; the models the service offers come back for the owner to pick from."""
+        self.adopt = False
         key = (key or "").strip()
         self.models = []
         if (service not in provider.PRESETS and service != "custom") or not key:
-            self.failed = "选一家，再把 key 粘进来。"
+            self.failed = "选你用的服务，再粘贴密钥。"
             return False
         problem, self.models = provider.check(service, key, base_url, model)
         if problem:
@@ -196,6 +222,7 @@ class Setup:
 
     def use_login(self):
         """Back to a ChatGPT login: the key Tako kept is gone from this Mac, and so is the choice of an office agent."""
+        self.adopt = False
         provider.forget()
         office.forget()
         self.failed, self.key_refused, self.office_refused, self.logged_in, self.checked, self.choosing = "", False, False, None, 0.0, False
@@ -285,7 +312,7 @@ class Setup:
 
     def _install(self):
         if subprocess.run(["/bin/sh", "-c", self.INSTALL], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=600, env={**os.environ, "CODEX_NON_INTERACTIVE": "1"}).returncode:
-            self.failed = "Codex 没装上，检查网络后再试一次。"
+            self.failed = "小帮手没装上，检查网络后再试一次。"
             self._count("failed.install")
             return False
         return True
@@ -355,7 +382,7 @@ def _why_login_failed(said):
     if "already in use" in text:
         return "登录要用的本机端口被别的程序占着。退出其他正在登录的 Codex，再点登录。"
     if "Token exchange failed" in text or "error sending request" in text:
-        return "Codex 连不上 OpenAI，登录没有完成。检查网络或代理，再点登录。"
+        return "连不上 ChatGPT，登录没有完成。检查网络或代理，再点登录。"
     if "not completed" in text or "timed out" in text or "cancelled" in text:
         return "浏览器那边没有完成登录。再点一次登录，在打开的页面里确认。"
     if not words:

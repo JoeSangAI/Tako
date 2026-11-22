@@ -64,6 +64,7 @@ extension Controller {
 
     /// The owner made the window fill the screen while the panel is open (the green button, a window manager).
     func shareScreen() {
+        guard !desktopPanel else { return }
         guard sideOpen, let frame = target?.frame, let visible = visibleFrame(of: frame),
               frame.width + min(wanted, sidePanelWidth) > visible.width + 1 else { return }
         // Tako is taking it out of full screen itself; on a slow display AXFullScreen still reads true for a while (issue #1).
@@ -74,8 +75,13 @@ extension Controller {
     }
 
     func isFullScreen(_ window: AXUIElement) -> Bool {
+        fullScreenFlag(window) ?? false
+    }
+
+    func fullScreenFlag(_ window: AXUIElement) -> Bool? {
         var value: CFTypeRef?
-        return AXUIElementCopyAttributeValue(window, "AXFullScreen" as CFString, &value) == .success && value as? Bool == true
+        guard AXUIElementCopyAttributeValue(window, "AXFullScreen" as CFString, &value) == .success else { return nil }
+        return value as? Bool
     }
 
     func axFrame(_ window: AXUIElement) -> CGRect? {
@@ -153,6 +159,7 @@ extension Controller {
 
     /// Slides the window left, and if it fills the screen, narrows it too: the two share the screen rather than overlap.
     func makeRoom(animated: Bool) {
+        guard !desktopPanel else { return }
         guard sideOpen, trusted, let frame = target?.frame, let visible = visibleFrame(of: frame) else { return }
         if let window = axWindow(), isFullScreen(window) { leaveFullScreen(window); return }
         if homeX != nil && !stillWherePut(frame) { homeX = nil }

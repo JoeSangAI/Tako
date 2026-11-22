@@ -40,9 +40,26 @@ final class GooView: NSView {
         return owner?.takeFiles(sender) ?? false
     }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-    override func mouseDown(with event: NSEvent) { owner?.goo.press(owner?.mouse() ?? V()) }
+    var handPress: (action: String, offer: String?)?
+    override func mouseDown(with event: NSEvent) {
+        guard let owner else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        if let action = owner.goo.handHit(at: point) {
+            handPress = (action, owner.entrusted.offerID)
+        } else {
+            handPress = nil
+            owner.goo.press(owner.mouse())
+        }
+    }
     override func mouseDragged(with event: NSEvent) {}
-    override func mouseUp(with event: NSEvent) { owner?.goo.release() }
+    override func mouseUp(with event: NSEvent) {
+        if let press = handPress {
+            handPress = nil
+            guard let owner, press.offer == owner.entrusted.offerID else { return }
+            let action = owner.goo.handHit(at: convert(event.locationInWindow, from: nil))
+            if action == press.action { owner.entrusted.tapped(press.action) }
+        } else { owner?.goo.release() }
+    }
     override func rightMouseDown(with event: NSEvent) { owner?.showMenu(event, in: self) }
 }
 
@@ -84,8 +101,8 @@ final class Goo {
     var standingID: Int?, standLeft: CGFloat = 0
     var splatNormal = V(), splatUntil = 0.0, splatAmount: CGFloat = 0
     var dizzyUntil = 0.0, shakes: [Double] = [], lastShakeSign: CGFloat = 0
-    var clicks: [Double] = []
-    var sleeping = false, nextZ = 0.0, zs: [(p: V, life: CGFloat)] = []
+    var taps = Taps(), lastPoke = -1
+    var sleeping = false { didSet { if oldValue && !sleeping { stopDreaming() } } }
     var lean: CGFloat = 0, leanDir = V(1, 0), hoverTime = 0.0
     var tall: CGFloat = 0, tallTime = 0.0, lookTime = 0.0, lookAt = V(), nextAct = 6.0
     let zLayer = CAShapeLayer()
@@ -93,7 +110,17 @@ final class Goo {
     // so body, strands, legs and arms flow into each other like one liquid.
     let liquid = CALayer()
     let sparkleL = CAShapeLayer(), sparkleR = CAShapeLayer(), lidL = CAShapeLayer(), lidR = CAShapeLayer(), swirl = CAShapeLayer()
-    let eyeShadeL = CAShapeLayer(), eyeShadeR = CAShapeLayer(), shade = CAGradientLayer(), shadeMask = CAShapeLayer()
+    let eyeShadeL = CAShapeLayer(), eyeShadeR = CAShapeLayer(), shade = CAGradientLayer(), shadeMask = CALayer(), shadeBody = CAShapeLayer(), shadeLimbs = CAShapeLayer()
+    // Rare, local idle scenes; props belong to the same soft body in every outfit.
+    var idleScene = "", idleAt = 0.0, nextIdleScene = 90.0, lastIdleScene = -1
+    var dockDestination: V?
+    /// Its place at the open desktop panel's corner (Controller `seatGoo`): it holds there and does nothing of its own until the panel goes.
+    var seat: V? { didSet { if (seat == nil) != (oldValue == nil) { seatAsked = clock } } }
+    var seatAsked = 0.0   // when it was last told to go to its seat, or let go of it
+    static let seatSpeed: CGFloat = 1100   // points a second, at most, on the way to the seat
+    var idleSide: CGFloat = 1, idleShape = 0, idleTouched = false, idleGoal: V?
+    var idleDoodleOrigin = V()
+    let idleInk = CAShapeLayer(), idleLines = CAShapeLayer(), idleLight = CAShapeLayer()
     // mischief
     let arms = CAShapeLayer(), inkLayer = CAShapeLayer(), outline = CAShapeLayer()
     let costume = Costume()
@@ -120,6 +147,13 @@ final class Goo {
     var candidateID: Int?
     var latch: (from: V, start: Double)?  // just set down on an edge: where it touched, and when
     static let latchHold = 0.14, latchSlide = 0.46
+    var bubbleGoal: V?       // the edge of a nearby ink bubble, held by the body
+    // The owner is speaking to it: where the words bubble is, and how loud they are now (0...1). No limb goes out for this:
+    // the eyes stay on the bubble and the whole body swells a little, evenly, with the voice (Speaking.track).
+    var earTo: V?
+    var earLevel: CGFloat = 0
+    static let earSwell: CGFloat = 0.05   // at the loudest, 5% larger all round
+    let bubbleArm = CAShapeLayer()
     var reachGoal: V?        // somewhere the host wants it to put a limb: an input, a line of text
     // Something far away: the body goes over and puts out a short arm, rather than one long line across the screen.
     static let armReach: CGFloat = 170
@@ -128,11 +162,32 @@ final class Goo {
     var hop: (from: V, start: Double, length: Double)?
     var leap: (id: Int, frame: CGRect, from: V, start: Double, length: Double)?  // over to another window the owner pressed to go to
     var happyUntil = 0.0, oopsUntil = 0.0
+    var carrying = false
+    var silenced = false, tapeAmount: CGFloat = 0, tapeVelocity: CGFloat = 0
+    let tapeLayer = CAShapeLayer(), tapeCross = CAShapeLayer()
+    var heldCount = 0, heldPreview = "", handHovered = false
+    var handPhase = "", handText = "", handAt = 0.0, handSoft = false
+    var handHome: V?, handDeparture: V?
+    let handInk = CAShapeLayer(), handEdge = CAShapeLayer(), handSpecks = CAShapeLayer()
+    let handButtons = CAShapeLayer()
+    let handArmEdge = CAShapeLayer()
+    let handLabel = CATextLayer(), handDone = CATextLayer(), handLater = CATextLayer()
+    var handRect = CGRect.zero, handDoneRect = CGRect.zero, handLaterRect = CGRect.zero
+    var handBurstOrigin = CGPoint.zero
     var happy: Bool { clock < happyUntil }
     var oops: Bool { clock < oopsUntil }
     var onDark = false       // on a dark window the ink needs a light edge to be seen at all
     var surface: CGFloat = 0
     var peakAway: CGFloat = 0  // self-test: furthest the skin got from the centre, in radii
+    // where the face is heading this frame, so the pace can tell when it has got there (`pace`, GooPhysics.swift)
+    var lidGoal: CGFloat = 1, heavyGoal: CGFloat = 0, gazeGoal = V(), leanGoal: CGFloat = 0
+    // Its breath and its dreams are Core Animation's while nothing else moves (`breathe`, `dream`, GooDrawing.swift).
+    let dreams = (0..<2).map { _ in CAShapeLayer() }
+    var ripples: (key: [CGFloat], start: Double, shapes: [CGPath], times: [NSNumber], box: CGRect, shade: [CGPath]?, shadeAt: CGPoint)?
+    var dreamingAt: V?, rippling = false, breathing = false, breathAsleep = false, breathHeld: Double?
+    var handMeasure: (text: String, size: CGFloat, width: CGFloat)?
+    var drawnFace: [CGFloat] = [], drawnArms: [CGFloat] = [], drawnBody: [CGFloat] = [], drawnCostume: [CGFloat] = [], cuts: [Int: (key: [CGFloat], path: CGPath?)] = [:], limbsUnion: (skin: CGPath, limbs: CGPath, whole: CGPath)?
+    var drawCPU = [Double](repeating: 0, count: 8)   // TAKO_PACE_LOG: body/face/costume/bits/arms/hand/shade/commit
 
     init(host: Controller, view: GooView) {
         self.host = host
@@ -179,6 +234,8 @@ final class Goo {
         shade.locations = [0, 0.45, 1]
         shade.startPoint = CGPoint(x: 0.34, y: 0.72)
         shade.endPoint = CGPoint(x: 1.12, y: 1.5)
+        // The light's mask: the body and its limbs as two shapes laid over each other, which covers what their union would.
+        shadeMask.addSublayer(shadeBody); shadeMask.addSublayer(shadeLimbs)
         shade.mask = shadeMask
         root.addSublayer(shade)
         outline.fillColor = nil
@@ -220,10 +277,13 @@ final class Goo {
 
     func target(_ i: Int) -> V {
         let d = dir(i)
-        let breathe = 1 + (sleeping ? 0.04 * sin(CGFloat(clock) * 1.1) : 0.018 * sin(CGFloat(clock) * 1.5))
+        let breathTime = CGFloat(breathHeld ?? clock)   // held while Core Animation breathes for it
+        let breathe = 1 + (sleeping ? 0.04 * sin(breathTime * 1.1) : 0.018 * sin(breathTime * 1.5))
         let bob = trotting ? 0 : creep * (0.1 - 0.05 * costume.dressed) * sin(CGFloat(clock) * 7)   // the whale girl's big head bobs less
         let stretch = (1 + bob) / (1 + tall * 0.28) * (1 + trot * 0.13)
-        var shape = V(d.x * radius * breathe * stretch, d.y * radius * breathe / stretch)
+        // Hearing the owner: the whole outline a touch larger with the voice, evenly, so its shape never changes.
+        let swell = earTo == nil ? 1 : 1 + Goo.earSwell * clamp(earLevel, 0, 1)
+        var shape = V(d.x * radius * breathe * swell * stretch, d.y * radius * breathe * swell / stretch)
         if costume.isWhale {
             // her head is a little wider than it is tall; drawn through the smoothed skin it comes out the full radius across
             shape.x *= 1 + 0.025 * costume.dressed
@@ -287,7 +347,7 @@ final class Goo {
 
     /// Finished something it was asked to do: a little hop, eyes shut with pleasure.
     func celebrate() {
-        guard !sleeping, !dizzy else { return }
+        guard !sleeping, !dizzy, !handOffering else { return }
         happyUntil = clock + 1.5
         pop = 0.6
         kick(110)
@@ -307,6 +367,7 @@ final class Goo {
     func startSleep() {
         sleeping = true
         host.log("asleep")
+        dream()
     }
 
     // MARK: mischief
@@ -324,8 +385,10 @@ final class Goo {
 
     /// Slinks to the nearest screen edge and watches from there with half its face.
     func startPeek() {
-        guard mode == .free, standingID == nil else { return }
-        peekSide = c.x > visible.midX ? 1 : -1
+        guard mode == .free, seat == nil, standingID == nil else { return }
+        let side: CGFloat = c.x > visible.midX ? 1 : -1
+        guard clearIdleEdgePath(side) else { return }
+        peekSide = side
         peekUntil = clock + 26
         ducking = false
         wanderTo = nil
@@ -339,7 +402,7 @@ final class Goo {
 
     /// Zoomies: a few fast runs to and fro along whatever it stands on.
     func startZoomies() {
-        guard mode == .free, settled, !sleeping, !puddle, !dizzy else { return }
+        guard mode == .free, settled, !sleeping, !puddle, !dizzy, !handOffering else { return }
         zoomUntil = clock + 2.8
         happyUntil = zoomUntil   // eyes shut with joy, tongue out
         peekSide = 0
@@ -378,9 +441,13 @@ final class Goo {
     func updateMischief(_ m: V, _ distance: CGFloat, _ dt: CGFloat) {
         let still = clock - lastMoved
         var goal: V?
-        let free = !sleeping && !puddle && peekSide == 0 && !dizzy && !guilty && mode != .grabbed && mode != .open
+        let free = !sleeping && !puddle && peekSide == 0 && !dizzy && !guilty && mode != .grabbed && mode != .open && seat == nil
         var quick: CGFloat = 62
-        if hop != nil || latch != nil {
+        if let held = handGoal, handOffering || (hop == nil && latch == nil && reachGoal == nil) {
+            goal = held
+            armStrand = 2
+            quick = 170 * handScale
+        } else if hop != nil || latch != nil {
             goal = nil                          // limbs in while it is in the air, or sliding into its place
         } else if let asked = reachGoal {
             goal = asked                        // it has been asked to touch something over there
@@ -400,7 +467,7 @@ final class Goo {
         } else if state == "reading", mode == .attached, let w = host.target?.frame {
             goal = V(w.maxX - 44, c.y + 16)    // the middle strand wanders into the window while it reads
             armStrand = 1
-        } else if free && acting == nil && still > 2.5 && distance < 260 && distance > radius + 14 {
+        } else if free && idleScene.isEmpty && clock > nextIdleScene - 4 && handPhase.isEmpty && acting == nil && still > 2.5 && distance < 260 && distance > radius + 14 && mayPlay {
             goal = m                            // the cursor has gone quiet: go for it
             armStrand = 2
         }
@@ -408,7 +475,7 @@ final class Goo {
         if goal != nil && armOut < 2 { armLeg = (goal!.x > c.x) ? 3 : 0 }
         let rest = armRest()
         // Moved while the arm is out: caught. It was never doing anything.
-        if armOut > 12 && still < 0.05 && state == "idle" && reachGoal == nil && !guilty && acting == nil && latch == nil {
+        if armOut > 12 && still < 0.05 && state == "idle" && reachGoal == nil && handGoal == nil && !guilty && acting == nil && latch == nil {
             guiltyUntil = clock + 1.9
             goal = nil
             armArrived = false
@@ -427,13 +494,15 @@ final class Goo {
         } else {
             // Let go, it snaps home like elastic: a touch past, a wobble, and the body gives a little bounce.
             let back = rest - armTip
-            let tucked = hop != nil || latch != nil  // moving fast: the limb stays with the body
+            let tucked = hop != nil || latch != nil || seat != nil  // moving fast (or off to the panel's corner): the limb stays with the body
             armTipV = armTipV + (back * (tucked ? 900 : 320) - armTipV * (tucked ? 50 : 15)) * dt
             armArrived = false
         }
         armTip = armTip + armTipV * dt
         // Home again it simply is its leg (or strand) once more, wherever that leg is stepping.
         if goal == nil && (armTip - rest).length < 8 && armTipV.length < 300 { armTip = rest; armTipV = V() }
+        // On its way to the panel's corner with nothing to reach for, a limb drawn in is that leg, not one trailing behind it.
+        if seat != nil && goal == nil && (armTip - rest).length < radius * 1.5 { armTip = rest; armTipV = V() }
         let wasOut = armOut
         armOut = (armTip - rest).length
         if goal == nil && wasOut > 10 && armOut <= 10 && armTipV.length > 120 { kick(min(armTipV.length * 0.06, 70)) }
@@ -548,7 +617,8 @@ final class Goo {
         return c + (anchor[armStrand] - c).unit * (radius * 0.55)
     }
 
-    func drawArms() {
+    /// The legs and the reaching limb as one shape, as they are at `time` on its clock.
+    func limbsPath(at time: Double) -> CGPath {
         let r = radius
         let path = CGMutablePath()
         let hasLegs = (mode == .free || mode == .grabbed || perch != nil) && !puddle && !sleeping
@@ -575,9 +645,9 @@ final class Goo {
                 let s = CGFloat(i) / CGFloat(steps)
                 let base = root * ((1 - s) * (1 - s)) + bend * (2 * s * (1 - s)) + armTip * (s * s)
                 let tangent = ((bend - root) * (2 * (1 - s)) + (armTip - bend) * (2 * s)).unit
-                let wave = sin(s * 6 - CGFloat(clock) * 5) * min(isLeg ? 5 : 3, armOut * 0.08) * sin(s * .pi)
+                let wave = sin(s * 6 - CGFloat(time) * 5) * min(isLeg ? 5 : 3, armOut * 0.08) * sin(s * .pi)
                 var p = base + tangent.normal * wave
-                if armArrived && i == steps { p = p + V(0, sin(CGFloat(clock) * 14) * 2) }  // tap tap
+                if armArrived && i == steps { p = p + V(0, sin(CGFloat(time) * 14) * 2) }  // tap tap
                 points.append(p)
             }
             reaching = points
@@ -639,7 +709,11 @@ final class Goo {
                 joined = joined.isEmpty ? limb : joined.union(limb)
             }
         }
-        arms.path = joined
+        return joined
+    }
+
+    func drawArms() {
+        arms.path = limbsPath(at: clock)
 
         let puffs = CGMutablePath()
         for puff in ink {
@@ -667,7 +741,10 @@ final class Goo {
         let toMouse = m - c
         let distance = toMouse.length
         // Leaning toward the cursor; shy once it is right on top.
-        let wantLean = (mode == .grabbed || sleeping || mode == .open) ? 0 : clamp(1 - distance / 105, 0, 1) * 0.3
+        // Listening it keeps its own round shape:
+        // the eyes are on the words and the whole body swells evenly with the voice (`target`), nothing bulges.
+        let wantLean = (mode == .grabbed || sleeping || mode == .open || earTo != nil) ? 0 : clamp(1 - distance / 105, 0, 1) * 0.3
+        leanGoal = wantLean
         lean += (wantLean - lean) * min(1, dt * 7)
         if distance > 3 { leanDir = mix(leanDir, toMouse.unit, min(1, dt * 8)).unit }
         updateMischief(m, distance, dt)
@@ -692,23 +769,16 @@ final class Goo {
         }
 
         // Asleep after a long stillness; a cursor nearby startles it awake.
-        if mode == .free && settled && !sleeping && clock - lastMoved > 40 && state == "idle" { startSleep() }
+        if mode == .free && settled && !sleeping && seat == nil && clock - lastMoved > 40 && state == "idle" && !handOffering { startSleep() }
         if sleeping {
             if clock - lastMoved < 0.05 { wake(startled: distance < 75) }
-            nextZ -= Double(dt)
-            if nextZ <= 0 && !costume.isWhale {   // the whale girl breathes out bubbles instead (Whale.swift)
-                nextZ = 1.5
-                zs.append((c + V(radius * 0.7, -radius * 0.8), 2.2))
-            }
-        }
-        for i in zs.indices.reversed() {
-            zs[i].life -= dt
-            zs[i].p = zs[i].p + V(sin(zs[i].life * 3) * 5 * dt, -11 * dt)
-            if zs[i].life < 0 { zs.remove(at: i) }
+            // Z's rise every 1.5 s (the whale girl breathes out bubbles instead): drawn by Core Animation (`dream`), so a
+            // sleeping body needs no frames at all. Carried along by its window, they start again from where it is now.
+            if let at = dreamingAt, (at - c).length > 1 { dream() }
         }
 
         // Stuck on a window it isn't idle either: it glances into the window, and now and then pats it.
-        if mode == .attached && state == "idle" && armOut < 3 && !guilty && clock > nextAct {
+        if mode == .attached && state == "idle" && armOut < 3 && !guilty && clock > nextAct && mayPlay {
             nextAct = clock + Double.random(in: 7...18)
             switch Int.random(in: 0..<4) {
             case 0:
@@ -736,7 +806,7 @@ final class Goo {
         tallTime = max(0, tallTime - Double(dt))
         tall += ((tallTime > 0 ? 1 : 0) - tall) * min(1, dt * 5)
         lookTime = max(0, lookTime - Double(dt))
-        if mode == .free && settled && !sleeping && !puddle && peekSide == 0 && wanderTo == nil && armOut < 3 && clock > nextAct {
+        if mode == .free && seat == nil && settled && !sleeping && !puddle && idleScene.isEmpty && peekSide == 0 && wanderTo == nil && armOut < 3 && clock > nextAct && mayPlay {
             nextAct = clock + Double.random(in: 9...22)
             switch Int.random(in: 0..<(costume.isCorgi || costume.isWhale ? 9 : 7)) {
             case 7 where costume.isWhale, 8 where costume.isWhale: swishTail()   // the whale girl swishes her tail about
@@ -756,12 +826,10 @@ final class Goo {
         }
     }
 
-    var isAttachedLike: Bool { mode == .attached }
-
     /// Holding on to a window's edge it turns its head part way to the window, to show itself side on;
     /// anywhere else it faces out. Radians, negative toward the left.
     static let sideTurn: CGFloat = 0.55
-    var turnGoal: CGFloat { mode == .attached && perch == nil && hop == nil && leap == nil && latch == nil ? -Goo.sideTurn : 0 }
+    var turnGoal: CGFloat { handPhase == "offer" ? handSide * Goo.sideTurn : mode == .attached && perch == nil && hop == nil && leap == nil && latch == nil ? -Goo.sideTurn : 0 }
 
     /// Where a point drawn on the front of the head (x, y in radii from its middle) comes to across as the head turns, and
     /// how much narrower anything drawn there looks: the face, and whatever an outfit puts on the head, turn with it.
@@ -782,11 +850,11 @@ final class Goo {
     func press(_ m: V) {
         grabOffset = c - m
         grabStart = m
-        grabTime = clock
+        grabTime = CACurrentMediaTime()   // real time: the body's clock jumps forward over time it stood still, so a quick tap read as a long hold and set it on a window
         grabMoved = false
         fromAttached = mode == .attached || mode == .open
-        wasOpen = mode == .open
-        if mode == .open { host.closeSide() }
+        wasOpen = mode == .open   // the panel stays open through a tap; it closes only once the body is really dragged
+        wasSeated = seat != nil   // the same for the desktop panel it sits on
         if sleeping { wake(startled: false) }
         puddle = false
         peekSide = 0
@@ -799,35 +867,30 @@ final class Goo {
         creep = 0
         kick(70)
     }
-    var wasOpen = false
+    var wasOpen = false, wasSeated = false
 
     func release() {
         guard mode == .grabbed else { return }
-        if !grabMoved && clock - grabTime < 0.4 {
-            // Poke it too many times and it gets annoyed, wherever it is.
-            clicks.append(clock)
-            clicks.removeAll { clock - $0 > 1.4 }
-            if clicks.count >= 3 {
-                clicks.removeAll()
+        if !grabMoved && CACurrentMediaTime() - grabTime < 0.4 {
+            mode = fromAttached ? (wasOpen && host.sideOpen ? .open : .attached) : .free
+            switch taps.tap(at: CACurrentMediaTime(), doubleInterval: NSEvent.doubleClickInterval) {
+            case .ink:
                 // Enough. Ink, and off it goes.
                 let side: CGFloat = mouseAt.x > c.x ? -1 : 1
-                if fromAttached { mode = .attached; tearOff(velocity: V(side * 620, -420), reason: "poked") } else { mode = .free; v = V(side * 620, -420) }
+                if fromAttached { if mode == .open { host.closeSide() }; mode = .attached; tearOff(velocity: V(side * 620, -420), reason: "poked") } else { mode = .free; v = V(side * 620, -420) }
                 squirt(away: mouseAt)
                 host.log("poked too much: inked")
-                return
-            }
-            if clicks.count == 2 { smirkUntil = clock + 1.1; lookTime = 1.1; lookAt = (mouseAt - c).unit }  // a warning look
-            if fromAttached {
-                mode = .attached
-                if !wasOpen { host.toggleSide() }
-            } else {
-                // A click opens the panel on the frontmost window of the goo's display.
-                mode = .free
-                pop = 0.9
-                host.openHere()
+            case .warn(let open):
+                smirkUntil = clock + 1.1; lookTime = 1.1; lookAt = (mouseAt - c).unit   // a warning look
+                if open { openOrClose() }
+            case .open:
+                openOrClose()
+            case .poke:
+                poked()
             }
             return
         }
+        if wasOpen && !grabMoved && host.sideOpen { mode = .open; return }   // held without moving: nothing changed
         if stuck.contains(true) {
             // Let go before it tore free: everything springs back.
             mode = .attached
@@ -841,7 +904,38 @@ final class Goo {
         } else {
             mode = .free
             v = mouseSpeed * 0.75
+            host.reopenOnStick = false   // put down on the desktop: the panel it carried off stays put away
         }
+    }
+
+    /// A double click: the conversation opens, or closes, wherever it is. On a window that window's panel; anywhere else the
+    /// frontmost window of its screen (`openHere`), so a pet that only played when clicked still leads to the panel.
+    func openOrClose() {
+        host.learn("open")
+        host.teaching.hide()
+        if fromAttached { host.toggleSide(); return }
+        pop = 0.9
+        // Another app's window over the desktop panel: brought back up rather than closed.
+        if host.desktopPanel && host.sideOpen { if host.desktopPanelCovered() { host.raiseDesktopPanel() } else { host.closeSide() } } else { host.openHere() }
+    }
+
+    /// A single tap is play, answered at once: a squeeze, a look, a little hop, a stretch or a puff of ink, never the same
+    /// one twice running. Only the body's shape, its eyes and its ink; no limb and nothing new on its face.
+    func poked() {
+        var pick = Int.random(in: 0..<5)
+        if pick == lastPoke { pick = (pick + 1) % 5 }
+        lastPoke = pick
+        let toward = (mouseAt - c).unit
+        switch pick {
+        case 0: squash(towards: toward, 120)                                       // pressed in where the finger was
+        case 1: kick(55); lookAt = toward; lookTime = 0.7                          // a bounce and a look back at the finger
+        case 2:
+            if mode == .free && settled { v.y = -170; settled = false; kick(40) }  // a little hop
+            else { kick(60) }
+        case 3: tallTime = 0.45; lookAt = V(toward.x, -0.6).unit; lookTime = 0.6   // a stretch, eyes up
+        default: spray(at: c + toward * radius, 3, speed: 70, along: toward * -1); kick(30)   // a small puff of ink
+        }
+        host.teaching.poked()
     }
 
     /// `latching`: set down by hand. The strands shoot out one after another, the side against the glass flattens, the ink spreads from where it touched, and then it slides to its place.
@@ -858,7 +952,15 @@ final class Goo {
         }
         pop = 0.7
         host.log("stuck to window")
-        if !host.selfTest { UserDefaults.standard.set("attached", forKey: modeKey) }
+        // Carried here with the desktop panel open (or the panel open when it was stuck from elsewhere): it opens again, as this window's.
+        if host.reopenOnStick {
+            host.reopenOnStick = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
+                guard let self, self.mode == .attached, !self.host.sideOpen else { return }
+                self.host.web.evaluateJavaScript("setOpen(true)")
+            }
+        }
+        if !host.selfTest, !host.measuring { UserDefaults.standard.set("attached", forKey: modeKey) }
     }
 
     func peelOff(reason: String) {
@@ -866,8 +968,9 @@ final class Goo {
         mode = mode == .grabbed ? .grabbed : .free
         host.enchant.peel(at: c)
         host.setWatching(false)
+        host.entrusted.peeled()
         host.log("peeled off: \(reason)")
-        if !host.selfTest { UserDefaults.standard.set("pet", forKey: modeKey) }
+        if !host.selfTest, !host.measuring { UserDefaults.standard.set("pet", forKey: modeKey) }
     }
 
     /// One side meets something: that side flattens and the rest bulges, then the skin springs back.

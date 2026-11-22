@@ -4,6 +4,7 @@ The owner's other agents have doors of their own under /agent/, with a token of 
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import mimetypes
 import os
@@ -16,8 +17,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import records
 import wechat_reader as reader
-from settings import HAS_WECHAT, HERE, INBOX, RUNTIME
+from settings import DINGTALK, HAS_WECHAT, HERE, INBOX, RUNTIME
 
 for _kind, _suffix in (("image/heic", ".heic"), ("image/heif", ".heif"), ("image/avif", ".avif"), ("image/webp", ".webp")):
     mimetypes.add_type(_kind, _suffix)
@@ -50,6 +52,12 @@ def serve(companion, token, port, agent_token=None):
                 return self.reply({"error": "forbidden"}, code=403)
             query = parse_qs(url.query)
             try:
+                if url.path == "/agent/entrust" and body is not None:
+                    return self.reply(companion.submit(companion.agent_entrust(body)).result(timeout=40))
+                if url.path == "/agent/entrustments":
+                    return self.reply(companion.submit(companion.agent_entrustments(query.get("id", [""])[0])).result(timeout=10))
+                if url.path == "/agent/unentrust" and body is not None:
+                    return self.reply(companion.submit(companion.agent_unentrust(str(body.get("id") or ""), str(body.get("from") or "Agent"))).result(timeout=40))
                 if url.path == "/agent/ask" and body is not None and str(body.get("text", "")).strip():
                     work = companion.agent_ask(str(body["text"]).strip(), str(body.get("window") or "") or None,
                                                [str(f) for f in body.get("files") or []], str(body.get("from") or "Agent")[:40])
@@ -86,6 +94,11 @@ def serve(companion, token, port, agent_token=None):
                 return self.reply(companion.setup.state())
             if url.path == "/history":
                 return self.reply(companion.history(query.get("find", [""])[0]))
+            if url.path == "/desktop/history":
+                try:
+                    return self.reply(records.conversation_before("desktop", float(query.get("before", ["0"])[0])))
+                except (ValueError, OverflowError):
+                    return self.reply({"day": "", "events": []})
             if url.path == "/markdown-it.js":
                 return self.reply(renderer, "text/javascript; charset=utf-8")
             if url.path == "/file":
@@ -100,7 +113,7 @@ def serve(companion, token, port, agent_token=None):
                 except queue.Empty:
                     return self.reply({})
                 # Whoever asked has stopped waiting; a late click must not land on whatever is in front by then.
-                return self.reply(command if command.pop("expires") > time.time() else {})
+                return self.reply(command if command.pop("expires") > time.monotonic() else {})
             self.reply({"error": "not_found"}, code=404)
 
         def do_POST(self):
@@ -114,6 +127,36 @@ def serve(companion, token, port, agent_token=None):
             if not self.allowed(parse_qs(url.query)):
                 return self.reply({"error": "forbidden"}, code=403)
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+            if url.path == "/native/arrival":
+                watcher = getattr(companion, "_back_watch", None)
+                if watcher is not None:
+                    companion.loop.call_soon_threadsafe(watcher.notify)
+                return self.reply({"ok": True})
+            if url.path == "/desktop":
+                companion.submit(companion.desktop()).result(timeout=10)
+                return self.reply({"ok": True})
+            if url.path == "/entrusted/look":
+                return self.reply(companion.submit(companion.look_entrusted(str(body.get("id") or ""))).result(timeout=10))
+            if url.path == "/entrusted/accept":
+                return self.reply(companion.submit(companion.accept_asked(str(body.get("id") or ""))).result(timeout=40))
+            if url.path in ("/ladder/next", "/ladder/seen", "/ladder/sources", "/ladder/memory"):
+                return self.reply(companion.submit(companion.ladder_step(url.path.rsplit("/", 1)[1], body)).result(timeout=40))
+            if url.path == "/conversation/open":
+                return self.reply(companion.submit(companion.open_recorded_conversation(str(body.get("key") or ""))).result(timeout=10))
+            if url.path in ("/entrusted/tick", "/entrusted/respond", "/entrusted/state"):
+                async def hand_over():
+                    if url.path == "/entrusted/respond":
+                        identity, action = str(body.get("id") or ""), str(body.get("action") or "")
+                        if action not in ("done", "later", "ignored", "cancel", "restore"):
+                            return {"ok": False}
+                        ok = companion.entrusted.respond(identity, action)
+                        # 稍后 says when it will come back before the hand goes in.
+                        return {"ok": ok, **({"say": companion.entrusted.later_line(identity)} if ok and action == "later" else {})}
+                    if url.path == "/entrusted/tick":
+                        # An answer still showing in the speaking bubble (`replying`) comes first, like a job: the promise waits for it to go.
+                        return companion.entrusted.tick({**body, "busy": bool(body.get("replying")) or any(j.status in ("thinking", "working") for j in companion.active)})
+                    return companion.entrusted.native_state()
+                return self.reply(companion.submit(hand_over()).result(timeout=10))
             points = [p for p in body.get("points") or [] if isinstance(p, dict)][:20]
             if url.path == "/ask" and (str(body.get("text", "")).strip() or body.get("files") or points):
                 companion.ask(str(body.get("text", "")).strip() or ("看看这些文件。" if body.get("files") else "看看我指的这些。"),
@@ -126,6 +169,8 @@ def serve(companion, token, port, agent_token=None):
                 companion.decide(str(body["id"]), bool(body.get("accepted")))
                 return self.reply({"ok": True})
             if url.path == "/fill":
+                if not companion.window and not body.get("window") and not body.get("chat"):
+                    return self.reply({"ok": False, "error": "这段对话没有窗口，先告诉 Tako 要填到哪个应用或聊天。"})
                 if body.get("gen") not in (None, companion.generation):
                     return self.reply({"ok": False, "error": "刚切换了窗口或对话，这份草稿不是写给现在这里的，没有填"})
                 future = companion.submit(companion.fill(str(body.get("text", "")), [str(f) for f in body.get("files") or []],
@@ -198,11 +243,27 @@ def serve(companion, token, port, agent_token=None):
             if url.path == "/setup/office":
                 companion.setup.use_office(str(body.get("agent") or ""))
                 return self.reply(companion.setup.state())
-            if url.path == "/current" and isinstance(body.get("titles"), list):
-                if not HAS_WECHAT:
+            if url.path == "/current":
+                # Which chat a chat app shows: `looking` when it may be changing, then what was read. The reply comes once it is matched, with the answer,
+                # so the app can redraw the panel at once and compare promises with the same chat (`Chats.open_now`).
+                seq, began = body.get("seq"), time.monotonic()
+                if (body.get("looking") and body.get("bundle")) or body.get("left"):
+                    async def mark(bundle=str(body.get("bundle") or "")):
+                        if body.get("left"):
+                            companion.stop_looking(seq)  # The app went from the front before reading: nothing says the chat changed.
+                        else:
+                            companion.looking(bundle, seq)
+                    work = companion.submit(mark())
+                elif body.get("bundle") == DINGTALK and isinstance(body.get("chat"), str):
+                    work = companion.submit(companion.follow_dingtalk(body["chat"][:80], seq))
+                elif isinstance(body.get("titles"), list) and HAS_WECHAT:
+                    work = companion.submit(companion.follow_header([str(t) for t in body["titles"]][:12], seq, body.get("settled", True) is not False))
+                else:
                     return self.reply({"ok": True})
-                companion.submit(companion.follow_header([str(t) for t in body["titles"]][:12]))
-                return self.reply({"ok": True})
+                with contextlib.suppress(Exception):
+                    if work:
+                        work.result(timeout=5)
+                return self.reply({**companion.open_now(), "ms": int((time.monotonic() - began) * 1000)})
             if url.path == "/attach" and body.get("username") and HAS_WECHAT:
                 chat = {"username": str(body["username"]), "name": str(body.get("name", ""))}
                 companion.submit(companion.attach(chat))

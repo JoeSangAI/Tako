@@ -7,6 +7,7 @@ let weChatBundle = "com.tencent.xinWeChat"
 
 extension Controller {
     func keepAbove(_ found: (id: Int, frame: CGRect), in ids: [Int]) {
+        guard !desktopPanel, !attention.hidden else { return }
         // A click on the window brings it forward on the press, not the release: catching up only after it let the goo blink behind it.
         guard !dragging else { return }
         var below = found.id
@@ -61,7 +62,7 @@ extension Controller {
 
     /// While it stands on a window, that window's position matters every frame the mouse is down.
     func refreshStanding() {
-        guard let id = goo.standingID, NSEvent.pressedMouseButtons != 0 || ticks % 6 == 0,
+        guard let id = goo.standingID,
               let index = platforms.firstIndex(where: { $0.id == id }),
               let list = CGWindowListCopyWindowInfo(.optionIncludingWindow, CGWindowID(id)) as? [[String: Any]],
               let info = list.first, (info[kCGWindowIsOnscreen as String] as? Bool) == true,
@@ -76,6 +77,7 @@ extension Controller {
         lostID = gone
         lostBundle = bundle
         target = nil
+        if desktopPanel { goo.mode = .free; return }
         side.orderOut(nil)
         forgetMarks()
         enchant.hide()
@@ -111,6 +113,14 @@ extension Controller {
         guard let info = (CGWindowListCopyWindowInfo(.optionIncludingWindow, CGWindowID(id)) as? [[String: Any]])?.first,
               let raw = info[kCGWindowBounds as String] as? NSDictionary, let rect = CGRect(dictionaryRepresentation: raw) else { return }
         let changed = (target?.id ?? lostID) != id
+        // Off the desktop: the panel is this window's now, and the window is told afresh even if it is the one it was on
+        // before (`reportStuck` says nothing while the panel is the desktop's, nor for a window and title as last told).
+        // An open desktop panel goes, and opens again as this window's once the body has taken hold (`Goo.stick`).
+        if panelPlace.stuck() {
+            lastReported = ""
+            if sideOpen { reopenOnStick = true; closeSide() }
+            desktopAt = nil; goo.seat = nil
+        }
         // Moved the old window to make room: it goes back before the goo leaves it.
         if changed { moveBackNow(); homeX = nil; glide = nil; forgetMarks() }
         target = (id, rect)
@@ -118,9 +128,10 @@ extension Controller {
         appName = info[kCGWindowOwnerName as String] as? String ?? ""
         bundle = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? appName
         neverStuck = false
-        if changed { lastBand = 0 }
+        if changed { sentBand = 0; headerUntil = 0; openChat = "" }
         placeSide()
         reportStuck(title: info[kCGWindowName as String] as? String ?? "")
+        if changed { noteHeaderActivity(switching: true) }   // a chat app just stuck to: which chat it shows, read now
         sampleSkin()
         enchant.attach(contact: contact ?? V(rect.maxX, rect.minY + 66))
         log("stuck on \(bundle)")
@@ -192,6 +203,27 @@ extension Controller {
     /// Flush with the window's right edge and the same height. With too little screen to the
     /// right, the side window keeps its minimum width and overlaps the window by the difference.
     func placeSide() {
+        if desktopPanel {
+            // An ordinary window, beside the body: another app's window
+            // comes over it when the owner goes there, as over a panel on a window. As wide as the card and its grip,
+            // so nothing beside the card catches presses (`HandHit.panelLetsThrough`).
+            let visible = goo.visible, primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
+            let room = min(480, visible.width - 32), height = min(560, visible.height - 48)
+            let width = cardWidth > 0 ? min(room + 5, cardWidth + 5) : room
+            let frame = PanelPlace.desktop(near: CGPoint(x: goo.c.x, y: goo.c.y), size: CGSize(width: width, height: height), visible: visible,
+                                           remembered: desktopAt ?? desktopLast, bar: barHeight)
+            if sideOpen { desktopAt = frame.origin }
+            sideX = frame.minX
+            side.setFrame(NSRect(x: frame.minX, y: primaryTop - frame.maxY, width: width, height: height), display: sideOpen)
+            if side.level != .normal { side.level = .normal }
+            if loaded {
+                web.evaluateJavaScript("setFloating(true)")
+                if sentGeometry != "desktop \(room)" { sentGeometry = "desktop \(room)"; web.evaluateJavaScript("setGeometry(0,\(room))") }
+            }
+            seatGoo()
+            tellOrigin()
+            return
+        }
         guard let frame = target?.frame, let primary = NSScreen.screens.first,
               let visible = visibleFrame(of: frame) else { return }
         let room = visible.maxX - frame.maxX
@@ -208,9 +240,11 @@ extension Controller {
         }
         let geometry = "\(frame.maxX - x),\(room)"
         if loaded && geometry != sentGeometry {
+            if sentGeometry.hasPrefix("desktop") { web.evaluateJavaScript("setFloating(false)") }
             sentGeometry = geometry
             web.evaluateJavaScript("setGeometry(\(geometry))")
         }
+        tellOrigin()
     }
 
     func visibleFrame(of frame: CGRect) -> CGRect? {

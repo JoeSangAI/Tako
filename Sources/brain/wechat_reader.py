@@ -118,6 +118,15 @@ def session_mark(username):
         con.close()
 
 
+def sessions():
+    """Every chat in WeChat's own list and when it last moved: {username: sort time}. Decryption takes time, so callers cache the list."""
+    con, _ = open_shard(shard=SESSION)
+    try:
+        return {username: stamp or 0 for username, stamp in con.execute("SELECT username, sort_timestamp FROM SessionTable")}
+    finally:
+        con.close()
+
+
 def find_chats(query):
     names = json.loads((WXEXPORT / "work/namemap.json").read_text())["names"]
     hits = [{"username": u, "name": n} for u, n in names.items() if isinstance(n, str) and query in n]

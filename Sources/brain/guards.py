@@ -28,15 +28,32 @@ def normalized(name):
     return "".join(ch for ch in text if ch.isalnum()).lower()
 
 
+def digits(text):
+    return "".join(ch for ch in text if ch.isdigit())
+
+
+def one_letter_off(a, b):
+    """Whether two names differ by exactly one letter misread, dropped or added: what one OCR slip does to a title."""
+    if a == b or abs(len(a) - len(b)) > 1 or not a or not b or (a[0] != b[0] and a[-1] != b[-1]):
+        return False
+    if len(a) == len(b):
+        return sum(x != y for x, y in zip(a, b)) == 1
+    short, long = sorted((a, b), key=len)
+    i = 0
+    while i < len(short) and short[i] == long[i]:
+        i += 1
+    return short[i:] == long[i + 1:]
+
+
 def same_chat(want, line):
     """Whether a title read off WeChat is the chat asked for. Forgiving of a misread character, not of a sibling chat: 产品讨论组1 is not 产品讨论组2.
-    People call a chat by its short name: 小林 is 小林-市场 助理, because the name stops at a break there, but it is not 小林妈妈."""
+    People call a chat by its short name: 小林 is 小林-市场 助理, because the name stops at a break there, but it is not 小林妈妈, and not the group
+    nobody named that WeChat titles 小林、老王."""
     key, seen = normalized(want), normalized(line)
-    digits = lambda text: "".join(ch for ch in text if ch.isdigit())
     if seen == key or (digits(seen) == digits(key) and difflib.SequenceMatcher(None, seen, key).ratio() >= 0.9):
         return True
     start, whole = (unicodedata.normalize("NFKC", text).strip().lower() for text in (want, line))
-    return bool(start) and whole.startswith(start) and len(whole) > len(start) and not whole[len(start)].isalnum()
+    return bool(start) and whole.startswith(start) and len(whole) > len(start) and not whole[len(start)].isalnum() and "、" not in whole
 
 
 def group_by_members(titles, groups):

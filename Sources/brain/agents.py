@@ -4,9 +4,11 @@ They come in with a token of their own (`agent.json`, readable by the owner alon
 from __future__ import annotations
 
 import json
+import asyncio
 import os
 import secrets
 import time
+import records
 from pathlib import Path
 
 from settings import AGENT_DOOR, OWNER
@@ -24,17 +26,85 @@ def open_door(port, token):
 
 
 class Agents:
+    async def agent_entrust(self, body):
+        """An agent's own prepared hand-over: the same record and promise, no model thread."""
+        text = str(body.get("text") or "").strip()
+        if not text:
+            return {"ok": False, "error": "请给递回时要说的话"}
+        source = str(body.get("from") or "Agent").strip()[:40] or "Agent"
+        now = time.time()
+        if (self.chat or {}).get("username") == "desktop":
+            chat, events = self.chat, self.events
+        else:
+            chat = {"username": "desktop", "name": "你", "kind": "desktop"}
+            if "desktop" not in self.saved:
+                self.saved["desktop"] = await asyncio.to_thread(records.conversation, "desktop") or {"chat": chat, "events": []}
+            events = self.saved["desktop"]["events"]
+        job = Job(chat, events, None)
+        job.owner_words, job.asked_at, job.utterances, job.agent_source = text, now, [(text, now)], source
+        job.record_id = await asyncio.to_thread(records.begin, "desktop", "你", f"〔{source} 转来〕{text}", "")
+        args = {"action": "keep", "quote": text, "text": text, "place": body.get("place") or {}}
+        for name in ("due", "after"):
+            if name in body:
+                args[name] = body[name]
+        try:
+            item = self.entrusted.change(args, job)
+        except ValueError as exc:
+            await asyncio.to_thread(records.end, job.record_id, "没拿到")
+            return {"ok": False, "error": str(exc)}
+        self.add("owner", f"〔{source} 转来〕{text}", events)
+        self.keep_now()
+        await asyncio.to_thread(records.end, job.record_id, "拿着")
+        notice = await self.native("entrustedSync", **self.entrusted.native_state(), timeout=30)
+        return {"ok": True, "id": item["id"], "due": item.get("due"), "notification_scheduled": item["id"] in notice.get("scheduled", [])}
+
+    async def agent_entrustments(self, identity=""):
+        items = self.entrusted.items
+        if identity:
+            item = items.get(identity)
+            return {"ok": True, "item": item} if item else {"ok": False, "error": "没有这件托付"}
+        return {"ok": True, "items": list(items.values())}
+
+    async def agent_unentrust(self, identity, source="Agent"):
+        source = str(source or "Agent").strip()[:40] or "Agent"
+        item = self.entrusted.items.get(identity)
+        if not item or item.get("state") != "held":
+            return {"ok": False, "error": "没有拿着这件事"}
+        if item.get("source") != "agent" or item.get("source_name") != source:
+            return {"ok": False, "error": "只能撤回自己转来的托付"}
+        self.entrusted.append(item, "cancel", state="cancelled", by=source)
+        if (self.entrusted.offering or {}).get("id") == identity:
+            self.entrusted.offering = None
+        await self.native("entrustedSync", **self.entrusted.native_state(), timeout=30)
+        return {"ok": True, "id": identity, "state": "cancelled"}
+
     async def agent_ask(self, text, window=None, files=(), source="Agent"):
         """Starts the job and answers at once with its id; how it ends is `agent_job`. Without a window named, the one the goo is on."""
+        asked_at = time.time()
         files = [str(Path(f).expanduser()) for f in files]
         if missing := [f for f in files if not os.path.exists(f)]:
             return {"ok": False, "error": "这些文件不存在：" + "、".join(missing)}
-        found = await self.native("resolve", timeout=8, window=window or None)
-        if not found.get("ok"):
-            return {"ok": False, "error": found.get("error") or "没找到那个窗口"}
-        where = {k: str(found.get(k) or "") for k in ("app", "bundle", "title", "id")}
-        chat, events = self._conversation_of(where)
+        if window == "desktop" or (not window and (not self.window or not self.watching)):
+            where = None
+            chat = {"username": "desktop", "name": "你", "kind": "desktop"}
+            if (self.chat or {}).get("username") == "desktop":
+                events = self.events
+            else:
+                if "desktop" not in self.saved:
+                    old = await asyncio.to_thread(records.conversation, "desktop")
+                    if old:
+                        self.saved["desktop"] = old
+                back = self.saved.setdefault("desktop", {"chat": chat, "events": []})
+                events = back["events"]
+        else:
+            found = await self.native("resolve", timeout=8, window=window or None)
+            if not found.get("ok"):
+                return {"ok": False, "error": found.get("error") or "没找到那个窗口"}
+            where = {k: str(found.get(k) or "") for k in ("app", "bundle", "title", "id")}
+            chat, events = self._conversation_of(where)
         job = Job(chat, events, where)
+        job.asked_at = asked_at
+        job.agent_source = source
         key = secrets.token_hex(4)
         self._forget_old_agent_jobs()
         self.agent_jobs[key] = {"job": job, "ended": None}

@@ -8,9 +8,14 @@ What a turn does is written in its own text as @@[...steps...]@@; with no steps 
   {"hear": true}                waits for the owner's next words through turn/steer, then answers with them
   {"retry": n}                  n failed uploads, each announced as an error it will retry
   {"pause": seconds}            waits, with nothing to report
+  {"until": name}               waits until the test makes a file of that name in $FAKE_CODEX_HOME: a turn held open for as long as
+                                the scene needs it, whatever the machine's load (no clock decides what overlapped what)
   {"every_turn": true}          first step only: the rest also runs for every later turn that has no steps of its own
   {"die": true}                 the process goes away
   {"usage": n}                  reports n input tokens
+  {"note": text}                a commentary message on the way, as the model reports progress
+  {"change": path}              a file change there, asking for approval the way the real server does
+A file `steer_fails` in $FAKE_CODEX_HOME makes every turn/steer fail, as when the turn has just ended or the brain can't steer.
 Everything received is written to $FAKE_CODEX_LOG, one JSON object per line.
 """
 import itertools
@@ -28,6 +33,7 @@ LOG = os.environ.get("FAKE_CODEX_LOG", "")
 writing, noting = threading.Lock(), threading.Lock()
 answers, interrupts, loaded = {}, {}, set()
 active, steered = set(), {}
+instructions = {}
 
 
 def note(kind, **fields):
@@ -66,13 +72,17 @@ def run_turn(thread, turn, text):
     steps = json.loads(found[-1]) if found else list(every_turn) or [{"say": "好的"}]
     if steps and steps[0].get("every_turn"):  # A model that does the same thing whatever it is told next.
         every_turn[:] = steps = steps[1:]
-    stop = interrupts[turn] = threading.Event()
-    active.add(turn)
+    if "你是 Tako 的记忆整理线程" in instructions.get(thread, ""):
+        steps = [{"say": "[]"}]
+    stop = interrupts[turn]
     event("turn/started", threadId=thread, turn={"id": turn, "status": "inProgress", "items": []})
     for step in steps:
         if stop.is_set():
             break
-        if "say" in step:
+        if "command_error" in step:
+            item = str(uuid.uuid4())
+            event("item/completed", threadId=thread, turnId=turn, item={"type": "commandExecution", "id": item, "command": step.get("command", "cat ~/Desktop/report"), "aggregatedOutput": step["command_error"]})
+        elif "say" in step:
             item = str(uuid.uuid4())
             event("item/agentMessage/delta", threadId=thread, turnId=turn, itemId=item, delta=step["say"])
             event("item/completed", threadId=thread, turnId=turn, item={"type": "agentMessage", "id": item, "text": step["say"]})
@@ -89,6 +99,15 @@ def run_turn(thread, turn, text):
                 asking.join(0.02)
             note("tool_reply", tool=step["call"], reply=reply, abandoned=stop.is_set())
             event("item/completed", threadId=thread, turnId=turn, item={"type": "dynamicToolCall", "id": item, "tool": step["call"]})
+        elif "note" in step:
+            item = str(uuid.uuid4())
+            event("item/completed", threadId=thread, turnId=turn, item={"type": "agentMessage", "id": item, "phase": "commentary", "text": step["note"]})
+        elif "change" in step:
+            item = str(uuid.uuid4())
+            event("item/started", threadId=thread, turnId=turn, item={"type": "fileChange", "id": item, "changes": [{"path": step["change"]}]})
+            reply = ask(str(uuid.uuid4()), "item/fileChange/requestApproval", threadId=thread, turnId=turn, itemId=item)
+            note("approval", path=step["change"], reply=reply)
+            event("item/completed", threadId=thread, turnId=turn, item={"type": "fileChange", "id": item, "changes": [{"path": step["change"]}]})
         elif "fail" in step:
             return finish(thread, turn, "failed", step["fail"])
         elif "hang" in step:
@@ -107,6 +126,9 @@ def run_turn(thread, turn, text):
             Path(folder.group(1), step["make"]).write_text(step.get("text", "x"))
         elif "pause" in step:
             stop.wait(step["pause"])
+        elif "until" in step:
+            while not os.path.exists(os.path.join(HOME, step["until"])) and not stop.is_set():
+                time.sleep(0.01)
         elif "die" in step:
             os._exit(1)
         elif "usage" in step:
@@ -123,6 +145,7 @@ def handle(message):
     elif method == "thread/start":
         thread = str(uuid.uuid4())
         loaded.add(thread)
+        instructions[thread] = params.get("developerInstructions") or ""
         send({"id": request_id, "result": {"thread": {"id": thread}}})
     elif method == "thread/unsubscribe":
         loaded.discard(params.get("threadId"))
@@ -137,6 +160,10 @@ def handle(message):
         if params.get("threadId") not in loaded:
             return send({"id": request_id, "error": {"code": -32600, "message": "thread not found"}})
         turn = str(uuid.uuid4())
+        # The turn exists before its id is given out, as on the real server: a steer or an interrupt sent the moment the id
+        # arrives must find it. Registering it in the turn's own thread lost that race on a busy machine (round 28).
+        interrupts[turn] = threading.Event()
+        active.add(turn)
         send({"id": request_id, "result": {"turn": {"id": turn, "status": "inProgress", "items": []}}})
         text = "".join(part.get("text", "") for part in params.get("input") or [])
         threading.Thread(target=run_turn, args=(params["threadId"], turn, text), daemon=True).start()
@@ -146,7 +173,7 @@ def handle(message):
             stop.set()
         send({"id": request_id, "result": {}})
     elif method == "turn/steer":
-        if params.get("expectedTurnId") not in active:
+        if params.get("expectedTurnId") not in active or os.path.exists(os.path.join(HOME, "steer_fails")):
             return send({"id": request_id, "error": {"code": -32600, "message": "no active turn to steer"}})
         steered[params["expectedTurnId"]] = "".join(part.get("text", "") for part in params.get("input") or [])
         send({"id": request_id, "result": {"turnId": params["expectedTurnId"]}})
@@ -161,6 +188,14 @@ def handle(message):
             event("turn/started", threadId=params["threadId"], turn={"id": turn, "status": "inProgress", "items": []})
             event("error", threadId=params["threadId"], turnId=turn, willRetry=True, error={"message": "Reconnecting... 1/5", "codexErrorInfo": None})
             stop.wait()
+        held = os.path.join(HOME, "compact_until")  # a summary that goes on (the real ones take 40 to 170 seconds) until the test makes the file named in it
+        if os.path.exists(held):
+            event("turn/started", threadId=params["threadId"], turn={"id": turn, "status": "inProgress", "items": []})
+            with open(held) as file:
+                gate = os.path.join(HOME, file.read().strip())
+            while not os.path.exists(gate):
+                time.sleep(0.01)
+            note("compacted", threadId=params["threadId"])
         finish(params["threadId"], turn)
     elif request_id is not None:
         send({"id": request_id, "result": {}})

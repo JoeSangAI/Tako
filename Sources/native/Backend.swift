@@ -90,7 +90,7 @@ final class Backend {
     private func explanation() -> String {
         let text = (try? String(contentsOf: errorFile, encoding: .utf8)) ?? ""
         if text.contains("Operation not permitted") {
-            return "Tako 读不到桌面文件夹。\n请到“系统设置 > 隐私与安全性 > 文件和文件夹”打开 Tako 的“桌面文件夹”，再打开一次 Tako。"
+            return "Tako 读不到或写不了这个文件夹。请检查文件本身的权限，以及系统设置中 Tako 对桌面、文稿和下载的权限。"
         }
         let tail = text.split(separator: "\n").suffix(3).joined(separator: "\n")
         return tail.isEmpty ? "后端退出了，没有留下原因。" : "后端退出了：\n\(tail)"

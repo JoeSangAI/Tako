@@ -14,7 +14,7 @@ MINIMUM="14.0"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 swiftc -O -target "arm64-apple-macos$MINIMUM" -framework AppKit -framework WebKit -framework ApplicationServices -framework QuartzCore -framework CoreImage \
-  -framework ScreenCaptureKit -framework AVFoundation -framework CoreMedia -framework Vision -framework Carbon -framework UserNotifications \
+  -framework ScreenCaptureKit -framework AVFoundation -framework CoreMedia -framework CoreAudio -framework CoreMediaIO -framework IOKit -framework Vision -framework Carbon -framework UserNotifications -framework EventKit \
   -o "$WORK/Tako" "$ROOT"/Sources/native/*.swift
 
 APP="$WORK/Tako.app"
@@ -39,10 +39,14 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>$MINIMUM</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
   <key>NSHumanReadableCopyright</key><string>黏在哪里，哪里就有了智能。</string>
+  <key>NSMicrophoneUsageDescription</key><string>你开始说话时，Tako 用麦克风听你说话。</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>Tako 在本机把你说的话转成文字。</string>
   <key>NSAppleEventsUsageDescription</key><string>Tako 按你的要求操作这个窗口里的文档。</string>
   <key>NSDesktopFolderUsageDescription</key><string>你让 Tako 处理桌面上的文件时要用到，它做好的东西也默认放在桌面。</string>
   <key>NSDocumentsFolderUsageDescription</key><string>你让 Tako 处理文稿里的文件时要用到。</string>
   <key>NSDownloadsFolderUsageDescription</key><string>你让 Tako 处理下载里的文件时要用到。</string>
+  <key>NSRemindersFullAccessUsageDescription</key><string>你点了「接上」才会问：提醒事项里写到谁，你打开和TA的聊天时 Tako 提一句。只在本机比对，不记下、不发出去。</string>
+  <key>NSCalendarsFullAccessUsageDescription</key><string>你点了「接上」才会问：开会前十分钟，如果你答应过与会的人什么事，Tako 提一句。只在本机比对，不记下、不发出去。</string>
   <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict></plist>
 PLIST

@@ -43,21 +43,22 @@ def account_name():
     return "你的主人"
 
 
-def local_zone():
-    """The configured zone, else this Mac's own."""
-    with contextlib.suppress(Exception):
-        if CONFIG.get("timezone"):
-            return ZoneInfo(CONFIG["timezone"])
-    with contextlib.suppress(Exception):
-        return ZoneInfo(os.path.realpath("/etc/localtime").split("zoneinfo/")[1])
-    return dt.datetime.now().astimezone().tzinfo
+def system_zone():
+    """The Mac's local zone, independent of a previously configured process TZ."""
+    try:
+        with open("/etc/localtime", "rb") as source:
+            return ZoneInfo.from_file(source)
+    except (OSError, ValueError):
+        return dt.datetime.now().astimezone().tzinfo
 
-
-ZONE = local_zone()
-# One clock everywhere: what Tako says, and what the model's own `date` and the commands it runs say. Only what the owner set, and only a zone that exists.
-if CONFIG.get("timezone") and isinstance(ZONE, ZoneInfo) and ZONE.key == CONFIG["timezone"]:
-    os.environ["TZ"] = ZONE.key
-    time.tzset()
+# Use the owner's configured zone everywhere, falling back to the Mac's zone.
+ZONE_NAME = CONFIG.get("timezone") if isinstance(CONFIG.get("timezone"), str) else None
+try:
+    ZONE = ZoneInfo(ZONE_NAME) if ZONE_NAME else system_zone()
+except (ValueError, KeyError):
+    ZONE_NAME, ZONE = None, system_zone()
+os.environ["TZ"] = ZONE_NAME or ":/etc/localtime"
+time.tzset()
 OWNER = str(CONFIG.get("name") or account_name())
 MODEL = CONFIG.get("model") or None  # The owner's own jobs. None leaves it to the model the owner's Codex is set to.
 LIGHT_MODEL = CONFIG.get("light_model") or MODEL  # Throwaway threads: greetings, lecture notes, learning from edits, feedback.
@@ -70,11 +71,16 @@ WORKBENCH_CARDS = configured_path(WORKBENCH_SETTING.get("cards"))
 HAS_WORKBENCH = bool(WORKBENCH and WORKBENCH_CARDS and WORKBENCH_CARDS.is_file())
 HAS_WECHAT = reader.enable(CONFIG.get("wechat_export"))
 WECHAT = "com.tencent.xinWeChat"
+DINGTALK = "com.alibaba.DingTalkMac"  # read through Accessibility only: no setup, nothing of its own on disk
 POLL_SECONDS = 3         # While a draft waits to be sent. Only looks at file stats; the heavy read waits until this chat really changed.
 FULL_READ_SECONDS = 60   # In case the session list misses a message.
 SENT_SETTLE_SECONDS = 45 # The owner often sends one reply in several messages.
-COMPACT_AT = 120_000     # Input tokens per request at which the shared thread gets summarized.
+COMPACT_AT = 120_000     # Input tokens per request at which a standing thread gets summarized.
 COMPACT_PICTURES_AT = 3_000_000  # Bytes of screenshots on the thread. They cost few tokens, but a reconnect uploads every one of them again.
+# Each conversation (a window, a chat, the desktop) on a standing thread of its own; off, every conversation is on one shared thread as before (turns.Brain).
+PER_CONVERSATION = CONFIG.get("per_conversation_threads", True) is not False
+STANDING_THREADS = max(1, int(CONFIG.get("conversation_threads_max") or 6))  # standing threads at most; one more waits as a throwaway limb
+IDLE_THREAD_SECONDS = 60 * float(CONFIG.get("conversation_thread_idle_minutes") or 30)  # a conversation quiet this long lets its thread go; the records bring it back
 CONTEXT_MESSAGES = 30
 MAX_MESSAGE_CHARS = 2000
 VOICE = RUNTIME / "voice.md"      # Habits learned from the owner's edits, never their sentences. Plain text they can read or change.
@@ -115,7 +121,7 @@ def local_today():
 
 def local_now():
     now = dt.datetime.now(ZONE)
-    return f"现在是 {now:%Y-%m-%d %H:%M}（{ZONE}），周{'一二三四五六日'[now.weekday()]}。{CONFIG.get('clock_note') or ''}".strip()
+    return f"现在是 {now:%Y-%m-%d %H:%M:%S}（{now:%z}，{ZONE_NAME or '系统时区'}），周{'一二三四五六日'[now.weekday()]}。{CONFIG.get('clock_note') or ''}".strip()
 
 
 def user_background():

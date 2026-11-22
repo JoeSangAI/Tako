@@ -272,6 +272,8 @@ extension Controller {
     }
 
     func reportStuck(title: String) {
+        guard !desktopPanel else { return }
+        side.level = .normal
         let key = "\(target?.id ?? 0)|\(title)"
         guard key != lastReported else { return }
         lastReported = key
@@ -300,6 +302,22 @@ extension Controller {
     @MainActor
     func run(_ command: [String: Any]) async -> [String: Any] {
         let name = command["command"] as? String
+        if name == "arrivalWatching" { arrivalWatching = command["on"] as? Bool ?? false; return ["ok": true] }
+        if name == "entrustedSync" {
+            entrusted.wakeAt = command["wake"] as? Double
+            if let line = command["teach"] as? String, !line.isEmpty { teaching.firstTry(line, tries: 600) }  // the first try's next step (`ladder.py`)
+            return await entrusted.sync(command["items"] as? [[String: Any]] ?? [], revision: command["revision"] as? Double ?? 0, ask: true,
+                                        recent: command["recently_put_down"] as? [[String: Any]])
+        }
+        if name == "filePermission" {
+            if !filePermissionExplained {
+                filePermissionExplained = true
+                web.evaluateJavaScript("setFilePermissionNeeded(true)", completionHandler: nil)
+            }
+            return ["ok": true]
+        }
+        if name == "entrustedWake" { entrusted.wake(); return ["ok": true] }
+        if name == "refreshSystemSources" { systemSources.refresh(force: true); return ["ok": true] }
         if name == "windows" { return listWindows() }
         if name == "endSteps" { endSteps(); return ["ok": true] }
         if name == "followDone" { followDone(); return ["ok": true] }
@@ -317,6 +335,10 @@ extension Controller {
         case "look": return await look(win)
         case "listenStart": return await startListening(win)
         case "titles": return await titles(win)
+        case "chatMessages":
+            // Asked only when the owner speaks on DingTalk: the open chat and what its window shows, whose each line is. Nothing else reads them.
+            guard win.bundle == dingTalkBundle, let read = DingTalk.read(pid: win.pid, messages: true) else { return ["ok": false] }
+            return ["ok": true, "chat": read.chat, "rows": read.messages.map { ["me": $0.me, "who": $0.who, "time": $0.time, "text": $0.text] }]
         case "fill": return await fill(win, text: command["text"] as? String ?? "", files: command["files"] as? [String] ?? [])
         case "point": return await point(win, at: command["text"] as? String ?? "")
         case "script": return await script(command["script"] as? String ?? "", to: command["bundle"] as? String, within: command["within"] as? Double ?? 80)
@@ -459,9 +481,13 @@ extension Controller {
 
     // MARK: filling
 
-    /// Reads what conversation WeChat shows right now, off a picture of its window.
+    /// Reads what conversation a chat app shows right now: DingTalk through Accessibility, WeChat off a picture of its window.
     @MainActor
     func titles(_ win: Win) async -> [String: Any] {
+        if win.bundle == dingTalkBundle {
+            let name = DingTalk.openChat(pid: win.pid)
+            return ["ok": name != nil, "lines": name.map { [$0] } ?? [], "others": []]
+        }
         let found = await Controller.headerTitles(windowID: win.id, width: win.frame.width, previous: 0, listEnd: listEnds[win.id] ?? 0)
         // The reader's second guesses too: the fill decides which chat is open the same way the panel follows it.
         return ["ok": found != nil, "lines": found?.lines ?? [], "others": found?.others ?? []]
@@ -858,7 +884,9 @@ extension Controller {
 
     /// Reads the window's own material off its picture: paper, title bar, dark or light. Pixels stay in this function.
     func sampleSkin() {
-        guard !skinBusy, let current = target, goo.mode == .attached || goo.mode == .open, CGPreflightScreenCaptureAccess() else { return }
+        guard sideOpen, !desktopPanel else { return }
+        guard let current = target, goo.mode == .attached || goo.mode == .open, CGPreflightScreenCaptureAccess() else { return }
+        if skinBusy { skinDirty = true; return }
         // Just resized for the panel: its picture may not have caught up yet.
         let settling = 0.5 - (CACurrentMediaTime() - ownMoveAt)
         if settling > 0 {
@@ -873,7 +901,8 @@ extension Controller {
             await MainActor.run {
                 guard let self else { return }
                 self.skinBusy = false
-                guard let skin else { return }
+                if self.skinDirty { self.skinDirty = false; self.sampleSkin() }
+                guard self.sideOpen, !self.desktopPanel, self.target?.id == id, let skin else { return }
                 self.goo.onDark = skin.dark
                 self.barHeight = skin.barHeight
                 let color: ([Int]) -> String = { "[\($0[0]),\($0[1]),\($0[2])]" }

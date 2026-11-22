@@ -6,12 +6,16 @@ extension Goo {
 
     func step(_ dt: CGFloat) {
         clock += Double(dt)
+        let tapeGoal: CGFloat = silenced ? 1 : 0
+        tapeVelocity += ((tapeGoal - tapeAmount) * 150 - tapeVelocity * 19) * dt
+        tapeAmount = clamp(tapeAmount + tapeVelocity * dt, 0, 1.12)
 
         let m = host.mouse()
         mouseSpeed = mouseSpeed * 0.9 + ((m - lastMouse) * (1 / dt)) * 0.1
         if (m - lastMouse).length > 0.01 { lastMoved = clock }
         lastMouse = m
         mouseAt = m
+        updateIdleScenes(m)
         updateMoods(m, dt)
 
         // where the window is, and whether we are close enough to grab it
@@ -30,7 +34,39 @@ extension Goo {
         }
         let window = candidateID.flatMap { id in host.platforms.first { $0.id == id }?.frame } ?? host.target?.frame
 
-        switch mode {
+        let holdingStill = handOffering && mode != .grabbed
+        if mode == .grabbed { dockDestination = nil }
+        if holdingStill {
+            v = V()
+            if let from = handDeparture, let destination = handHome {
+                // Get there with the hand tucked away. Floor collisions must not pull against this move.
+                let t = clamp(CGFloat((clock - handAt) / 0.55), 0, 1)
+                c = mix(from, destination, t * t * (3 - 2 * t))
+                if t == 1 { handDeparture = nil; handAt = clock }
+            }
+        } else if let destination = handHome, mode != .grabbed {
+            standingID = nil; settled = false
+            spring(to: destination, k: 70, damping: 16, dt)
+        } else if let destination = dockDestination, mode == .free {
+            standingID = nil; settled = false
+            spring(to: destination, k: 35, damping: 12, dt)
+            if (c - destination).length < 3 && v.length < 15 { dockDestination = nil }
+        } else if let seat, mode == .free {
+            // At the open desktop panel's corner, off the ground altogether: never `settled` (that is standing on the floor,
+            // and the legs, its shadow and the resting limb all reach down to `surface`). It lets go first, a
+            // puddle gathered up, asleep woken, a walk or a peek dropped, then goes over whole, no faster than it can carry its skin.
+            standingID = nil; wanderTo = nil; peekSide = 0; zoomUntil = 0; settled = false
+            puddle = false   // gathered up quietly where it lies: no hop or kick on the way to the panel
+            splatUntil = 0
+            if sleeping { wake(startled: false) }
+            // Gathered up and its limb in before it leaves (at most 0.4 s, so nothing held can keep it from going).
+            if (splatAmount > 0.15 || armOut > radius * 1.5) && clock - seatAsked < 0.4 {
+                v = v * pow(0.02, dt)
+            } else {
+                spring(to: seat, k: 300, damping: 26, dt)
+                if v.length > Goo.seatSpeed { v = v.unit * Goo.seatSpeed }
+            }
+        } else { switch mode {
         case .attached:
             if let l = leap {
                 flyLeap(l, dt)
@@ -56,7 +92,13 @@ extension Goo {
             perch = nil
             hop = nil
             var goal = m + grabOffset
-            if (m - grabStart).length > 4 { grabMoved = true }
+            if !grabMoved && (m - grabStart).length > 4 {
+                grabMoved = true
+                // Dragged off with its panel open: the panel goes, as before; the desktop's too, and if the body is set on a
+                // window it opens again there as that window's (`stick`).
+                if wasSeated { host.reopenOnStick = true; seat = nil }
+                if wasOpen || wasSeated { host.closeSide() }
+            }
             if let edge = candidate {
                 // Near an edge it leans towards its place there, a little more the closer it gets, so letting go feels like it was pulled in.
                 let spot = edge + radius + 7
@@ -117,6 +159,7 @@ extension Goo {
                 }
             }
         }
+        } // A hand-over travels without changing the job's attached window.
         let before = c
         gait += min(abs(v.x) * dt / (radius * 0.4) * .pi, CGFloat(dt) * 2 * .pi * 7)
         trot += ((trotting ? 1 : 0) - trot) * min(1, dt * 6)
@@ -125,8 +168,8 @@ extension Goo {
         splatAmount += ((clock < splatUntil ? 1 : 0) - splatAmount) * min(1, dt * (clock < splatUntil ? 26 : 6))
 
         // what it can stand on: the top of a window, otherwise the bottom of the screen
-        surface = visible.maxY
-        if mode == .free {
+        if !holdingStill { surface = visible.maxY }
+        if !holdingStill && mode == .free && handHome == nil && seat == nil {
             if let id = standingID {
                 if let w = host.platforms.first(where: { $0.id == id })?.frame, c.x > w.minX - 2, c.x < w.maxX + 2 {
                     surface = w.minY
@@ -155,7 +198,7 @@ extension Goo {
 
         // the floor and sides of the screen
         let floor = surface - radius * stance
-        if mode == .free {
+        if !holdingStill && mode == .free && seat == nil {
             if clock >= splatUntil && !puddle {
                 if c.y > floor {
                     let hit = v.y
@@ -188,7 +231,7 @@ extension Goo {
                     if -v.y > hard { c.y = visible.minY + radius * 0.6; startSplat(V(0, -1)) } else { c.y = visible.minY + radius; v.y = abs(v.y) * 0.3 }
                 }
             }
-        } else {
+        } else if !holdingStill {
             c.x = clamp(c.x, visible.minX + 2, visible.maxX - 2)
             c.y = clamp(c.y, visible.minY + 2, visible.maxY - 2)
         }
@@ -395,6 +438,7 @@ extension Goo {
             look = toMouse.length > 6 ? toMouse.unit * min(1, toMouse.length / 90) : V()
         }
         if let goal = reachGoal, (goal - c).length > 2 { look = (goal - c).unit }  // eyes on what it is touching
+        if let ear = earTo, reachGoal == nil, (ear - c).length > 2 { look = (ear - c).unit }  // eyes on the words it is hearing
         if mode == .grabbed && mouseSpeed.length > 90 { look = (mouseSpeed * -1).unit }
         if mode == .free && !settled { look = (v * 1).unit }
         if lookTime > 0 { look = lookAt } else if let scene = actLook() { look = scene }
@@ -405,6 +449,7 @@ extension Goo {
         // dizzy: the pupils go round and round
         if dizzy { look = V(cos(CGFloat(clock) * 11), sin(CGFloat(clock) * 11)) }
         if oops { look = V(-0.8, 0.5) }
+        gazeGoal = look
         gaze = mix(gaze, look, min(1, dt * (dizzy ? 40 : 11)))
 
         if clock > nextBlink { blink = 1; nextBlink = clock + Double.random(in: 2.4...6.5) }
@@ -418,7 +463,76 @@ extension Goo {
         if peekSide != 0 { wantHeavy = 0.28 }
         if (armOut > 6 && acting == nil) || clock < smirkUntil { wantHeavy = 0.36 }
         if puddle { wantHeavy = 0.42 }
+        heavyGoal = wantHeavy; lidGoal = open
         heavy += (wantHeavy - heavy) * min(1, dt * 12)
         lid += (open - lid) * min(1, dt * 22)
+    }
+}
+
+// MARK: how often it needs a frame
+
+/// `still`: nothing moves on it but its breath (and asleep, its dreams), which Core Animation carries; `ambient`: only slow
+/// things go on (the strands swaying on a window's edge, a held limb's ripple, her tail), a few frames a second do;
+/// `looking`: only the eyes and lids are catching up; `busy`: anything else, every frame the display gives.
+enum Pace: Equatable { case busy, looking, ambient(Double), still }
+
+extension Goo {
+    /// Something of its own may start: nothing held or being said, and the owner not to be disturbed (Attention). The display
+    /// check behind that is made only here, when all else already allows it.
+    var mayPlay: Bool { couldPlay && host.attention.allowsPlay }
+    var couldPlay: Bool { !handOffering && !carrying && host.entrusted.items.isEmpty && !silenced && !host.speaking.active }
+
+    var pace: Pace { paceWhy.0 }
+
+    /// The pace and the first thing that set it (for TAKO_PACE_LOG).
+    var paceWhy: (Pace, String) {
+        if mode == .grabbed || candidate != nil || (!handOffering && (hop != nil || leap != nil || latch != nil || dockDestination != nil)) { return (.busy, "busy1") }
+        if mode == .free && !settled && seat == nil && !handOffering { return (.busy, "busy2") }   // seated it is never settled: at rest there, `v` says it is still
+        if v.length > 0.3 || state != "idle" || acting != nil || !idleScene.isEmpty || peekSide != 0 || puddle || wanderTo != nil { return (.busy, "busy3") }
+        if clock < splatUntil || splatAmount > 0.002 || dizzy || happy || oops || guilty || zooming || clock < smirkUntil { return (.busy, "busy4") }
+        if hoverTime > 0 || lookTime > 0 || tallTime > 0 || tall > 0.002 || pop > 0 { return (.busy, "busy5") }
+        if !drops.isEmpty || !stains.isEmpty || !ink.isEmpty || reachGoal != nil || bubbleGoal != nil || earTo != nil || perch != nil { return (.busy, "busy6") }
+        if !handPhase.isEmpty && (handPhase != "offer" || clock - handAt < 1.2) { return (.busy, "busy7") }
+        if creep > 0.002 || trot > 0.002 || wiggle > 0.002 || abs(turn - turnGoal) > 0.002 { return (.busy, "busy8") }
+        if abs(tapeVelocity) > 0.01 || abs(tapeAmount - (silenced ? 1 : 0)) > 0.002 { return (.busy, "busy9") }
+        if armTipV.length > 2 || abs(armThickV) > 0.02 || reach.indices.contains(where: { abs(reachV[$0]) > 0.02 }) { return (.busy, "busy10") }
+        if let held = handGoal, (held - armTip).length > 1.5 { return (.busy, "busy11") }
+        if ring.indices.contains(where: { (ringV[$0] - v).length > 3 }) { return (.busy, "busy12") }
+        if costume.busy(self) { return (.busy, "busy13") }
+        if blink > 0 || abs(lid - lidGoal) > 0.01 || abs(heavy - heavyGoal) > 0.004 || (gaze - gazeGoal).length > 0.004
+            || abs(lean - leanGoal) > 0.002 || slosh.length > 0.02 || sloshV.length > 0.2 { return (.looking, "looking") }
+        if armOut > 3 && !rippling { return (.ambient(12), "ambient15") }                               // a held limb ripples along its length
+        if mode == .attached || mode == .open || carrying || !handPhase.isEmpty { return (.ambient(3), "ambient17") }   // strands sway on the edge
+        return (.still, "still")
+    }
+
+    /// When, on its own clock, the next thing it does by itself begins: a blink, a glance, a stroll, falling asleep, an ear
+    /// twitching. Times already past are left out: whatever holds them back changes only by something happening.
+    var nextEvent: Double? {
+        var times: [Double] = []
+        if !sleeping { times.append(nextBlink) }
+        let idle = state == "idle" && armOut < 3
+        if mode == .attached && idle && !guilty && couldPlay { times.append(nextAct) }
+        if mode == .free && seat == nil && settled && !sleeping && !puddle {
+            if idle && couldPlay && idleScene.isEmpty && peekSide == 0 && wanderTo == nil { times.append(nextAct) }
+            if !dizzy && wanderTo == nil { times.append(nextWander) }
+            if state == "idle" { times.append(lastMoved + 40) }
+            if idleScene.isEmpty && !idleBlocked && peekSide == 0 { times.append(max(nextIdleScene, lastMoved + 3)) }
+            let distance = (mouseAt - c).length
+            if couldPlay && idleScene.isEmpty && handPhase.isEmpty && acting == nil && distance < 260 && distance > radius + 14 {
+                times.append(max(lastMoved + 2.5, nextIdleScene - 4))
+            }
+        }
+        if costume.isCorgi { times.append(clock + costume.nextTwitch) }
+        return times.filter { $0 > clock + 0.001 }.min()
+    }
+
+    /// Time that passed while nothing moved: its clock and countdowns go on without stepping the body through it.
+    func fastForward(_ seconds: Double) {
+        guard seconds > 0 else { return }
+        clock += seconds
+        costume.nextTwitch -= seconds
+        costume.lastClock = clock
+        actLast = clock
     }
 }

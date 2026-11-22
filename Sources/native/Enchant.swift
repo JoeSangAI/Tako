@@ -129,6 +129,7 @@ final class Enchant {
 
     /// Follows the window. Rebuilding the shape only when its size changes keeps dragging cheap.
     func sync() {
+        if host.desktopPanel { hide(); return }
         // Grabbed still counts: a click on the goo closes the panel while it is held, and the ink has to come back in.
         guard let frame = outline(), let primary = NSScreen.screens.first, host.goo.mode != .free else { return }
         let outer = frame.insetBy(dx: -margin, dy: -margin)

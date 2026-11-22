@@ -7,7 +7,7 @@ import QuartzCore
 
 extension Goo {
     /// The scene it is in, or nil: only while there is one, and never while it sleeps, reels or is being held.
-    var acting: String? { act.isEmpty || sleeping || dizzy || mode == .grabbed || puddle ? nil : act }
+    var acting: String? { act.isEmpty || sleeping || dizzy || mode == .grabbed || puddle || handPhase == "offer" ? nil : act }
     var t: CGFloat { CGFloat(clock) }
     /// Which way it faces on its own: stuck on a window it looks out from the window's edge, to the right.
     var facing: CGFloat { mode == .attached || mode == .open ? 1 : (mouseAt.x >= c.x ? 1 : -1) }

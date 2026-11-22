@@ -12,7 +12,7 @@ import AppKit
 import QuartzCore
 
 extension Outfit {
-    /// Today where the owner lives: the zone in config.json, never the device's (it may be set elsewhere on purpose).
+    /// Occasions use the owner's configured day, or the Mac's when none was set.
     static func today() -> DateComponents {
         var zone = TimeZone.current
         if let data = try? Data(contentsOf: takoHome.appendingPathComponent("config.json")),
@@ -53,7 +53,7 @@ final class Costume {
     var isCorgi: Bool { outfit?.id == "corgi" }
     var isWhale: Bool { outfit?.id == "whale" }
     // the whale girl's loose parts: her tail (how high, how hard it wags) and her water
-    var tailLift: CGFloat = 0, tailLiftV: CGFloat = 0, wag: CGFloat = 0, wagPhase: CGFloat = 0, swishAt = -10.0
+    var tailLift: CGFloat = 0, tailLiftV: CGFloat = 0, wag: CGFloat = 0, wagPhase: CGFloat = 0, wagSpeed: CGFloat = 0, tailSide: CGFloat = 0, swishAt = -10.0
     var spoutAt = -10.0, spoutPower: CGFloat = 1, wasHappy = false, dressAt = -10.0
     // how far into her shape it is (0 plain Tako, 1 dressed), and the head as it is this frame: its middle and how far the
     // body is squashed across and down from her round head
@@ -153,7 +153,9 @@ final class Costume {
 
     /// One of the pieces cut from the drawing of the whale girl, shipped in the app's resources.
     static func art(_ name: String) -> CGImage? {
-        guard let url = Bundle.main.url(forResource: "whale-\(name)", withExtension: "png") else { return nil }
+        let preview = CommandLine.arguments.contains { $0.hasPrefix("--showcase-frames=") }
+            ? ProcessInfo.processInfo.environment["TAKO_SHOWCASE_ART"].map { URL(fileURLWithPath: $0).appendingPathComponent("whale-\(name).png") } : nil
+        guard let url = preview ?? Bundle.main.url(forResource: "whale-\(name)", withExtension: "png") else { return nil }
         return NSImage(contentsOf: url)?.cgImage(forProposedRect: nil, context: nil, hints: nil)
     }
 
@@ -209,19 +211,52 @@ final class Costume {
         fur.backgroundColor = NSColor(patternImage: tile).cgColor
     }
 
+    /// In small steps however long the frame, so a slow frame (a few a second while little moves) stays as steady as a fast one.
     func spring(_ x: inout CGFloat, _ xv: inout CGFloat, to goal: CGFloat, k: CGFloat, damping: CGFloat, _ dt: CGFloat) {
-        xv += ((goal - x) * k - xv * damping) * dt
-        x += xv * dt
+        let steps = max(1, Int((dt * 240).rounded(.up))), h = dt / CGFloat(steps)
+        for _ in 0..<steps {
+            xv += ((goal - x) * k - xv * damping) * h
+            x += xv * h
+        }
     }
+
+    /// Anything of the outfit's own still moving: putting it on, her spout, water or hearts in the air, a spring settling.
+    func busy(_ goo: Goo) -> Bool {
+        guard outfit != nil else { return false }
+        let now = goo.clock
+        if now - dressAt < 2 || now - swishAt < 1.5 || now - pettedAt < 1.3 || now - rainbowAt < 2.5 || (isWhale && goo.spoutHeight() > 0.01) { return true }
+        if !bubbles.isEmpty || !sputter.isEmpty || !splashes.isEmpty || !hearts.isEmpty || !drops.isEmpty { return true }
+        return abs(tailLiftV) > 0.01 || abs(swayV) > 0.01 || earV.contains { abs($0) > 0.01 } || abs(swim) > 0.001
+    }
+    /// Her tail in view (side on, holding a window's edge): it wags all the time.
+    var tailShowing: Bool { isWhale && !tailArt.isHidden }
 }
 
 func rotate(_ p: V, _ a: CGFloat) -> V { V(p.x * cos(a) - p.y * sin(a), p.x * sin(a) + p.y * cos(a)) }
 
 extension Goo {
+    /// A frame where nothing it is drawn from changed: only its clock goes on (her tail's wag is Core Animation's then).
+    func coastCostume() {
+        let k = costume
+        k.check(clock)
+        let dt = CGFloat(clamp(CGFloat(clock - k.lastClock), 0, 0.5))
+        k.lastClock = clock
+        k.wagPhase += k.wagSpeed * dt
+        k.lastV = v
+    }
+
+    /// Everything the outfit is drawn from; the clock goes in whenever any part of it moves by itself.
+    func costumeKey(_ body: [CGFloat]) -> [CGFloat] {
+        let flags: [Bool] = [sleeping, happy, dizzy, oops, guilty, !ink.isEmpty, puddle, wanderTo != nil, trotting, onDark, pop > 0.3, mode == .grabbed, settled]
+        var key = body + [turn, slosh.x, slosh.y, actTilt(), CGFloat(flags.enumerated().reduce(0) { $0 + ($1.element ? 1 << $1.offset : 0) })].map { ($0 * 256).rounded() }
+        if costume.isCorgi || costume.busy(self) || acting != nil || mode == .grabbed || (mode == .free && !settled) || happy || pop > 0 { key.append(CGFloat(clock)) }
+        return key
+    }
+
     func drawCostume() {
         let k = costume
         k.check(clock)
-        let dt = CGFloat(clamp(CGFloat(clock - k.lastClock), 0, 0.05))
+        let dt = CGFloat(clamp(CGFloat(clock - k.lastClock), 0, 0.5))   // up to the longest frame of a slow pace
         k.lastClock = clock
         let wagging = k.isCorgi && !sleeping && (happy || clock - k.pettedAt < 0.35)   // the whale girl has her tail for that
         wiggle += ((wagging ? 1 : trotting ? 0.7 : 0) - wiggle) * min(1, dt * 8)

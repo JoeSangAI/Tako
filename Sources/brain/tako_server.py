@@ -3,7 +3,7 @@ when the owner asks; it never sends a message.
 
 What the panel showed goes into the records in Tako's folder (`records.py`); everything else lives in memory. What arrives by itself (a new WeChat message) runs read-only and
 cannot touch anything; the owner's own words run with a narrow writable folder and approval cards.
-Every window shares one Codex thread: one brain, a limb on each window.
+Each conversation has a standing thread of its own (or, switched off, they all share one); a limb when that one can't take it now (turns.Brain).
 The app itself is driven through the native side (`/native/next`), the only process with the permissions.
 
 This file holds what they share and starts it all. The work is in chats.py, turns.py, hands.py and lecture.py.
@@ -28,16 +28,20 @@ from urllib.parse import unquote
 
 import outputs
 import records
+from ontology import Memory
+from entrusted import Entrusted
 import feedback as fb
 import greetings as greet
 import wechat_reader as reader
 from agents import Agents, open_door
-from chats import Chats
+from chats import Chats, named_chat_app
 import office
 from office import brain_runtime, end_agents
 from codex_runtime import RuntimeErrorCode
 from first_run import Setup, codex_on_path, find_codex
+from guards import same_chat
 from hands import Hands
+from ladder import place_command
 from lecture import Lectures
 from prompts import point_label
 from routes import serve
@@ -73,7 +77,7 @@ def merge_into(source, target):
     with contextlib.suppress(OSError):
         source.rmdir()
     return moved
-from turns import Turns
+from turns import Job, Turns, shown_rows
 
 
 class Companion(Chats, Turns, Hands, Lectures, Agents):
@@ -82,32 +86,38 @@ class Companion(Chats, Turns, Hands, Lectures, Agents):
         self.runtime = brain_runtime(self.on_server_request)
         self.reviving = asyncio.Lock()
         self.setup = Setup(self)
-        self.turns = asyncio.Lock()
         self.feedback = fb.Feedback(RUNTIME, app_version(), platform.mac_ver()[0])
         self.greetings = greet.Greetings(RUNTIME)
         self.events = []
         self.status = "idle"
         self.error = ""
         self.chat = chat
-        self.thread = None
-        self.read_up_to = {}   # chat -> newest message the brain's thread has been given
+        self.brains = {}       # conversation key -> its standing thread (turns.Brain); "" the one every conversation shares when per_conversation_threads is off
+        self.read_up_to = {}   # chat -> newest message any of the owner's turns was given there: a draft is watched from it
         self.signature = None
         self.generation = 0
         self.watching = True  # peeled off the window, it stops reading altogether
         self.saved = records.load()  # conversations already visited, so returning to one keeps its thread; a week of them outlives a restart
-        self.brain_lost = bool(self.saved)  # the thread went away (or the app restarted) with things said: the next window with something said tells it (`_brain`)
+        self.entrusted = Entrusted()
+        self.memory = Memory()
         self.keeping = False   # a save of the conversations is on its way
         self.offered = set()   # files the owner dragged or picked, which the panel may preview before they send them
-        self.last_header = ""
+        self.last_header = ""   # the conversation the chat app's own header last settled on (`_confirm`)
+        self.looking_since = 0  # a chat app said its chat may be changing, and what it reads hasn't come yet: nothing goes under the chat before
+        self.header_seq = ("", 0)  # the newest read the app sent: older ones arriving late are let go
+        self.read_early = {}    # a chat app's read that came before the brain heard it was stuck there
         self.wanted_titles = None
+        self.header_titles, self.refollowed = None, None
         self.following = False
         self.index, self.index_stamp = None, None
-        self.groups, self.groups_stamp = [], None  # groups nobody named, by their members: what WeChat titles them with (`_unnamed_groups`)
+        self.groups, self.groups_stamp = None, None  # groups nobody named, by their members: what WeChat titles them with (`_unnamed_groups`)
+        self.sessions, self.sessions_stamp = None, None  # WeChat's own chat list and when each moved (`_sessions`)
+        self.refreshing = set()  # which of those two is being read again in the background
         self.window = None     # the window it is stuck to: app, bundle, title, id
         self.active = []       # every job under way, in the order they started
+        self.joining = {}      # conversation -> lock: words said there join what is under way one at a time (`Turns._join`)
         self.on_thread = {}    # thread -> the owner's job on it; only these may use tools or ask for anything
-        self.settling = False  # the brain's thread is being got ready or summarized: wait for it rather than go round it
-        self.limb_news = []    # what limbs did while the brain was busy, for its next turn
+        self.news, self.news_serial = [], 0  # what a standing thread didn't see happen (done elsewhere, a hand-over placed), told to each once (`_tell_threads`)
         self.finished = {}     # conversation -> its name and window, for jobs that ended while the owner was elsewhere; gone once seen or tapped
         self.going = None      # the line the owner just tapped: its conversation and window, for the window to show when the goo lands (`_shown_on`)
         self.worked = {}       # another window a job's hands worked -> that job's conversation, which the window then shows (Hands._hands_on)
@@ -131,11 +141,8 @@ class Companion(Chats, Turns, Hands, Lectures, Agents):
         self.shard_signature = None
         self.read_at = 0.0
         self.desk = None       # today's items in a few words, refreshed in the background
-        self.told = {}         # what the brain thread has already been given, so it isn't sent again
         self.drafts = {}       # chat -> the draft the owner last saw there and what they then sent; memory only
         self.learning = asyncio.Lock()
-        self.compacted = (None, 0)  # thread, and its size when it was last summarized
-        self.pictures = 0      # bytes of images on the brain thread since it was last summarized
         self.agent_jobs = {}   # id -> a job one of the owner's other agents handed over, kept an hour after it ends so they can hear how
         self.tidied = time.time()  # Tako's own leftovers were cleared at the start; again once a day after a job (outputs.tidy_runtime)
         self.tasks = set()
@@ -148,8 +155,10 @@ class Companion(Chats, Turns, Hands, Lectures, Agents):
     # ---- state shown to the panel ----
     def add(self, role, text, events=None, **extra):
         events = self.events if events is None else events
-        events.append({"id": len(events), "role": role, "text": text, "time": clock(time.time()), "at": time.time(), **extra})
+        event = {"id": len(events), "role": role, "text": text, "time": clock(time.time()), "at": time.time(), **extra}
+        events.append(event)
         self._keep_soon()
+        return event
 
     def _keep_soon(self):
         """Written a second after the last thing said, from the loop, so a burst of steps is one write."""
@@ -178,17 +187,39 @@ class Companion(Chats, Turns, Hands, Lectures, Agents):
         job = self._here()
         status = job.status if job else self.status
         partial = job.partial if job else ""
-        return {"chat": self.chat and self.chat["name"], "status": status, "error": self.error,
-                "gen": self.generation, "events": self.events[after:],
+        # A chat app's chat unconfirmed for long: neither the name nor the words of the chat before. Same gen: if it turns out unchanged, nothing redraws.
+        looking = self.unconfirmed()
+        busy = status == "thinking" or status == "working"
+        chat = self.chat or {}
+        window = self.window or {}
+        here = []
+        kind, name = chat.get("kind", "wechat"), chat.get("name")
+        if self.watching and not self.looking_since and not chat.get("unknown") and kind in ("wechat", "dingtalk") and name:
+            for item in self.entrusted.pending():
+                place = item.get("place") or {}
+                app, title = place.get("app", ""), place.get("title", "")
+                app_kind = named_chat_app(app)
+                app_matches = app_kind == kind if app_kind else app.casefold() in (window.get("app") or "").casefold()
+                if (place.get("chat") and same_chat(place["chat"], name) and app_matches
+                        and title.casefold() in (window.get("title") or "").casefold()):
+                    here.append(item["id"])
+        return {"chat": None if looking else self.chat and self.chat["name"], "key": "" if looking else (self.chat or {}).get("username", ""), "status": status, "error": self.error,
+                "gen": self.generation, "events": [] if looking else self.events[after:], "looking": looking, "unknown": bool((self.chat or {}).get("unknown")),
                 "kind": self.chat.get("kind", "wechat") if self.chat else "", "app": (self.window or {}).get("app", ""),
                 "greeting": (self.chat or {}).get("greeting", ""),
                 "bundle": (self.window or {}).get("bundle", ""),
-                "partial": partial, "steps": job.steps if job else [], "busy": status == "thinking" or status == "working",
+                "held_here": here,
+                "partial": partial, "steps": job.steps if job else [], "busy": busy,
                 "act": job.act if job else "",
-                "trouble": self._trouble_here(job), "queued": any(other.waiting for other in self.active if other.events is self.events),
+                # The list lives while the thing is under way; once its answer is out (status idle, the job still tidying up its record)
+                # it is in the answer event, and the same read that says not busy says no list (side.html shows it only while busy).
+                "trouble": self._trouble_here(job), "items": shown_rows(job.items) if busy and len(job.items) > 1 else [],
                 "others": self._others(),
                 "pending": [{k: v for k, v in card.items() if k not in ("future", "job")} for card in list(self.pending.values())],
-                "listening": int(time.time() - self.lecture["started"]) if self.lecture else None}
+                "listening": int(time.time() - self.lecture["started"]) if self.lecture else None,
+                # The ladder (`ladder.py`): an open question under an answer here, the one invitation the desktop panel may show now
+                # (`Ladder.next`; the app's own steps are its own), and whether the owner already connected or declined Reminders and Calendar.
+                "ladder": {"asking": self.entrusted.asking((self.chat or {}).get("username")), "next": self.panel_step(), "sources": self.entrusted.ladder.sources}}
 
     def shared(self, path):
         """A file the panel may show: it came from the owner, or the conversation itself names it."""
@@ -211,7 +242,7 @@ class Companion(Chats, Turns, Hands, Lectures, Agents):
             key = row["key"]
             if key.startswith("window:"):
                 row["window"], row["chat"] = key.rsplit(":", 1)[1], ""
-            elif key:
+            elif key and key != "desktop":
                 row["window"], row["chat"] = WECHAT, row["where"]
         return {"root": str(output_root()), "records": str(records.folder()), "today": local_today(), "rows": rows[:500]}
 
@@ -252,10 +283,13 @@ class Companion(Chats, Turns, Hands, Lectures, Agents):
 
     def ask(self, text, files=(), points=()):
         # On the loop, in the order things arrived: a sentence right after sticking to a window belongs to that window.
-        self.submit(self._ask(text, list(files), list(points)))
+        self.submit(self._ask(text, list(files), list(points), asked_at=time.time()))
 
-    async def _ask(self, text, files, points=()):
+    async def _ask(self, text, files, points=(), asked_at=None):
+        asked_at = time.time() if asked_at is None else asked_at
         await self.settle_chat()
+        if self.chat is None and not self.window:
+            await self.desktop()
         reply = None if files or points else greet.secret(text)
         if reply:
             self.add("owner", text)
@@ -263,18 +297,35 @@ class Companion(Chats, Turns, Hands, Lectures, Agents):
             return
         names = "".join(f"\n[{Path(f).name}](</{f.lstrip('/')}>)" for f in files)
         circled = "　".join(f"{chr(0x2460 + int(p.get('n') or 1) - 1)} {point_label(p)}" for p in points)
-        self.add("owner", text + names + (f"\n\n{circled}" if circled else ""))
+        # Said while something here is under way and not yet answered: it joins that (`_join`), and the desktop bubble says so (side.html `asideNews`).
+        joined = any(job.events is self.events and not job.stopping and not job.answer for job in self.active)
+        where = (self.chat, self.events, self.window)
+        here = conversation_key(self.chat, self.events)
+        event = self.add("owner", text + names + (f"\n\n{circled}" if circled else ""), **({"joined": True} if joined else {}))
         self.said = [*self.said, (secrets.token_hex(8), text)][-50:]
         self.feedback.heard((self.window or {}).get("app"), text)
-        here = conversation_key(self.chat, self.events)
         # How many words a thing takes is the measure of Tako: the fewer after the first, the better.
         self.feedback.count("said.more" if time.time() - self.last_spoke.get(here, 0) < SAME_THING_SECONDS else "said.first")
         self.last_spoke[here] = time.time()
         self.held.pop(here, None)  # They said something else: that comes first, and it decides what is still wanted.
         self.picked_up.pop(here, None)
+        if not files and not points and (pace_reply := self.entrusted.pace(text, asked_at)):
+            self.add("tako", pace_reply, where[1])
+            self.keep_now()
+            self._later(self.native("entrustedSync", **self.entrusted.native_state(), timeout=30))
+            return
         words = self._waiting_fill_note() + text
-        if files or points or not await self._steer(words):
-            await self.turn(words, attachments=files, where=(self.chat, self.events, self.window), points=points)
+        # One window, one thing: words, files and rings said while something is under way here are more of it (`_join`), never a thing of their own behind it.
+        async with self.joining.setdefault(here, asyncio.Lock()):
+            correction_error = await self.memory.correct(text, event, here, where[0] or {})
+            if correction_error or correction_error == "":
+                # Landed or not, the panel says which: the answer that follows comes from the model and proves neither.
+                self.add("note", correction_error or self.memory.receipt, where[1])
+            if await self._join(words, files, points, asked_at, where[1]):
+                return
+            job = Job(*where)
+            self.active.append(job)  # from now on, what is said here joins this one
+        await self.turn(words, attachments=files, where=where, job=job, points=points, asked_at=asked_at)
 
 
 async def main():
@@ -329,11 +380,16 @@ async def main():
             await companion.runtime.start()
     companion._later(companion.warm())
     companion._later(companion.feedback_forever())
+    companion._later(companion.threads_forever())
+    companion._later(companion.memory_forever())
     if HAS_WORKBENCH:
         companion._later(companion.desk_forever())
     token, agent_token = secrets.token_urlsafe(18), secrets.token_urlsafe(18)
     port = serve(companion, token, args.port, agent_token)
     open_door(port, agent_token)
+    # Any agent or script the owner has finds Tako by name (`ladder.place_command`). An isolated run only ever writes in a made-up home inside it.
+    if not os.environ.get("TAKO_HOME") or Path.home().resolve().is_relative_to(RUNTIME.resolve()):
+        await asyncio.to_thread(place_command)
     print(f"http://127.0.0.1:{port}/?t={token}", flush=True)
 
     if args.chat and HAS_WECHAT:

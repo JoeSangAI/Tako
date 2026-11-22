@@ -41,7 +41,6 @@ final class Updater: NSObject, UNUserNotificationCenterDelegate {
 
     // ---- when ----
     func start() {
-        UNUserNotificationCenter.current().delegate = self
         announceIfJustUpdated()
         DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in self?.check(quietly: true) }
         Timer.scheduledTimer(withTimeInterval: Updater.checkEvery, repeats: true) { [weak self] _ in self?.check(quietly: true) }

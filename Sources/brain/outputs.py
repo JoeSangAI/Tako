@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 import settings
+from file_access import protected_denial
 from settings import BACKUPS, RUNTIME, WORK, ZONE
 
 PRODUCTS = "产出文件"
@@ -42,7 +43,10 @@ def file_pictures(path, first=1, count=6):
         raise FileNotFoundError(path)
     tools = f"{os.environ.get('PATH', '')}:/opt/homebrew/bin:/usr/local/bin:/Applications/LibreOffice.app/Contents/MacOS"
     def run(*command):
-        subprocess.run(command, capture_output=True, timeout=90, check=False)
+        result = subprocess.run(command, capture_output=True, timeout=90, check=False)
+        detail = (result.stdout + result.stderr).decode(errors="replace")
+        if protected_denial(detail, path=source):
+            raise PermissionError("protected folder")
 
     with tempfile.TemporaryDirectory(dir=RUNTIME) as work:
         work = Path(work)
@@ -74,11 +78,20 @@ def light_picture(path, work):
     with contextlib.suppress(OSError, subprocess.SubprocessError):
         if os.name == "nt" or not work or source.stat().st_size <= LIGHT_PICTURE_BYTES:
             return str(source)
-        light = Path(work) / f"{source.stem}.看图.jpg"
-        subprocess.run(["/usr/bin/sips", "-Z", "1600", "-s", "format", "jpeg", "-s", "formatOptions", "80", str(source), "--out", str(light)],
-                       capture_output=True, timeout=30, check=False)
-        if light.is_file() and 0 < light.stat().st_size < source.stat().st_size:
-            return str(light)
+        with tempfile.NamedTemporaryFile(dir=work, prefix="看图-", suffix=".jpg", delete=False) as copy:
+            light = Path(copy.name)
+        keep = False
+        try:
+            converted = subprocess.run(
+                ["/usr/bin/sips", "-Z", "1600", "-s", "format", "jpeg", "-s", "formatOptions", "80", str(source), "--out", str(light)],
+                capture_output=True, timeout=30, check=False,
+            )
+            keep = converted.returncode == 0 and 0 < light.stat().st_size < source.stat().st_size
+            if keep:
+                return str(light)
+        finally:
+            if not keep:
+                light.unlink(missing_ok=True)
     return str(source)
 
 

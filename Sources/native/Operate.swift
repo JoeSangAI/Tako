@@ -27,14 +27,11 @@ struct Element {
     var value = ""     // what a text field holds now: truer than the picture of a window nobody is looking at
 }
 
-// Enter sends in these, so it is never pressed there.
-let messagingNames = ["微信", "wechat", "飞书", "lark", "feishu", "qq", "telegram", "slack", "discord", "信息", "messages", "钉钉", "dingtalk", "whatsapp", "企业微信", "wecom"]
 // A wrong click here can cost the owner their network or their machine: every step asks first.
 let askFirstBundles: Set<String> = ["com.liguangming.Shadowrocket", "com.apple.systempreferences", "com.apple.keychainaccess",
                                     "com.apple.Terminal", "com.googlecode.iterm2"]
 // Browsers that don't run on Chrome's engine: what looks like a text area there may be a web chat.
 let webBundles: Set<String> = ["com.apple.Safari", "org.mozilla.firefox", "com.apple.SafariTechnologyPreview"]
-let sendWords = ["发送", "发出", "寄出", "send", "reply all"]
 // Only what can't be taken back asks first. Stop, remove from a list, disconnect: undone with one more click.
 let riskyWords = ["提交", "submit", "支付", "付款", "pay", "购买", "buy", "下单", "checkout", "删除", "delete",
                   "清空", "发布", "publish", "post", "注销", "退出登录", "sign out", "log out", "卸载", "uninstall", "格式化", "erase",
@@ -48,21 +45,6 @@ let keyCodes: [String: CGKeyCode] = [
     "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23, "9": 25, "7": 26, "8": 28, "0": 29,
     "o": 31, "u": 32, "i": 34, "p": 35, "l": 37, "j": 38, "k": 40, "n": 45, "m": 46, ",": 43, ".": 47, "/": 44, "-": 27, "=": 24,
     "f1": 122, "f2": 120, "f3": 99, "f4": 118, "f5": 96, "f6": 97, "f7": 98, "f8": 100, "f9": 101, "f10": 109, "f11": 103, "f12": 111]
-
-/// A button says one short thing. A long line that merely contains the word ("不要发送") is not a button.
-func hits(_ text: String, _ words: [String]) -> String? {
-    let lowered = text.lowercased()
-    let pieces = [lowered] + lowered.components(separatedBy: .whitespacesAndNewlines)
-    for piece in pieces where !piece.isEmpty && piece.count <= 14 {
-        for word in words {
-            if word.allSatisfy({ $0.isASCII }) {
-                // English words whole only: "post" must not catch "poster".
-                if piece.range(of: "\\b\(NSRegularExpression.escapedPattern(for: word))\\b", options: .regularExpression) != nil { return word }
-            } else if piece.contains(word) { return word }
-        }
-    }
-    return nil
-}
 
 extension Controller {
     // MARK: windows
@@ -514,8 +496,8 @@ extension Controller {
 
     /// Whether this press has to stop: never for the owner to do, or needs them to say yes first.
     func gateClick(label: String, at point: CGPoint, in win: Win, confirmed: Bool) -> [String: Any]? {
-        if let word = hits(label, sendWords) { return refusal("这是“\(word)”，发送留给用户自己按，已停下") }
-        if win.isWeChat, point.y > win.frame.height - 48, point.x > win.frame.width - 110 { return refusal("这里是微信的发送键，留给用户自己按") }
+        if let word = SendGuard.button(label) { return refusal("这是“\(word)”，发送留给用户自己按，已停下") }
+        if SendGuard.weChatSendCorner(win.isWeChat, x: point.x, y: point.y, width: win.frame.width, height: win.frame.height) { return refusal("这里是微信的发送键，留给用户自己按") }
         if confirmed { return nil }
         if askFirstBundles.contains(win.bundle) { return ["needs": "在 \(win.app) 里点“\(label.isEmpty ? "(\(Int(point.x)),\(Int(point.y)))" : label)”"] }
         if let word = hits(label, riskyWords) { return ["needs": "在 \(win.app) 里点“\(label)”（\(word)，可能收不回来）"] }
@@ -560,10 +542,9 @@ extension Controller {
     func gateKey(_ keys: String, in win: Win, confirmed: Bool) -> [String: Any]? {
         let (flags, key) = chord(keys)
         let enter = key == "return" || key == "enter"
-        if enter || key == "space", let word = hits(focusedLabel(win.pid), sendWords) { return refusal("键盘正落在“\(word)”上，发送留给用户自己按") }
+        if enter || key == "space", let word = SendGuard.button(focusedLabel(win.pid)) { return refusal("键盘正落在“\(word)”上，发送留给用户自己按") }
         if enter {
-            let lowered = (win.app + " " + win.bundle).lowercased()
-            if messagingNames.contains(where: { lowered.contains($0) }) { return refusal("\(win.app) 里回车就是发送，这个键留给用户") }
+            if SendGuard.messagingEnter(win.app, win.bundle) { return refusal("\(win.app) 里回车就是发送，这个键留给用户") }
             // Command-Return sends in mail and most web apps, whatever holds the keyboard.
             if !flags.subtracting(.maskShift).isEmpty { return refusal("\(keys) 通常就是发送，留给用户自己按") }
             let focus = focusedSubrole(win.pid)
@@ -1055,7 +1036,7 @@ extension Controller {
 
     /// The owner pressed a line about a job on another window: the goo leaps over and the window comes up as it lands, then the panel opens there.
     /// A WeChat job also opens its chat: the press is the owner asking for exactly that, and the panel follows the chat WeChat shows.
-    func goTo(_ spec: String, chat: String) {
+    func goTo(_ spec: String, chat: String, openPanel: Bool = false) {
         Task { @MainActor in
             guard let win = await resolve(spec), !blockedOwners.contains(win.app) else {
                 goo.fumble()
@@ -1091,7 +1072,7 @@ extension Controller {
                 // Taken over mid-way says needsFront without a why; that, or WeChat no longer in front, is the owner gone elsewhere.
                 let ownerLeft = !isFront(win) || (opened["needsFront"] as? Bool == true && opened["why"] == nil)
                 if opened["ok"] as? Bool == true {
-                    headerAt = CACurrentMediaTime()  // the panel follows the chat now, not on the next round
+                    noteHeaderActivity(switching: true)  // the panel follows the chat now, not on the next round
                 } else if !opened.isEmpty, !ownerLeft,
                           let said = try? JSONSerialization.data(withJSONObject: ["没能替你点开微信里的「\(chat)」，在左边列表点它就行"]),
                           let text = String(data: said, encoding: .utf8) {
@@ -1099,7 +1080,7 @@ extension Controller {
                     web.evaluateJavaScript("wentNowhere(\(text)[0])", completionHandler: nil)
                 }
             }
-            guard reopen, goo.mode == .attached, target?.id == win.id else { return }
+            guard reopen || openPanel, goo.mode == .attached, target?.id == win.id else { return }
             openQuietly = true
             web.evaluateJavaScript("setOpen(true)", completionHandler: nil)
         }
@@ -1143,11 +1124,13 @@ extension Controller {
             if !sideOpen { web.evaluateJavaScript("setOpen(true)") }
             return
         }
-        // A pet on the glass: the frontmost window of the screen it is on.
-        scan()
-        let on = { (frame: CGRect) in self.goo.screenRect.contains(CGPoint(x: frame.midX, y: frame.midY)) }
-        guard let win = platforms.first(where: { $0.sticky && on($0.frame) }) else { summon(); return }
-        go(to: win.id, edge: win.frame.maxX)
+        // The desktop panel was the last one and nothing has stuck since: it opens again on the conversation it showed
+        // (put away is only hidden), where it was; not asked for the desktop's again.
+        if desktopPanel, loaded {
+            if !sideOpen { showDesktopPanel() }
+            return
+        }
+        openDesktop()
     }
 
     func go(to id: Int, edge: CGFloat) {

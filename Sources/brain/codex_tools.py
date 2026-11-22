@@ -103,7 +103,7 @@ async def shell(runtime, thread, turn, args):
             runtime.emit(thread, "item/completed", turnId=turn, item={"type": "commandExecution", "id": item, "status": "declined"})
             return f"{runtime.owner} 没有同意在沙箱外运行这条命令。", False
     code, output, took = await _run(command, cwd, timeout, None if outside else writable_roots(context))
-    runtime.emit(thread, "item/completed", turnId=turn, item={"type": "commandExecution", "id": item, "exitCode": code})
+    runtime.emit(thread, "item/completed", turnId=turn, item={"type": "commandExecution", "id": item, "exitCode": code, "aggregatedOutput": output})
     said = f"Exit code: {'超时，已停' if code is None else code}\nWall time: {took:.1f} seconds\nOutput:\n{_clip(output)}"
     if not outside and code and "operation not permitted" in output.lower():
         said += "\n（沙箱拦下了写入。真要写到这里，就带 with_escalated_permissions 和 justification 再申请一次。）"

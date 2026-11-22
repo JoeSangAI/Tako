@@ -124,7 +124,7 @@ extension Goo {
         opening.addCurve(to: L(M(-0.105, 0.083)), control1: L(M(-0.07, 0.215)), control2: L(M(-0.115, 0.15)))
         opening.closeSubpath()
         k.mouthIn.path = opening
-        k.mouthTongue.path = opening.intersection(ellipse(M(0, 0.255), 0.12 * r * s * squeeze, 0.105 * r * s))
+        k.mouthTongue.path = memo(4, [m.x, m.y, r, s, squeeze, screenRect.minX, screenRect.maxY]) { opening.intersection(ellipse(M(0, 0.255), 0.12 * r * s * squeeze, 0.105 * r * s)) }
         let lip = CGMutablePath()
         lip.move(to: L(M(-0.13, 0.062)))
         lip.addQuadCurve(to: L(M(0, 0.055)), control: L(M(-0.07, 0.11)))
@@ -165,61 +165,14 @@ extension Goo {
         let since = CGFloat(clock - k.dressAt)
         // putting her on: the splash hides the change, then the apron pops on, the tail springs out, a spout, a wiggle
         k.dressed = clamp((since - 0.1) / 0.22, 0, 1)
-        let apronIn = popIn(since, 0.35), tailIn = popIn(since, 0.7)
+        let apronIn = popIn(since, 0.35)
         func passes(_ at: CGFloat) -> Bool { since >= at && since - dt < at }
         if passes(0.35) || passes(0.7) { kick(32) }   // a little jolt as each part pops on
         if passes(1.15) { spout(1); kick(40) }
         if passes(1.6) { celebrate() }
         if k.dressed > 0.5 { seaLife(dt) }
         let petted = clock - k.pettedAt < 1.2
-
-        // what her moods ask of the tail: how high it is held, how hard and how fast it wags. Pleased, it goes right up.
-        let scared = guilty || !ink.isEmpty
-        let moving = mode == .free && wanderTo != nil && creep > 0.3
-        var lift: CGFloat = 0, wagAmount: CGFloat = 0.08, wagSpeed: CGFloat = 2.4
-        if sleeping { lift = -0.45; wagAmount = 0.03; wagSpeed = 1 }
-        else if scared { lift = -0.7; wagAmount = 0.05; wagSpeed = 20 }                // tucked away, trembling
-        else if mode == .grabbed { lift = -0.5; wagAmount = 0.25; wagSpeed = 9 }      // dangling, wriggling
-        else if dizzy { lift = -0.2; wagAmount = 0.3; wagSpeed = 5 }
-        else if petted { lift = 0.25; wagAmount = 0.3; wagSpeed = 18 }                // stroked: a delighted flutter
-        else if happy { lift = 0.2; wagAmount = 0.12; wagSpeed = 12 }                // up as in the drawing, wagging
-        else if oops { lift = -0.45; wagAmount = 0.04; wagSpeed = 2 }
-        else if pop > 0.3 { lift = 0.35; wagAmount = 0.1; wagSpeed = 3 }
-        else if let a = acting {
-            switch a {
-            case "think": lift = 0.15; wagAmount = 0.12; wagSpeed = 1.4                  // curling slowly
-            case "look", "read": lift = 0.3; wagAmount = 0.04; wagSpeed = 3              // held still, attentive
-            case "search": lift = 0.25; wagAmount = 0.12; wagSpeed = 5                   // curious
-            case "run": lift = 0.15; wagAmount = 0.16; wagSpeed = 9                      // busy
-            case "answer", "write", "file": lift = 0.15; wagAmount = 0.12; wagSpeed = 3
-            case "listen": lift = 0.2; wagAmount = 0.2; wagSpeed = 6.8                   // tapping to the beat
-            case "wait": lift = 0.2; wagAmount = 0.06; wagSpeed = 2                      // waiting politely
-            case "trouble": lift = -0.5; wagAmount = 0.04; wagSpeed = 1.5                // drooping
-            default: break
-            }
-        } else if moving { lift = 0.1; wagAmount = 0.3; wagSpeed = 4.5 }                // a slow rudder as she swims along
-        if clock - k.swishAt < 1.4 { lift = 0.3; wagAmount = 0.3; wagSpeed = 10 }
-        // and it lags behind the body: a sudden move swings it the other way, and it settles after
-        let drag = clamp(-(v.x - k.lastV.x) / max(dt, 0.001) / 9000, -0.35, 0.35) + clamp(v.y / 1400, -0.25, 0.25)
-        k.spring(&k.tailLift, &k.tailLiftV, to: lift + drag, k: 200, damping: 12, dt)
-        k.wag += (wagAmount - k.wag) * min(1, dt * 6)
-        k.wagPhase += wagSpeed * dt
-
-        // The tail, the drawing's own (the one in the film), pinned to the skin low on her back with its root tucked in behind
-        // it; mood lifts and wags it. Seen from the front it is behind her and out of sight; it comes round
-        // into view as she turns side on, holding on to a window's edge.
-        let side = clamp(abs(turn) / Goo.sideTurn, 0, 1) * tailIn
-        if side > 0.02 && !puddle {
-            let box = Goo.tailBox, pivot = c + (rim(ring, Goo.tailAngle) - c) * 0.92
-            k.dress(k.tailArt, "tail", points: box.width * r, scale: scale)
-            k.tailArt.bounds = CGRect(x: 0, y: 0, width: box.width * r, height: box.height * r)
-            k.tailArt.anchorPoint = CGPoint(x: (Goo.tailPivot.x - box.minX) / box.width, y: 1 - (Goo.tailPivot.y - box.minY) / box.height)
-            k.tailArt.position = L(pivot)
-            let swing = min(0.1, clamp(k.tailLift, -1, 1) * 0.42 - 0.04 + k.wag * sin(k.wagPhase) * 0.7)
-            k.tailArt.transform = CATransform3DScale(CATransform3DMakeRotation(swing, 0, 0, 1), side * Goo.tailScale * Goo.tailFat, side * Goo.tailScale, 1)
-            k.tailArt.isHidden = false
-        } else { k.tailArt.isHidden = true }
-        k.tailArt.shadowOpacity = onDark ? 0.45 : 0
+        whaleTail(dt, ring: ring)
 
         // The apron, the drawing's own, on her front like a bib on the skin: squashed with the body and tipped with the
         // face; it pops on from its middle.
@@ -290,8 +243,86 @@ extension Goo {
             sprite("pad", hold + V(facing * 0.22 * r, 0.12 * r), width: 0.8 * r, turn: -0.12 * facing, held: true)
         }
 
-        drawSea(arms.path.map { skin.union($0) } ?? skin, dt)
+        drawSea(withLimbs(skin), dt)
     }
+
+    /// Her tail: what her moods ask of it (how high it is held, how hard and how fast it wags), and where it is this frame.
+    /// While nothing else moves on her it is drawn on its own, every frame, and its wag handed to Core Animation (`keepWagging`).
+    func whaleTail(_ dt: CGFloat, ring: [V]) {
+        let k = costume, r = radius, scale = view.window?.backingScaleFactor ?? 2
+        let since = CGFloat(clock - k.dressAt), tailIn = popIn(since, 0.7)
+        let petted = clock - k.pettedAt < 1.2
+        // Pleased, it goes right up.
+        let scared = guilty || !ink.isEmpty
+        let moving = mode == .free && wanderTo != nil && creep > 0.3
+        var lift: CGFloat = 0, wagAmount: CGFloat = 0.08, wagSpeed: CGFloat = 2.4
+        if sleeping { lift = -0.45; wagAmount = 0.03; wagSpeed = 1 }
+        else if scared { lift = -0.7; wagAmount = 0.05; wagSpeed = 20 }                // tucked away, trembling
+        else if mode == .grabbed { lift = -0.5; wagAmount = 0.25; wagSpeed = 9 }      // dangling, wriggling
+        else if dizzy { lift = -0.2; wagAmount = 0.3; wagSpeed = 5 }
+        else if petted { lift = 0.25; wagAmount = 0.3; wagSpeed = 18 }                // stroked: a delighted flutter
+        else if happy { lift = 0.2; wagAmount = 0.12; wagSpeed = 12 }                // up as in the drawing, wagging
+        else if oops { lift = -0.45; wagAmount = 0.04; wagSpeed = 2 }
+        else if pop > 0.3 { lift = 0.35; wagAmount = 0.1; wagSpeed = 3 }
+        else if let a = acting {
+            switch a {
+            case "think": lift = 0.15; wagAmount = 0.12; wagSpeed = 1.4                  // curling slowly
+            case "look", "read": lift = 0.3; wagAmount = 0.04; wagSpeed = 3              // held still, attentive
+            case "search": lift = 0.25; wagAmount = 0.12; wagSpeed = 5                   // curious
+            case "run": lift = 0.15; wagAmount = 0.16; wagSpeed = 9                      // busy
+            case "answer", "write", "file": lift = 0.15; wagAmount = 0.12; wagSpeed = 3
+            case "listen": lift = 0.2; wagAmount = 0.2; wagSpeed = 6.8                   // tapping to the beat
+            case "wait": lift = 0.2; wagAmount = 0.06; wagSpeed = 2                      // waiting politely
+            case "trouble": lift = -0.5; wagAmount = 0.04; wagSpeed = 1.5                // drooping
+            default: break
+            }
+        } else if moving { lift = 0.1; wagAmount = 0.3; wagSpeed = 4.5 }                // a slow rudder as she swims along
+        if clock - k.swishAt < 1.4 { lift = 0.3; wagAmount = 0.3; wagSpeed = 10 }
+        // and it lags behind the body: a sudden move swings it the other way, and it settles after
+        let drag = clamp(-(v.x - k.lastV.x) / max(dt, 0.001) / 9000, -0.35, 0.35) + clamp(v.y / 1400, -0.25, 0.25)
+        k.spring(&k.tailLift, &k.tailLiftV, to: lift + drag, k: 200, damping: 12, dt)
+        k.wag += (wagAmount - k.wag) * min(1, dt * 6)
+        k.wagPhase += wagSpeed * dt
+        k.wagSpeed = wagSpeed
+
+        // The tail, the drawing's own (the one in the film), pinned to the skin low on her back with its root tucked in behind
+        // it; mood lifts and wags it. Seen from the front it is behind her and out of sight; it comes round
+        // into view as she turns side on, holding on to a window's edge.
+        let side = clamp(abs(turn) / Goo.sideTurn, 0, 1) * tailIn
+        if side > 0.02 && !puddle {
+            let box = Goo.tailBox, pivot = c + (rim(ring, Goo.tailAngle) - c) * 0.92
+            k.dress(k.tailArt, "tail", points: box.width * r, scale: scale)
+            k.tailArt.bounds = CGRect(x: 0, y: 0, width: box.width * r, height: box.height * r)
+            k.tailArt.anchorPoint = CGPoint(x: (Goo.tailPivot.x - box.minX) / box.width, y: 1 - (Goo.tailPivot.y - box.minY) / box.height)
+            k.tailArt.position = L(pivot)
+            let swing = min(0.1, clamp(k.tailLift, -1, 1) * 0.42 - 0.04 + k.wag * sin(k.wagPhase) * 0.7)
+            k.tailArt.transform = CATransform3DScale(CATransform3DMakeRotation(swing, 0, 0, 1), side * Goo.tailScale * Goo.tailFat, side * Goo.tailScale, 1)
+            k.tailSide = side
+            k.tailArt.isHidden = false
+        } else { k.tailArt.isHidden = true }
+        k.tailArt.shadowOpacity = onDark ? 0.45 : 0
+
+    }
+
+    /// While nothing else on her moves her tail goes on wagging by Core Animation: one wag from where it is, over and over.
+    func keepWagging() {
+        let k = costume
+        guard k.tailShowing, k.tailArt.animation(forKey: "wag") == nil, k.wagSpeed > 0.01 else { return }
+        let period = Double(2 * CGFloat.pi / k.wagSpeed), samples = 32
+        var values: [NSValue] = [], times: [NSNumber] = []
+        for i in 0...samples {
+            let u = CGFloat(i) / CGFloat(samples)
+            let swing = min(0.1, clamp(k.tailLift, -1, 1) * 0.42 - 0.04 + k.wag * sin(k.wagPhase + u * 2 * .pi) * 0.7)
+            values.append(NSValue(caTransform3D: CATransform3DScale(CATransform3DMakeRotation(swing, 0, 0, 1), k.tailSide * Goo.tailScale * Goo.tailFat, k.tailSide * Goo.tailScale, 1)))
+            times.append(NSNumber(value: Double(u)))
+        }
+        let wag = CAKeyframeAnimation(keyPath: "transform")
+        wag.values = values; wag.keyTimes = times; wag.duration = period; wag.repeatCount = .infinity
+        wag.preferredFrameRateRange = CAFrameRateRange(minimum: 10, maximum: 30, preferred: 20)
+        k.tailArt.add(wag, forKey: "wag")
+    }
+
+    func stopWagging() { costume.tailArt.removeAnimation(forKey: "wag") }
 
     // MARK: her sea
 
@@ -330,11 +361,7 @@ extension Goo {
                 // a bubble or two rising off her head, as if from the deep
                 k.nextBubble = clock + Double.random(in: 0.8...1.2)
                 k.bubbles.append((top + V(CGFloat.random(in: -0.35...0.35) * r, -0.1 * r), V(0, -1.0 * r), 0.12 * r, 1.7, CGFloat.random(in: 0.2...0.26) * r))
-            } else if sleeping {
-                // asleep, one slow bubble a breath instead of Z's
-                k.nextBubble = clock + 1.9
-                k.bubbles.append((top + V(0.15 * r, -0.08 * r), V(0.08 * r, -0.42 * r), 0.1 * r, 2.4, 0.24 * r))
-            } else { k.nextBubble = clock + 0.2 }
+            } else { k.nextBubble = clock + 0.2 }   // asleep, one slow bubble a breath instead of Z's: `dream` in GooDrawing.swift
         }
         // held up, she drips
         if mode == .grabbed && clock > k.nextDrip {
