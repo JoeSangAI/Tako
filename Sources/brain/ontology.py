@@ -215,11 +215,13 @@ class FileOntology:
     def _post_correction(self, change):
         request = Request(self._endpoint(), data=engine.encode(change).encode(), method="POST",
                           headers={"Content-Type": "application/json"})
-        with build_opener(ProxyHandler({}), NoRedirect()).open(request, timeout=0.5) as response:
+        # The workbench answers within a second or two under load; retries are idempotent.
+        with build_opener(ProxyHandler({}), NoRedirect()).open(request, timeout=CORRECTION_TIMEOUT) as response:
             if response.status not in (200, 201, 204):
                 raise OSError("ontology source did not confirm the correction")
 
 
+CORRECTION_TIMEOUT = 5
 CORRECTION_FIELDS = {
     "名称": "name", "名字": "name", "状态": "status", "进度": "status",
     "下一步": "next", "目标": "goal", "截止时间": "due", "位置": "home", "路径": "home",

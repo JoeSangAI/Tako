@@ -17,7 +17,7 @@ NAME_LISTS = {"aliases", "misrecognitions"}
 LINKS = {
     "organization": "subject", "organization_id": "subject", "client": "subject",
     "people": "subject", "debtor": "subject", "creditor": "subject",
-    "project": "project", "superseded_by": "action",
+    "project": "project", "parent": "project", "superseded_by": "action",
 }
 TERMINAL = {"completed", "cancelled", "superseded"}
 RESERVED = {"id", "kind", "at", "source_updated_at", "evidence", "disagreements", "certainty"}
