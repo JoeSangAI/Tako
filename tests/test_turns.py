@@ -2678,8 +2678,9 @@ class Inside(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory(dir=self.home) as folder:
             self.tako.memory = Memory(root=folder)
             identity = "project:editing"
-            self.tako.memory.append([{"op": "create", "id": identity, "kind": "project", "actor": "model",
-                                      "fields": {"name": "剪辑项目", "status": "进行中"}, "at": time.time()}])
+            self.tako.memory.journal.append(lambda _: [{"op": "create", "id": identity, "kind": "project", "actor": "model",
+                                                       "fields": {"name": "剪辑项目", "status": "进行中"}, "at": time.time(),
+                                                       "evidence": [{"ref": "trace:editing", "quote": None}]}])
             _, prompts = await self.wechat([])
             await self.tako._ask("剪辑项目进度如何？", [])
             self.assertIn('"status":"进行中"', prompts[-1])
@@ -2693,7 +2694,8 @@ class Inside(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(brain.thread, thread)
             self.assertIn("那现在是什么状态", prompts[-1])
             self.assertNotIn('"status":"进行中"', "\n".join(prompts[-2:]))
-            self.assertEqual(self.tako.memory.rows[-1]["actor"], "owner")
+            row = self.tako.memory.journal.state["field_records"][identity]["status"]
+            self.assertEqual(row["actor"], "owner")
 
     async def test_a_draft_is_watched_only_until_sent_and_without_a_model(self):
         now = int(time.time())

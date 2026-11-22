@@ -16,30 +16,40 @@ HOME = tempfile.TemporaryDirectory(prefix="tako-memory-")
 os.environ["TAKO_HOME"] = HOME.name
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "Sources/brain"))
 import ontology
+from vendor.ontology_engine import ontology as engine
 import records
 from entrusted import Entrusted, pace_mode
 from ladder import Ladder
 
 
 def judgment(op="create", actor="model", at=1, **fields):
-    return {"op": op, "actor": actor, "event_at": at, "kind": "project", "id": "project:stable", "fields": fields, "source": "trace:1"}
+    if op == "create":
+        fields.setdefault("name", "剪辑项目")
+    return {"op": op, "actor": actor, "at": at, "kind": "project", "id": "project:stable",
+            "fields": fields, "evidence": [{"ref": "trace:1", "quote": None}]}
 
 
 class Fold(unittest.TestCase):
-    def test_owner_wins_and_later_owner_can_correct(self):
-        rows = [judgment(status="open"), judgment("update", "owner", 2, status="paused"), judgment("update", "model", 3, status="done")]
-        self.assertEqual(ontology.fold(rows)["project:stable"]["status"], "paused")
-        self.assertIn("status", ontology.fold(rows)["project:stable"]["disagreements"])
-        rows.append(judgment("update", "owner", 4, status="done"))
-        self.assertEqual(ontology.fold(rows)["project:stable"]["status"], "done")
+    def test_owner_source_model_priority_and_later_owner_can_correct(self):
+        rows = [judgment(status="open"), judgment("update", "source", 2, status="review"),
+                judgment("update", "model", 3, status="draft")]
+        item = engine.replay(rows)["items"]["project:stable"]
+        self.assertEqual(item["status"], "review")
+        self.assertEqual(item["disagreements"]["status"]["value"], "draft")
+        rows.extend([judgment("update", "owner", 4, status="paused"), judgment("update", "source", 5, status="ready")])
+        item = engine.replay(rows)["items"]["project:stable"]
+        self.assertEqual(item["status"], "paused")
+        self.assertEqual(item["disagreements"]["status"]["actor"], "source")
+        rows.append(judgment("update", "owner", 6, status="done"))
+        self.assertEqual(engine.replay(rows)["items"]["project:stable"]["status"], "done")
 
     def test_later_event_not_append_order_wins_and_ids_stable(self):
         rows = [judgment(status="open"), judgment("update", at=3, status="done"), judgment("update", at=2, status="paused")]
-        a = ontology.fold(rows)
-        self.assertEqual(a["project:stable"]["status"], "done")
-        self.assertEqual(a, ontology.fold(rows))
-        self.assertEqual(list(a), ["project:stable"])
-        self.assertEqual(ontology.fold([judgment("update", name="orphan")]), {})
+        state = engine.replay(rows)
+        self.assertEqual(state["items"]["project:stable"]["status"], "done")
+        self.assertEqual(state, engine.replay(rows))
+        with self.assertRaises(ValueError):
+            engine.replay([judgment("update", status="orphan")])
 
     def test_summary_limit_and_priority(self):
         items = {str(n): {"id": str(n), "kind": "subject", "name": "名字" * 200, "at": n} for n in range(40)}
@@ -68,12 +78,21 @@ class Incremental(unittest.IsolatedAsyncioTestCase):
     def trace(self, text="状态是暂停", at=1, role="owner"):
         records._append("2026-11-17", records._block({"r": role, "at": at, "k": "desktop"}, body=text))
 
+    def append(self, *rows):
+        self.memory.journal.append(lambda _: rows)
+
+    def journal_rows(self, memory=None):
+        path = (memory or self.memory).journal.path
+        return [row for entry in path.read_text().splitlines() if entry
+                for row in (json.loads(entry).get("records") or [json.loads(entry)])]
+
     async def reader(self, instructions, text, **kwargs):
         self.calls.append((instructions, json.loads(text), kwargs))
         trace = self.calls[-1][1]["traces"][-1]
         return json.dumps([{"op": "create" if not self.memory.items else "update", "kind": "project",
                             **({"id": next(iter(self.memory.items))} if self.memory.items else {}), "actor": "owner",
-                            "fields": {"status": trace["text"]}, "source": trace["source"], "quote": trace["text"]}])
+                            "fields": ({"status": trace["text"]} if self.memory.items else
+                                       {"name": "剪辑项目", "status": trace["text"]}), "source": trace["source"], "quote": trace["text"]}])
 
     async def test_empty_and_no_new_trace_never_call_reader(self):
         self.assertFalse(await self.memory.refresh(self.reader))
@@ -85,37 +104,37 @@ class Incremental(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await restarted.refresh(self.reader))
         self.assertEqual(list(restarted.items), [identity])
         self.assertEqual(len(self.calls), 1)
-        self.assertEqual(self.memory.path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.memory.journal.path.stat().st_mode & 0o777, 0o600)
 
     async def test_correction_is_owner_row_and_next_context_uses_it(self):
         identity = "project:stable"
-        self.memory.append([judgment(name="剪辑项目", status="进行中")])
+        self.append(judgment(status="进行中"))
         words = "剪辑项目的状态不是进行中，而是暂停了。"
         event = {"role": "owner", "at": time.time(), "text": words}
         self.assertEqual(await self.memory.correct(words, event, "desktop", {"kind": "desktop"}), "")
         self.assertEqual(list(self.memory.items), [identity])
-        self.assertEqual(self.memory.rows[-1]["actor"], "owner")
-        self.assertEqual(self.catches_source(self.memory.rows[-1]["source"]), words)
+        self.assertEqual(self.journal_rows()[-1]["actor"], "owner")
+        self.assertEqual(self.catches_source(self.journal_rows()[-1]["evidence"][0]["ref"]), words)
         self.assertIn('"status":"暂停了"', await self.memory.context())
         restarted = ontology.Memory(root=self.root)
         self.assertIn('"status":"暂停了"', await restarted.context())
         self.assertFalse(self.calls)
 
     async def test_a_correction_said_without_the_particle_lands_and_plain_talk_stays_plain(self):
-        self.memory.append([judgment(name="剪辑项目", status="进行中")])
+        self.append(judgment(status="进行中"))
         for words, value in (("纠正：剪辑项目状态是暂停", "暂停"), ("更正一下，剪辑项目进度改成已完成。", "已完成"),
                              ("剪辑项目状态不是已完成，是暂停", "暂停")):
             event = {"role": "owner", "at": time.time(), "text": words}
             self.assertEqual(await self.memory.correct(words, event, "desktop", {"kind": "desktop"}), "", words)
             self.assertEqual(self.memory.items["project:stable"]["status"], value, words)
-            self.assertEqual(self.memory.rows[-1]["actor"], "owner")
+            self.assertEqual(self.journal_rows()[-1]["actor"], "owner")
             self.assertEqual(self.memory.receipt, f"记下了：剪辑项目的状态是{value}。", "said back in the owner's terms, by name")
-        rows = len(self.memory.rows)
+        rows = len(self.journal_rows())
         # No field of the memory is named, or nothing marks it as a correction: it is the turn's to understand, never a judgment.
         for words in ("纠正：第三页标题是新品发布", "剪辑项目状态是暂停", "剪辑项目现在什么状态"):
             event = {"role": "owner", "at": time.time(), "text": words}
             self.assertIsNone(await self.memory.correct(words, event, "desktop", {"kind": "desktop"}), words)
-        self.assertEqual(len(self.memory.rows), rows)
+        self.assertEqual(len(self.journal_rows()), rows)
         self.assertFalse(self.calls)
 
     def catches_source(self, source):
@@ -126,17 +145,17 @@ class Incremental(unittest.IsolatedAsyncioTestCase):
     async def test_assistant_cannot_acquire_owner_priority(self):
         self.trace(role="tako")
         await self.memory.refresh(self.reader)
-        self.assertEqual(self.memory.rows[0]["actor"], "model")
+        self.assertEqual(self.journal_rows()[0]["actor"], "model")
 
     async def test_ambiguous_target_and_model_judgment_do_not_change_owner_fields(self):
-        self.memory.append([judgment(name="剪辑项目", status="进行中"), {**judgment(name="剪辑项目"), "id": "project:other"}])
+        self.append(judgment(status="进行中"), {**judgment(), "id": "project:other"})
         words = "纠正：剪辑项目的状态是暂停。"
         event = {"role": "owner", "at": time.time(), "text": words}
         self.assertIn("唯一", await self.memory.correct(words, event, "desktop", {}))
-        self.assertEqual(len(self.memory.rows), 2)
+        self.assertEqual(len(self.journal_rows()), 2)
         self.trace(words)
         await self.memory.refresh(self.reader)
-        self.assertEqual(self.memory.rows[-2]["actor"], "model")
+        self.assertEqual(self.journal_rows()[-1]["actor"], "model")
 
     async def test_invalid_output_does_not_advance_cursor(self):
         self.trace()
@@ -149,7 +168,7 @@ class Incremental(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.memory.items)
 
     async def test_long_trace_uses_related_items_and_resumes_after_restart(self):
-        self.memory.append([judgment(name="剪辑项目"), {**judgment(name="别的项目"), "id": "project:unrelated"}])
+        self.append(judgment(), {**judgment(name="别的项目"), "id": "project:unrelated"})
         lead = "剪辑项目" + "字" * ontology.TRACE_LIMIT
         self.trace(lead + "最后一段")
         seen = []
@@ -165,7 +184,7 @@ class Incremental(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await ontology.Memory(root=self.root).refresh(reader))
 
     async def test_old_id_resolves_to_merged_item_after_restart(self):
-        self.memory.append([judgment(name="剪辑项目"), {**judgment(name="同一项目"), "id": "project:old"}])
+        self.append(judgment(), {**judgment(name="同一项目"), "id": "project:old"})
         words = "合并：project:old -> project:stable"
         event = {"role": "owner", "at": time.time(), "text": words}
         self.assertEqual(await self.memory.correct(words, event, "desktop", {}), "")
@@ -175,7 +194,111 @@ class Incremental(unittest.IsolatedAsyncioTestCase):
         event = {"role": "owner", "at": time.time(), "text": words}
         self.assertEqual(await memory.correct(words, event, "desktop", {}), "")
         self.assertEqual(memory.items["project:stable"]["status"], "暂停")
-        self.assertEqual(memory.rows[-1]["id"], "project:stable")
+        self.assertEqual(self.journal_rows(memory)[-1]["id"], "project:stable")
+
+    async def test_subject_lookup_source_alias_union_owner_replacement_and_rename(self):
+        identity = "雾铃"
+        def change(fields, at, op="update"):
+            return {"op": op, "actor": "source", "at": at, "kind": "subject", "id": identity,
+                    "fields": fields, "evidence": [{"ref": f"trace:{at}", "quote": "示例文字"}]}
+        self.append(change({"name": identity, "aliases": ["小铃"], "misrecognitions": ["雾林"]}, 1, "create"),
+                    change({"aliases": ["阿铃"], "misrecognitions": ["木铃"]}, 2))
+        self.assertEqual(self.memory.items[identity]["misrecognitions"], ["雾林", "木铃"])
+        self.assertEqual(self.memory.items[identity]["aliases"], ["小铃", "阿铃"])
+        async def correct(words):
+            event = {"role": "owner", "at": time.time(), "text": words}
+            self.assertEqual(await self.memory.correct(words, event, "desktop", {}), "")
+        await correct("纠正：木铃的错听是新铃")
+        await correct("纠正：阿铃名称改为雾铃星")
+        await correct("纠正：雾铃的状态是已确认")
+        memory = ontology.Memory(root=self.root)
+        view = ontology.OntologyView(memory.items, memory.journal.state["redirects"])
+        self.assertEqual(view.resolve(identity), "雾铃星")
+        self.assertEqual(view.find("新铃"), ["雾铃星"])
+        self.assertEqual(view.find("木铃"), [])
+        self.assertEqual(memory.items["雾铃星"]["status"], "已确认")
+        self.assertEqual(memory.items["雾铃星"]["misrecognitions"], ["新铃"])
+
+    async def test_named_ids_allocate_suffixes_and_allow_explicit_disambiguation(self):
+        words = "纸鸢是两个不同的人"
+        self.trace(words)
+        async def reader(instructions, text, **kwargs):
+            source = json.loads(text)["traces"][0]["source"]
+            return json.dumps([{"op": "create", "kind": "subject", "source": source,
+                                "fields": {"name": "纸鸢", "status": status}, "quote": words}
+                               for status in ("甲", "乙")])
+        self.assertTrue(await self.memory.refresh(reader))
+        self.assertEqual(set(self.memory.items), {"纸鸢", "纸鸢 (2)"})
+        for request, expected in (("纠正：纸鸢状态是丙", "唯一"), ("纠正：`纸鸢`.status = 丁", "")):
+            event = {"role": "owner", "at": time.time(), "text": request}
+            result = await self.memory.correct(request, event, "desktop", {})
+            if expected:
+                self.assertIn(expected, result)
+            else:
+                self.assertEqual(result, "")
+        self.assertEqual(self.memory.items["纸鸢"]["status"], "丁")
+        self.assertEqual(self.memory.items["纸鸢 (2)"]["status"], "乙")
+
+    async def test_legacy_batch_migrates_once_with_old_ids_cursors_and_no_inferred_actions(self):
+        legacy = self.root / "judgments.jsonl"
+        at = time.time()
+        records.entrust({"id": "promise-fixture", "text": "提醒我给纸鸢浇水", "at": at,
+                         "action": "keep", "state": "held"})
+        rows = [
+            {"op": "create", "kind": "subject", "id": "subject:old", "actor": "model", "event_at": 1,
+             "fields": {"name": "雾铃", "aliases": ["阿铃"]}, "source": "trace:old"},
+            {"op": "create", "kind": "subject", "id": "subject:duplicate", "actor": "model", "event_at": 2,
+             "fields": {"name": "雾林"}},
+            {"op": "create", "kind": "project", "id": "project:legacy", "actor": "model", "event_at": 3,
+             "fields": {"name": "纸鸢计划", "home": "/tmp/paper-kite"}},
+            {"op": "update", "kind": "project", "id": "project:legacy", "actor": "owner", "event_at": 4,
+             "fields": {"name": "纸鸢展", "status": "paused"}, "source": "trace:owner", "direct": True},
+            {"op": "merge", "kind": "subject", "id": "subject:duplicate", "into": "subject:old",
+             "actor": "owner", "event_at": 5, "source": "trace:merge"},
+            {"op": "create", "kind": "action", "id": "action:inferred", "actor": "model", "event_at": 6,
+             "fields": {"name": "一件模型猜的事"}},
+            {"op": "update", "kind": "project", "id": "project:external", "actor": "owner", "event_at": 7,
+             "fields": {"status": "paused"}, "direct": True},
+            {"op": "read", "positions": {"tako:2026-11-17.md": 1}},
+        ]
+        original = json.dumps({"op": "batch", "rows": rows}, ensure_ascii=False) + '\n{"partial'
+        legacy.write_text(original)
+        self.trace("迁移前已经读过的痕迹")
+        memory = ontology.Memory(root=self.root)
+        state = engine.load(memory.journal.path)
+        self.assertEqual(set(state["items"]), {"纸鸢展", "雾林"})
+        self.assertEqual(state["redirects"]["subject:old"], state["redirects"]["subject:duplicate"])
+        self.assertEqual(engine.find(state, "阿铃"), ["雾林"])
+        self.assertEqual(state["redirects"]["project:legacy"], "纸鸢展")
+        self.assertEqual(state["items"]["纸鸢展"]["status"], "paused")
+        self.assertIn({"ref": "trace:owner", "quote": None}, state["items"]["纸鸢展"]["evidence"])
+        self.assertFalse(await memory.refresh(self.reader))
+        context = await memory.context()
+        self.assertIn("action:entrusted:promise-fixture", context)
+        self.assertNotIn("action:inferred", context)
+        journal_bytes = memory.journal.path.read_bytes()
+        with patch.object(ontology.Journal, "checkpoint", side_effect=OSError):
+            retry = self.root / "retry"
+            retry.mkdir()
+            (retry / "judgments.jsonl").write_text(original)
+            with self.assertRaises(OSError):
+                ontology.Memory(root=retry)
+        recovered = ontology.Memory(root=retry)
+        self.assertEqual(len(self.journal_rows(recovered)), len(self.journal_rows(memory)))
+        self.assertEqual(recovered.positions, memory.positions)
+        self.assertEqual(ontology.Memory(root=self.root).journal.path.read_bytes(), journal_bytes)
+        self.assertEqual(legacy.read_text(), original)
+
+    async def test_failed_checkpoint_after_commit_can_retry_without_duplicate_judgments(self):
+        self.trace()
+        with patch.object(self.memory.journal, "checkpoint", side_effect=OSError):
+            with self.assertRaises(OSError):
+                await self.memory.refresh(self.reader)
+        self.assertEqual(self.memory.revision, 1)
+        self.memory = ontology.Memory(root=self.root)
+        self.assertTrue(await self.memory.refresh(self.reader))
+        self.assertEqual(len(self.journal_rows()), 1)
+        self.assertFalse(await ontology.Memory(root=self.root).refresh(self.reader))
 
     async def test_idle_only(self):
         self.trace()
@@ -190,7 +313,8 @@ class Incremental(unittest.IsolatedAsyncioTestCase):
         self.trace()
         self.assertFalse(await memory.refresh(self.reader))
         self.assertIn("project:external", await memory.context())
-        self.assertFalse(memory.path.exists())
+        self.assertIsNone(memory.journal)
+        self.assertFalse((self.root / "ontology.jsonl").exists())
 
     async def test_unavailable_external_source_does_not_build_a_second_ontology(self):
         class Source:
@@ -209,23 +333,59 @@ class Incremental(unittest.IsolatedAsyncioTestCase):
             memory = ontology.Memory(root=self.root)
             self.assertIn('"status":"进行中"', await memory.context())
             self.assertFalse(await memory.refresh(self.reader))
-            self.assertFalse(memory.path.exists())
+            self.assertIsNone(memory.journal)
+            self.assertFalse((self.root / "ontology.jsonl").exists())
             words = "更正：project:external.status = 已完成"
             event = {"role": "owner", "at": time.time(), "text": words}
-            self.assertEqual(await memory.correct(words, event, "desktop", {"kind": "desktop"}), "")
-            self.assertIn('"status":"已完成"', await ontology.Memory(root=self.root).context())
+            self.assertIn("没有确认", await memory.correct(words, event, "desktop", {"kind": "desktop"}))
+            self.assertIn('"status":"进行中"', await ontology.Memory(root=self.root).context())
             self.assertEqual(json.loads(path.read_text())["items"], [item])
             self.assertFalse(self.calls)
 
     async def test_workbench_without_ontology_or_with_explicit_disable_keeps_local_memory(self):
         configs = (
             {"workbench": {"url": "http://127.0.0.1:8799"}},
-            {"ontology_source": {"url": "http://127.0.0.1:8799"}},
+            {"ontology_source": {"enabled": False, "url": "http://127.0.0.1:8799"}},
             {"ontology_source": {"enabled": False, "snapshot": str(self.root / "missing")}},
         )
         for config in configs:
             with self.subTest(config=config), patch.object(ontology, "CONFIG", config):
                 self.assertFalse(ontology.Memory(root=self.root).external)
+
+    async def test_live_correction_sends_owner_record_and_rereads_without_local_overlay(self):
+        identity = "纸鸢展"
+        current = {"id": identity, "kind": "project", "name": identity, "status": "进行中"}
+        requests = []
+        class Reply(io.BytesIO):
+            status = 204
+        def serve(request, timeout):
+            requests.append(request)
+            if isinstance(request, str):
+                payload = {"items": [current], "redirects": {"project:old": identity}}
+                return Reply(json.dumps(payload).encode())
+            self.assertEqual(request.get_method(), "POST")
+            self.assertEqual(request.full_url, "http://127.0.0.1:8799/api/ontology")
+            change = json.loads(request.data)
+            engine.validate(change)
+            self.assertEqual(change["id"], identity)
+            self.assertEqual(change["actor"], "owner")
+            self.assertEqual(change["evidence"][0]["quote"], words)
+            self.assertEqual(self.catches_source(change["evidence"][0]["ref"]), words)
+            current.update(change["fields"])
+            return Reply()
+        words = "纠正：project:old.status = 已完成"
+        event = {"role": "owner", "at": time.time(), "text": words}
+        with patch.object(ontology, "CONFIG", {"ontology_source": {"url": "http://127.0.0.1:8799"}}), \
+                patch.object(ontology, "build_opener") as factory:
+            factory.return_value.open.side_effect = serve
+            memory = ontology.Memory(root=self.root)
+            self.assertTrue(memory.external)
+            self.assertEqual(await memory.correct(words, event, "desktop", {}), "")
+            self.assertIn('"status":"已完成"', await memory.context())
+        self.assertEqual(len(requests), 3)
+        self.assertIsNone(memory.journal)
+        self.assertFalse((self.root / "ontology.jsonl").exists())
+        self.assertFalse((self.root / "judgments.jsonl").exists())
 
     async def test_live_valid_empty_wins_and_non_loopback_never_opens(self):
         path = self.root / "snapshot.json"
@@ -264,12 +424,17 @@ class Incremental(unittest.IsolatedAsyncioTestCase):
             context = await memory.context()
             self.assertTrue(0 < len(context) <= ontology.LIMIT)
             self.assertFalse(await memory.refresh(self.reader))
-            self.assertFalse(memory.path.exists())
+            self.assertIsNone(memory.journal)
+            self.assertFalse((self.root / "ontology.jsonl").exists())
             old = next(identity for identity in stopped.redirects if stopped.resolve(identity))
             words = f"更正：{old}.状态 = 暂停"
             event = {"role": "owner", "at": time.time(), "text": words}
-            self.assertEqual(await memory.correct(words, event, "desktop", {}), "")
-            self.assertTrue(memory.rows[-1]["id"] == stopped.resolve(old))
+            self.assertIn("没有确认", await memory.correct(words, event, "desktop", {}))
+            request = opener.open.call_args.args[0]
+            self.assertEqual(request.get_method(), "POST")
+            self.assertEqual(json.loads(request.data)["id"], stopped.resolve(old))
+            self.assertEqual(await memory.context(), context)
+            self.assertFalse((self.root / "ontology.jsonl").exists())
         self.assertTrue(hashlib.sha256(path.read_bytes()).digest() == digest, "W3 export stayed byte-identical")
 
     async def test_agent_sessions_require_consent_and_stay_in_place(self):
