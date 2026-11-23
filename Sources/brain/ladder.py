@@ -32,7 +32,7 @@ from settings import HERE, RUNTIME
 FIRST_CHAT = "双击我，说：见到某某，提醒我某事。"
 FIRST_TIME = "双击我，说：一分钟后提醒我喝水。"
 FIRST_OPEN = "记下了。去打开和TA的聊天看看。"
-FIRST_HELD = "你交代的事我拿着，点一下泡泡就能看到。"
+FIRST_HELD = "你交代的事我记着，点一下就能看到。"
 FIRST_SECONDS = 86400          # the first try not taken up within a day is let go, never asked again
 ASK_QUIET_AFTER = 3            # unanswered asks in a row ...
 ASK_QUIET_SECONDS = 7 * 86400  # ... and it doesn't ask for a week

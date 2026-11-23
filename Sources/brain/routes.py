@@ -147,14 +147,15 @@ def serve(companion, token, port, agent_token=None):
                 async def hand_over():
                     if url.path == "/entrusted/respond":
                         identity, action = str(body.get("id") or ""), str(body.get("action") or "")
-                        if action not in ("done", "later", "ignored", "cancel", "restore"):
+                        if action not in ("done", "later", "today", "ignored", "cancel", "restore"):
                             return {"ok": False}
                         ok = companion.entrusted.respond(identity, action)
                         # 稍后 says when it will come back before the hand goes in.
-                        return {"ok": ok, **({"say": companion.entrusted.later_line(identity)} if ok and action == "later" else {})}
+                        companion.hub_soon()
+                        return {"ok": ok, **({"say": companion.entrusted.later_line(identity, action)} if ok and action in ("later", "today") else {})}
                     if url.path == "/entrusted/tick":
                         # An answer still showing in the speaking bubble (`replying`) comes first, like a job: the promise waits for it to go.
-                        return companion.entrusted.tick({**body, "busy": bool(body.get("replying")) or any(j.status in ("thinking", "working") for j in companion.active)})
+                        return companion.entrusted.tick({**body, "near": [*(body.get("near") or []), *companion.near_in_group()], "busy": bool(body.get("replying")) or any(j.status in ("thinking", "working") for j in companion.active)})
                     return companion.entrusted.native_state()
                 return self.reply(companion.submit(hand_over()).result(timeout=10))
             points = [p for p in body.get("points") or [] if isinstance(p, dict)][:20]

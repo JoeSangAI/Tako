@@ -302,6 +302,19 @@ class Chats:
     def _sessions(self):
         return self._kept("sessions", reader.sessions, lambda: self._db_signature(reader.SESSION))
 
+    def near_in_group(self, limit=20):
+        """Stuck on a WeChat group whose members can be read: what is held for someone in it, if the group is small.
+        Only ids come out; a group that is big, or can't be read, concerns nothing."""
+        room = str((self.chat or {}).get("username") or "")
+        held = [i for i in self.entrusted.pending() if (i.get("place") or {}).get("chat")]
+        if not HAS_WECHAT or not room.endswith("@chatroom") or not held:
+            return []
+        people = (self._kept("members", reader.group_members, reader.contact_signature) or {}).get(room) or []
+        if not people or len(people) + 1 > limit:
+            return []
+        there = {normalized(name) for name in people}
+        return [i["id"] for i in held if any(normalized(name) in there for name in [i["place"]["chat"], *str(i["place"].get("names") or "").split("\n")] if name)]
+
     def _unnamed_groups(self):
         return self._kept("groups", reader.unnamed_groups, reader.contact_signature) or []
 

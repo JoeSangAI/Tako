@@ -166,13 +166,19 @@ final class Goo {
     var silenced = false, tapeAmount: CGFloat = 0, tapeVelocity: CGFloat = 0
     let tapeLayer = CAShapeLayer(), tapeCross = CAShapeLayer()
     var heldCount = 0, heldPreview = "", handHovered = false
+    // What it holds, opened from the count by a press (`drawHand`): at most three rows, each with its own two buttons.
+    var heldItems: [(id: String, text: String)] = [], heldOpen = false
+    var heldRows: [(id: String, done: CGRect, later: CGRect)] = [], heldBadge = CGRect.zero
+    let heldWords = (0..<3).map { _ in CATextLayer() }, heldDones = (0..<3).map { _ in CATextLayer() }
+    let heldLaters = (0..<3).map { _ in CATextLayer() }, heldMore = CATextLayer()
     var handPhase = "", handText = "", handAt = 0.0, handSoft = false
     var handHome: V?, handDeparture: V?
     let handInk = CAShapeLayer(), handEdge = CAShapeLayer(), handSpecks = CAShapeLayer()
     let handButtons = CAShapeLayer()
     let handArmEdge = CAShapeLayer()
-    let handLabel = CATextLayer(), handDone = CATextLayer(), handLater = CATextLayer()
-    var handRect = CGRect.zero, handDoneRect = CGRect.zero, handLaterRect = CGRect.zero
+    let handLabel = CATextLayer(), handDone = CATextLayer(), handLater = CATextLayer(), handDrop = CATextLayer()
+    var handRect = CGRect.zero, handDoneRect = CGRect.zero, handLaterRect = CGRect.zero, handDropRect = CGRect.zero
+    var handChoice = ""      // "stalled": the card asks 今天做 / 改天 / 不做了 instead of 做完了 / 稍后
     var handBurstOrigin = CGPoint.zero
     var happy: Bool { clock < happyUntil }
     var oops: Bool { clock < oopsUntil }

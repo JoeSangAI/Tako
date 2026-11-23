@@ -54,7 +54,7 @@ class Agents:
             return {"ok": False, "error": str(exc)}
         self.add("owner", f"〔{source} 转来〕{text}", events)
         self.keep_now()
-        await asyncio.to_thread(records.end, job.record_id, "拿着")
+        await asyncio.to_thread(records.end, job.record_id, "记下了")
         notice = await self.native("entrustedSync", **self.entrusted.native_state(), timeout=30)
         return {"ok": True, "id": item["id"], "due": item.get("due"), "notification_scheduled": item["id"] in notice.get("scheduled", [])}
 
@@ -69,7 +69,7 @@ class Agents:
         source = str(source or "Agent").strip()[:40] or "Agent"
         item = self.entrusted.items.get(identity)
         if not item or item.get("state") != "held":
-            return {"ok": False, "error": "没有拿着这件事"}
+            return {"ok": False, "error": "没有这件提醒"}
         if item.get("source") != "agent" or item.get("source_name") != source:
             return {"ok": False, "error": "只能撤回自己转来的托付"}
         self.entrusted.append(item, "cancel", state="cancelled", by=source)

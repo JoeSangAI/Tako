@@ -12,6 +12,7 @@ import re
 import time
 import uuid
 
+import hub as hubs
 import records
 import ladder as rungs
 from settings import ZONE
@@ -32,7 +33,8 @@ PACE = (
                           rf"|(?:现在|今天)?可以(?:再)?{_TO_ME}){_SOFT}")),
 )
 _CALLED = re.compile(r"^(?:tako|章鱼|小章鱼)[，,：:\s]*", re.I)
-SYSTEM_PACING = ("deferred", "deferred_at", "ignored_streak", "place_shown_at")
+SYSTEM_PACING = ("deferred", "deferred_at", "ignored_streak", "place_shown_at", "said_day")
+HUB_DAILY = 3  # things from the hub brought up unasked in a day; the rest wait in the list
 PLACE_WAIT_SECONDS = 4 * 3600  # Prefer a relevant place first; a morning promise can still surface that afternoon.
 PLACE_REPEAT_SECONDS = 30 * 60
 HOURS = {1: "一", 2: "两", 4: "四", 8: "八", 16: "十六"}
@@ -93,16 +95,23 @@ class Entrusted:
         self.outside, self.calendar, self.meetings_said = {}, [], set()
         self.offering = None
         self.visited = set()
+        self.nudged = set()  # things a small group chat concerns, pointed at once while that chat stays open
         self.hand = False
         self.completed = False
         self.daily = dict(self.ladder.state.get("deliveries") or {})
         self.notice_state = ""  # Explain each notification state once per running session.
+        self.hub = None  # the owner's hub, when they have one (`hub.py`): what is entrusted goes there, what to bring up comes from there
 
     def get(self, identity):
         return self.items.get(identity) or self.outside.get(identity)
 
     def pending(self):
         return [item for item in [*self.items.values(), *self.outside.values()] if item.get("state") == "held"]
+
+    def shown(self):
+        """What the count counts and the list lists: what the owner entrusted, here or on another of their devices. The hub's
+        other to-dos stay in the hub, where their list is; here they are only a bubble when their moment comes."""
+        return [item for item in self.pending() if item.get("from") != "hub" or item.get("own")]
 
     def own_pending(self):
         return [item for item in self.items.values() if item.get("state") == "held"]
@@ -128,16 +137,19 @@ class Entrusted:
         return reply
 
     def append(self, item, action, **changes):
-        if item.get("from") == "reminders":  # the owner's own Reminders: their words are never written down here
+        if item.get("from"):  # the owner's own Reminders, or their hub's to-dos: kept where they live, never written down here
             next_item = {**item, **changes, "action": action, "at": time.time()}
+            if self.hub and item["from"] == "hub":
+                self.hub.responded(item, action, changes.get("reason", ""), next_item["at"])
             if action in ("done", "looked", "later", "ignored"):
                 next_item["outcomes"] = [*item.get("outcomes", []), {"action": action, "at": next_item["at"]}][-8:]
             identity = item["id"][2:]
             pacing = self.ladder.state.setdefault("reminder_pacing", {})
             if action in ("done", "cancel"):
                 pacing.pop(identity, None)
-                self.ladder.dismiss(identity)
-            elif action in ("looked", "later", "ignored"):
+                if item["from"] == "reminders":
+                    self.ladder.dismiss(identity)
+            elif action in ("looked", "later", "today", "ignored", "offered"):
                 self._save_reminder_pacing(next_item)
             self.outside[item["id"]] = next_item
             return next_item
@@ -150,6 +162,11 @@ class Entrusted:
         if action in ("done", "looked", "later", "ignored"):
             next_item["outcomes"] = [*item.get("outcomes", []), {k: next_item.get(k) for k in ("action", "reason", "at")}][-8:]
         self.items[next_item["id"]] = next_item
+        if self.hub:
+            if action in ("keep", "change", "restored") and next_item.get("state") == "held":
+                self.hub.entrusted(next_item)
+            else:
+                self.hub.responded(next_item, action, changes.get("reason", ""), next_item["at"])
         return next_item
 
     def _save_reminder_pacing(self, item):
@@ -275,10 +292,10 @@ class Entrusted:
         draft = bool(args.get("draft"))
         quote, (words, asked_at) = self._words(args, job, draft=draft)
         text, variants, place, due = self._spec(args, job, None, words, asked_at)
-        line = " ".join(str(args.get("ask") or "").split())[:40] or ("发出去后，要我记着这件事吗？" if draft else "要我记着这件事吗？")
+        line = " ".join(str(args.get("ask") or "").split())[:40] or ("发出去后，需要我提醒你吗？" if draft else "需要我提醒你吗？")
         for other in self.items.values():
             if other.get("state") in ("held", "asked", "waiting_sent") and (same_words(other.get("text"), text) or same_words(other.get("quote"), quote)):
-                raise ValueError("这件已经拿着或问过了，不用再问")
+                raise ValueError("这件已经记着或问过了，不用再问")
         item = self.append(self._base(job), "ask", state="asked", text=text, variants=variants, due=due, place=place, quote=quote,
                            ask=line, draft=draft, watch=bool(draft and watch), draft_chat=(job.chat or {}).get("username", "") if draft else "",
                            snoozed=False, reason="", latest_job=job.record_id, offered_text=line)
@@ -348,10 +365,30 @@ class Entrusted:
                 found[identity] = {**item, **{k: v for k, v in self.outside[identity].items() if k not in ("text", "place")}}
             else:
                 found[identity] = {**item, **self.ladder.state.get("reminder_pacing", {}).get(identity[2:], {})}
-        self.outside = found
+        self.outside = {**{k: v for k, v in self.outside.items() if v.get("from") != "reminders"}, **found}
         self.calendar = [e for e in events or [] if isinstance(e, dict)]
         if self.offering and self.offering["id"] not in self.items and self.offering["id"] not in self.outside:
             self.offering = None
+
+    def from_hub(self, outlet, now=None):
+        """What the hub says is worth bringing up, in memory like the system's Reminders: gone from there, gone from the hand.
+        Something the owner entrusted here is the same record there, so it is carried once, as their own."""
+        now = time.time() if now is None else now
+        found = hubs.held_items(outlet, now, set(self.hub.twins.values()))
+        for identity, item in found.items():
+            kept = self.outside.get(identity) or self.ladder.state.get("reminder_pacing", {}).get(identity[2:], {})
+            found[identity] = {**{k: kept[k] for k in (*SYSTEM_PACING, "created", "held_since") if k in kept}, **item,
+                               **({"said_day": kept["said_day"]} if "said_day" in kept and "said_day" not in item else {})}
+        before = [(i["id"], i.get("due"), i.get("text")) for i in self.pending()]
+        self.outside = {**{k: v for k, v in self.outside.items() if v.get("from") != "hub"}, **found}
+        for local in list(self.hub.closed):  # ended somewhere else: Tako puts it down by itself
+            self.hub.closed.discard(local)
+            item = self.items.get(local)
+            if item and item.get("state") == "held":
+                self.append(item, "done", state="done", reason="elsewhere")
+        if self.offering and not self.get(self.offering["id"]):
+            self.offering = None
+        return before != [(i["id"], i.get("due"), i.get("text")) for i in self.pending()]
 
     def respond(self, identity, action):
         """做完了 ends the to-do. Opening it or choosing 稍后 keeps it pending."""
@@ -369,17 +406,19 @@ class Entrusted:
         reason = (self.offering or {}).get("reason") if (self.offering or {}).get("id") == identity else item.get("reason") or ("due" if item.get("due") else "transition")
         if action == "done":
             self.append(item, "done", state="done", reason=reason)
-            self.hand = bool(self.pending())
+            self.hand = bool(self.shown())
         elif action == "cancel":
             self.append(item, "cancel", state="cancelled", reason=reason)
-            self.hand = bool(self.pending())
+            self.hand = bool(self.shown())
         elif action == "looked":
             # Taken to it: not ended, and not to be handed over again straight away.
             self.append(item, "looked", due=None, snoozed=True, held_since=time.time(), reason=reason,
                         deferred_at=time.time(), ignored_streak=0, place_shown_at=None)
             self.completed = False
-        elif action == "later":
-            self.append(item, "later", due=None, snoozed=True, held_since=time.time(), reason=reason,
+        elif action in ("later", "today"):
+            if item.get("from") == "hub":
+                item = {**item, "said_day": datetime.datetime.fromtimestamp(time.time(), ZONE).date().isoformat()}
+            self.append(item, action, due=None, snoozed=True, held_since=time.time(), reason=reason,
                         deferred=int(item.get("deferred", 0)) + 1, deferred_at=time.time(), ignored_streak=0, place_shown_at=None)
             self.completed = False
         elif action == "ignored":
@@ -408,7 +447,9 @@ class Entrusted:
         today = datetime.datetime.fromtimestamp(now, ZONE).date().isoformat()
         cap = 3 if self.ladder.state.get("fewer_deliveries") else 6
         ordinary_allowed = self.ladder.state.get("quiet_day") != today and self.daily.get(today, 0) < cap
-        due = sorted((i for i in pending if i.get("due") is not None and i["due"] <= now), key=lambda i: i["due"])
+        # From the hub a thing is brought up once a day at most; put off, it is not brought up again that day.
+        fresh = lambda i: i.get("from") != "hub" or i.get("said_day") != today
+        due = sorted((i for i in pending if i.get("due") is not None and i["due"] <= now and fresh(i)), key=lambda i: i["due"])
         blocked = bool(context.get("busy") or quiet or away)
         if self.offering:
             offer = self.offering
@@ -443,7 +484,9 @@ class Entrusted:
                 offer["counted"] = True
         if not self.offering and not blocked and (not due or not context.get("typing")):
             candidates, reason, line = due, "due", None
-            ordinary = [i for i in self.pending() if int(i.get("ignored_streak", 0)) < 3] if not due and ordinary_allowed else []
+            ordinary = [i for i in self.pending() if int(i.get("ignored_streak", 0)) < 3 and fresh(i)] if not due and ordinary_allowed else []
+            if self.ladder.state.get("hub_deliveries", {}).get(today, 0) >= HUB_DAILY:
+                ordinary = [i for i in ordinary if i.get("from") != "hub"]
             if not candidates and ordinary and not context.get("typing") and (meeting := rungs.meeting_line(self.calendar, ordinary, now, self.meetings_said)):
                 key, item, line = meeting
                 self.meetings_said.add(key)
@@ -456,7 +499,7 @@ class Entrusted:
                               and i["id"] not in self.visited and i["id"] not in place_waiting and eligible(i)]
                 reason = "place"
                 if not candidates and not attached and (back or self.completed):
-                    candidates = [i for i in ordinary if i.get("due") is None and not i.get("from") and i["id"] not in place_waiting
+                    candidates = [i for i in ordinary if i.get("due") is None and (not i.get("from") or i.get("kind") in ("plain", "stalled")) and i["id"] not in place_waiting
                                   and (not i.get("place") or i.get("snoozed") or now - i["created"] >= PLACE_WAIT_SECONDS)
                                   and now - i.get("held_since", i["created"]) > 2
                                   and eligible(i)
@@ -466,7 +509,14 @@ class Entrusted:
                 item = candidates[0]
                 variants = item.get("variants") or []
                 repeat = int(item.get("deferred", 0))
-                if line is None:
+                if item.get("from") == "hub" and reason != "meeting":
+                    chat = (item.get("place") or {}).get("chat")
+                    together = [i for i in ordinary if i.get("from") == "hub" and (i.get("place") or {}).get("chat") == chat] if reason == "place" and chat else [item]
+                    line = hubs.line(item, reason, len(together))
+                    for other in together:  # said together: the others wait in the list, not in a bubble each
+                        if other["id"] != item["id"]:
+                            self.append(other, "offered", reason=reason, said_day=today)
+                elif line is None:
                     line = variants[min(repeat - 1, len(variants) - 1)] if repeat and variants else item["text"]
                     if reason == "place" and (item.get("place") or {}).get("chat"):
                         line = with_age(line, item.get("created", now), now)
@@ -479,7 +529,11 @@ class Entrusted:
                     self._deliver(item, reason, line, today, now)
         if not context.get("busy"):
             self.completed = False  # A job that ended while another, or its answer in the bubble, still had the floor stays an occasion for after.
-        self.hand = bool(self.pending())  # Quiet keeps the count, never the private words held out.
+        self.hand = bool(self.shown())  # Quiet keeps the count, never the private words held out.
+        # A small group with the person in it, or the group of the thing's project: the count only, never a bubble (a big group: nothing).
+        near = {i["id"] for i in self.pending() if i["id"] in set(context.get("near") or [])} - matched
+        nudge = bool(near - self.nudged) and not self.offering and not blocked
+        self.nudged = near if nudge else self.nudged & near
         offer = None
         if self.offering:
             item = self.get(self.offering["id"])
@@ -487,22 +541,30 @@ class Entrusted:
             soft = self.offering.get("soft", False)
             label = place.get("chat") or self.offering.get("line", "")
             offer = {k: self.offering[k] for k in ("id", "reason", "since")}
+            if item.get("kind") == "stalled":
+                offer["choice"] = "stalled"  # 今天做 / 改天 / 不做了, instead of 做完了 / 稍后
             offer.update(soft=soft, text=label[:14] if soft else item.get("offered_text", item["text"]),
                          key=item.get("k", "desktop"), repeat=item.get("deferred", 0))
-        return {"holding": self.hand, "count": len(self.pending()), "offer": offer}
+        return {"holding": self.hand, "count": len(self.shown()), "offer": offer, **({"nudge": True} if nudge else {})}
 
     def _deliver(self, item, reason, line, today, now, *, touched=False):
         if reason != "due":
             self.daily = {today: self.daily.get(today, 0) + 1}
             self.ladder.state["deliveries"] = self.daily
+            if item.get("from") == "hub":
+                self.ladder.state["hub_deliveries"] = {today: self.ladder.state.get("hub_deliveries", {}).get(today, 0) + 1}
             self.ladder._save()
-        self.append(item, "offered", reason=reason, offered_text=line)
+        self.append(item, "offered", reason=reason, offered_text=line, **({"said_day": today} if item.get("from") == "hub" else {}))
         self.ladder.first_offered(item["id"])
         self.visited.add(item["id"])
         self.offering = {"id": item["id"], "reason": reason, "since": now, "touched": touched}
 
-    def later_line(self, identity):
+    def later_line(self, identity, action="later"):
         item = self.get(identity) or {}
+        if action == "today":
+            return "好，今天做。"
+        if item.get("from") == "hub":  # once a day at most: put off, it comes back another day
+            return "好，改天再说。" if item.get("kind") in ("day", "stalled") else "好，今天不再提。"
         return later_line(wait_after(int(item.get("deferred", 0))))
 
     def memory(self, *, full=False):
@@ -524,4 +586,6 @@ class Entrusted:
         return {"revision": self.revision, "wake": wake,
                 "recently_put_down": [{k: i[k] for k in ("id", "text")} for i in self.recently_put_down()],
                 "items": [{**{k: i.get(k) for k in ("id", "due", "place", "text", "created", "ignored_streak")}, **({"from": i["from"]} if i.get("from") else {}),
+                           **({"quiet": True} if i.get("from") == "hub" and not i.get("own") else {}),
+                           **({"place": {**(i.get("place") or {}), "project": i["project"]}} if i.get("project") else {}),
                            "due_display": display_time(i["due"]) if i.get("due") is not None else ""} for i in [*timed, *rest]]}

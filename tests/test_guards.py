@@ -1333,12 +1333,14 @@ assert(DingTalk.messages([], pane: pane).isEmpty)
         hands = native("Hands")
         self.assertIn('guard win.bundle == dingTalkBundle, let read = DingTalk.read(pid: win.pid, messages: true)', hands)
 
-    # Source reminder: the body hands things over where it is when stuck: nothing moves it to another window.
-    def test_stuck_it_never_goes_to_another_window_to_hand_over(self):
+    # Source reminder: the body hands things over where it is, stuck or free: nothing moves it to a window or holds it in mid-air.
+    def test_it_never_goes_anywhere_to_hand_over(self):
         apply = native("Entrusted").split("func apply(", 1)[1].split("func tapped", 1)[0]
         new_offer = apply.split("if newOffer {", 1)[1].split("else if !soft", 1)[0]
-        self.assertIn("if let frame, goo.mode == .free {", new_offer)
+        self.assertNotIn("destination", new_offer)
+        self.assertNotIn("setScreen", new_offer)
         self.assertEqual(apply.count("handHome"), 1)
+        self.assertIn("handOffering && mode != .grabbed && handGrounded", native("GooPhysics"))
         self.assertNotIn("attached-visits-another-window", native("ShowcaseFrames"))
 
     # Source reminder: this inspects code structure and does not by itself prove runtime behavior.
@@ -1347,7 +1349,11 @@ assert(DingTalk.messages([], pane: pane).isEmpty)
         tree = ast.parse(source("entrusted"))
         imports = [node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
         imports += [alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names]
-        self.assertEqual(set(imports), {"__future__", "datetime", "math", "re", "time", "uuid", "records", "settings", "ladder"})
+        self.assertEqual(set(imports), {"__future__", "datetime", "math", "re", "time", "uuid", "records", "settings", "ladder", "hub"})
+        # The hub door is plain HTTP to the owner's own loopback service: no model, no window, nothing of Tako's but its clock.
+        hub = ast.parse(source("hub"))
+        local = {node.module for node in ast.walk(hub) if isinstance(node, ast.ImportFrom)} - {"__future__", "http.client", "pathlib", "urllib.error", "urllib.parse", "urllib.request"}
+        self.assertEqual(local, {"settings"})
         for node in ast.walk(tree):
             if isinstance(node, ast.Attribute):
                 self.assertNotIn(node.attr, {"runtime", "start_turn", "start_thread", "_reader", "native"})
@@ -1443,6 +1449,17 @@ actor Counter {
         assert(!sameChatName("阿青", "阿青、老马(3)"))
         assert(sameChatName("阿青、老马", "阿青、老马(3)"))
         assert(!sameChatName("小林", ""))
+        // Three tiers by what the chat's own title says: their chat (a bubble), a small group about it (the count only), a big group (nothing).
+        let place = ["chat": "小林", "names": "小林\\n林工", "project": "纸鸢展"]
+        assert(!groupConcerns(place, chat: "小林"))
+        assert(!groupConcerns(place, chat: "林工"))
+        assert(groupConcerns(place, chat: "纸鸢展筹备群(8)"))
+        assert(groupConcerns(place, chat: "纸鸢展筹备群"))
+        assert(groupConcerns(place, chat: "小林、老马、阿青(4)"))
+        assert(!groupConcerns(place, chat: "纸鸢展全员群(180)"))
+        assert(!groupConcerns(place, chat: "行业交流群(12)"))
+        assert(!groupConcerns(place, chat: "小林妈妈"))
+        assert(!groupConcerns(place, chat: ""))
     }
 }
 '''
@@ -1465,7 +1482,7 @@ actor Counter {
         # The promises compare with the chat the brain settled on when stuck to the chat app in front, and send only matching ids as before.
         tick = native("Entrusted").split("func tick()", 1)[1].split("func apply", 1)[0]
         self.assertIn("tick(front: front, chat: host.openChat)", tick)
-        self.assertIn("sameChatName(word, chat)", native("Entrusted"))
+        self.assertIn("sameChatName($0, chat)", native("Entrusted"))
         # A fill and the panel decide which chat is showing the same way.
         chats = (ROOT / "Sources/brain/chats.py").read_text()
         showing = chats.split("def is_showing", 1)[1].split("\n    def ", 1)[0]
@@ -1957,6 +1974,17 @@ assert(panel == .floating)
             self.hand = restored
             baseline += delay + 2
 
+    # Source reminder: the count shows what it holds and never opens the panel; a press anywhere reaches the open list's
+    # own check through the monitor that already sees every press (no event tap). The scenes are in `HandOverScenes`.
+    def test_a_press_on_the_count_opens_the_list_not_the_panel(self):
+        tapped = native("Entrusted").split("func tapped(", 1)[1].split("func respondToTap(", 1)[0]
+        self.assertNotIn("openDesktop", tapped)
+        self.assertIn('if action == "held" { host.goo.showHeld(!host.goo.heldOpen); return }', tapped)
+        watch = native("Controller").split("func watchForWork()", 1)[1].split("func followScreen()", 1)[0]
+        self.assertIn("self.entrusted.pressed(at: self.pointer())", watch)
+        self.assertNotIn("CGEvent.tapCreate", native("HandOver") + native("Entrusted"))
+        self.assertIn("heldOpen && carrying && !handOffering && !silenced", native("HandOver"))
+
     # Source reminder: this inspects code structure and does not by itself prove runtime behavior.
     def test_no_focus_prompt_or_hidden_screenshot_window(self):
         swift = native("Entrusted")
@@ -2044,7 +2072,7 @@ class HandOverScenes(unittest.TestCase):
             built = subprocess.run(["swiftc", "-j", "4", "-module-cache-path", _swift_cache, *sources, str(main), "-o", str(binary)],
                                    capture_output=True, text=True)
             self.assertEqual(built.returncode, 0, built.stderr)
-            for scene in ("landing", "wander", "expansion", "repeat", "early", "clicks", "look"):
+            for scene in ("landing", "wander", "expansion", "repeat", "early", "clicks", "look", "held", "heldroom"):
                 with self.subTest(scene=scene):
                     run = subprocess.run([str(binary), scene], capture_output=True, text=True)
                     self.assertEqual(run.returncode, 0, run.stdout + run.stderr)

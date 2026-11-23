@@ -388,12 +388,12 @@ class Hands:
             return self._reply("这段对话没有窗口。只按主人交代的事做；要操作某个应用须明确指定它，不读取或操作碰巧在前台的窗口。", ok=False)
         if name == "entrust":
             if args.get("action") == "list":
-                return self._reply(self.entrusted.memory(full=True) or "手里没有托付。")
+                return self._reply(self.entrusted.memory(full=True) or "现在没有要提醒的事。")
             if args.get("action") == "quiet":
                 if not str(args.get("quote") or "").strip() or str(args["quote"]).strip() not in job.owner_words:
                     return self._reply("只认这一轮主人原话，请逐字给 quote", ok=False)
                 self.entrusted.ladder.stop_asking()
-                return self._reply("好，不再主动问要不要记着；主人自己再托付一件事时恢复。")
+                return self._reply("好，不再主动问要不要提醒；主人自己再托付一件事时恢复。")
             if args.get("action") == "ask":
                 try:
                     watch = bool(chats.HAS_WECHAT and job.chat and job.chat.get("kind", "wechat") == "wechat")

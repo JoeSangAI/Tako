@@ -5,12 +5,25 @@ import CoreGraphics
 
 enum HandHit {
     /// The short label opens into the card. On the card itself, the ink outside the buttons also means 看看.
-    static func action(at p: CGPoint, offered: Bool, soft: Bool, card: CGRect, done: CGRect, later: CGRect) -> String? {
+    static func action(at p: CGPoint, offered: Bool, soft: Bool, card: CGRect, done: CGRect, later: CGRect, drop: CGRect = .zero) -> String? {
         guard offered, card.contains(p) else { return nil }
         if soft { return "expand" }
         if done.contains(p) { return "done" }
         if later.contains(p) { return "later" }
+        if drop.contains(p) { return "cancel" }
         return "look"
+    }
+
+    /// The open list of what it holds. The count closes it, a row's two buttons answer for that row (`done:id`,
+    /// `later:id`), and the rest of its ink only keeps the press from the window underneath.
+    static func held(at p: CGPoint, list: CGRect, count: CGRect, rows: [(id: String, done: CGRect, later: CGRect)]) -> String? {
+        guard list.contains(p) else { return nil }
+        if count.contains(p) { return "held" }
+        for row in rows {
+            if row.done.contains(p) { return "done:" + row.id }
+            if row.later.contains(p) { return "later:" + row.id }
+        }
+        return "list"
     }
 
     static func takesClicks(grabbed: Bool, distance: CGFloat, radius: CGFloat, onHand: Bool) -> Bool {

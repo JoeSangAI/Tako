@@ -117,7 +117,7 @@ def entrust(item, text=""):
     """A hand-over and its outcome, appended to the very same daily conversation record."""
     meta = {k: v for k, v in item.items() if k != "outcomes"}
     meta["r"] = "entrusted"
-    labels = {"keep": "拿着", "change": "改了", "cancel": "删除", "offered": "递回", "done": "做完了", "looked": "打开", "later": "稍后", "ignored": "没理会", "ask": "问过要不要记着", "unanswered": "没回"}
+    labels = {"keep": "记下提醒", "change": "改了", "cancel": "删除", "offered": "递回", "done": "做完了", "looked": "打开", "later": "稍后", "ignored": "没理会", "ask": "问过要不要提醒", "unanswered": "没回"}
     with _lock:
         label = labels.get(meta["action"])
         actor = f"〔{meta['by']} 撤回〕" if meta.get("by") and meta.get("action") == "cancel" else ""

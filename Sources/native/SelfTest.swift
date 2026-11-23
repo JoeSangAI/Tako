@@ -312,7 +312,7 @@ extension Controller {
         if asked.contains("entrusted") {
             quiet()
             say("空手")
-            at(1.5) { [self] in goo.carrying = true; say("拿着") }
+            at(1.5) { [self] in goo.carrying = true; say("记着") }
             at(3.5) { [self] in goo.presentHand(text: "草稿备好了，交给你。"); say("递") }
             at(6.5) { [self] in goo.takeHandBack("later"); say("稍后") }
             at(9.0) { [self] in goo.presentHand(text: "草稿备好了，交给你。"); say("再递") }

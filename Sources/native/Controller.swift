@@ -524,6 +524,7 @@ final class Controller: NSObject, NSApplicationDelegate {
     var picture: Int {
         var h = Hasher()
         h.combine(goo.handText); h.combine(goo.onDark); h.combine(goo.costume.outfit?.id); h.combine(goo.state); h.combine(goo.act)
+        h.combine(goo.heldOpen); h.combine(goo.heldItems.map(\.id))
         h.combine(goo.handPhase); h.combine(goo.carrying); h.combine(goo.silenced); h.combine(goo.sleeping); h.combine(sideOpen)
         h.combine(Int(goo.c.x * 4)); h.combine(Int(goo.c.y * 4)); h.combine(target?.id); h.combine(goo.radius)
         if let frame = target?.frame { h.combine(Int(frame.minX)); h.combine(Int(frame.minY)); h.combine(Int(frame.width)); h.combine(Int(frame.height)) }
@@ -550,6 +551,7 @@ final class Controller: NSObject, NSApplicationDelegate {
             guard let self else { return }
             self.attention.noteInput()
             if event.type == .keyDown || (event.type == .flagsChanged && !self.stuckOn) { return }   // typing moves nothing on the body
+            if [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type) { self.entrusted.pressed(at: self.pointer()) }
             self.updateClickThrough()
             if self.paused, self.fakeMouse == nil, self.pointerMatters(event) { self.wakeLoop("pointer") }
         }

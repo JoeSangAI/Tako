@@ -86,7 +86,7 @@ final class Entrusted: NSObject, UNUserNotificationCenterDelegate {
         tick()
     }
 
-    var holdsChatPlace: Bool { items.contains { (($0["place"] as? [String: String])?["chat"]?.isEmpty == false) } }
+    var holdsChatPlace: Bool { items.contains { item in (item["place"] as? [String: String]).map { $0["chat"]?.isEmpty == false || $0["project"]?.isEmpty == false } ?? false } }
 
     /// Stuck to the chat app in front, the chat is the one the panel settled on (`Controller.openChat`): one answer, read once, and nothing captured here.
     var stuckChatApp: Bool {
@@ -207,9 +207,12 @@ final class Entrusted: NSObject, UNUserNotificationCenterDelegate {
     }
 
     static func matches(_ place: [String: String], app: String, title: String, chat: String = "") -> Bool {
-        guard !place.isEmpty else { return false }
+        // `names` and `project` only widen who or what a chat is about: by themselves they are no place.
+        guard place.keys.contains(where: { $0 != "names" && $0 != "project" }) else { return false }
         return place.allSatisfy { key, word in
-            if key == "chat" { return sameChatName(word, chat) }
+            // A person the hub knows by several names (`names`, one a line) is the same person under any of them.
+            if key == "names" || key == "project" { return true }
+            if key == "chat" { return ([word] + (place["names"] ?? "").split(separator: "\n").map(String.init)).contains { sameChatName($0, chat) } }
             let haystack = key == "app" ? app : title
             return !word.isEmpty && haystack.localizedStandardContains(word)
         }
@@ -293,6 +296,10 @@ final class Entrusted: NSObject, UNUserNotificationCenterDelegate {
             guard let place = item["place"] as? [String: String], Self.matches(place, app: front.app, title: front.title, chat: chat) else { return nil }
             return item["id"] as? String
         }
+        let near = !here ? [] : items.compactMap { item -> String? in
+            guard let place = item["place"] as? [String: String], groupConcerns(place, chat: chat) else { return nil }
+            return item["id"] as? String
+        }
         let departed = front.app.isEmpty ? [] : lastMatched.filter { !currentMatches.contains($0) }
         let arriving = currentMatches.contains { !lastMatched.contains($0) }
         if !front.app.isEmpty { lastMatched = currentMatches }
@@ -300,7 +307,7 @@ final class Entrusted: NSObject, UNUserNotificationCenterDelegate {
         let returned = host.attention.takeReturned("entrusted")
         let peeled = peeledOff && !attached
         if peeled { peeledOff = false }
-        host.post(path: "/entrusted/tick", body: ["matched": matched, "departed": departed, "returned": returned, "peeled": peeled, "attached": attached,
+        host.post(path: "/entrusted/tick", body: ["matched": matched, "near": near, "departed": departed, "returned": returned, "peeled": peeled, "attached": attached,
                                                  "fullscreen": front.fullscreen, "muted": quiet,
                                                  "typing": CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown) < 1.5,
                                                  "arriving": arriving || returned || peeled,
@@ -329,28 +336,29 @@ final class Entrusted: NSObject, UNUserNotificationCenterDelegate {
     func apply(_ state: [String: Any], frame: CGRect?) {
         let goo = host.goo!
         goo.carrying = state["holding"] as? Bool ?? false
-        goo.heldCount = state["count"] as? Int ?? items.count
-        goo.heldPreview = items.first?["text"] as? String ?? ""
+        // The hub's to-dos are matched here but never listed or counted: they live in the hub, and come up only as a bubble.
+        let listed = items.filter { $0["quiet"] as? Bool != true }
+        goo.heldCount = state["count"] as? Int ?? listed.count
+        goo.heldPreview = listed.first?["text"] as? String ?? ""
+        // The same set the count counts, in the panel's order (`native_state`).
+        goo.heldItems = listed.compactMap { item in (item["id"] as? String).map { (id: $0, text: item["text"] as? String ?? "") } }
         if quiet {
             if offerID != nil { offerID = nil; goo.takeHandBack("ignored") }
             return
         }
+        // A small group about something it has: no bubble, only a little hop by the count.
+        if state["nudge"] as? Bool == true, offerID == nil { goo.kick(40); goo.pop = 0.5; host.wakeLoop() }
         if let offer = state["offer"] as? [String: Any], let id = offer["id"] as? String {
             placeOffer = offer["reason"] as? String == "place"
+            goo.handChoice = offer["choice"] as? String ?? ""
             let soft = offer["soft"] as? Bool ?? false
             let newOffer = id != offerID
             if newOffer {
                 offerID = id
                 goo.handHome = nil
-                var destination: V?
-                // Free, it goes to the window in front before showing the bubble. Stuck, it hands it over where it is.
-                if let frame, goo.mode == .free {
-                    if let primary = NSScreen.screens.first,
-                       let screen = NSScreen.screens.first(where: { $0.frame.contains(NSPoint(x: frame.midX, y: primary.frame.maxY - frame.midY)) }) { host.setScreen(screen) }
-                    destination = V(clamp(frame.maxX + goo.radius + 8, goo.visible.minX + goo.radius, goo.visible.maxX - goo.radius - 6),
-                                    clamp(frame.minY + 100, goo.visible.minY + 70, goo.visible.maxY - goo.radius * goo.stance))
-                }
-                goo.presentHand(text: offer["text"] as? String ?? "", soft: soft, destination: destination)
+                // Stuck or free, it hands things over where it is. Free, it used to fly to the window in front and hang
+                // there in mid-air until answered, which is not how a pet on the floor behaves.
+                goo.presentHand(text: offer["text"] as? String ?? "", soft: soft)
                 if soft {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.55) { [weak self] in
                         guard let self, self.offerID == id, self.host.goo.handSoft else { return }
@@ -370,11 +378,16 @@ final class Entrusted: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func tapped(_ action: String) {
-        if action == "held" {
-            host.openDesktop(show: true)
+        // The count is about what it holds: a press opens the list where it is. Talking to it is the body's double click.
+        if action == "held" { host.goo.showHeld(!host.goo.heldOpen); return }
+        if action == "list" { return }
+        for answer in ["done", "later"] where action.hasPrefix(answer + ":") {
+            answerTap(String(action.dropFirst(answer.count + 1)), answer)
             return
         }
         guard let id = offerID else { return }
+        // Something that has stood still is a question with three answers: 今天做, 改天, 不做了.
+        if host.goo.handChoice == "stalled", action == "done" { respondToTap(id, action: "today"); return }
         if action == "expand" {
             softHovered = true
             wake()
@@ -382,6 +395,15 @@ final class Entrusted: NSObject, UNUserNotificationCenterDelegate {
         }
         respondToTap(id, action: action)
     }
+
+    /// A press anywhere but on the open list puts it away. The press itself goes on to whatever it was meant for.
+    func pressed(at point: V) {
+        guard let goo = host.goo, goo.heldOpen, goo.handHit(point) == nil else { return }
+        goo.showHeld(false)
+    }
+
+    /// What a row's button sends. The scenes replace it to see the id and the answer; nothing else does.
+    lazy var answerTap: (String, String) -> Void = { [unowned self] id, action in self.respondToTap(id, action: action) }
 
     func respondToTap(_ id: String, action: String) {
         guard host.url != nil, respondingToTap.insert(id).inserted else { return }
@@ -403,7 +425,13 @@ final class Entrusted: NSObject, UNUserNotificationCenterDelegate {
                 if action != "restore" { self.withdrawNotification(id) }
                 if self.offerID == id {
                     self.offerID = nil
-                    if action == "later", let line = reply["say"] as? String { self.host.goo.sayThenTuck(line) } else { self.host.goo.takeHandBack(action) }
+                    if let line = reply["say"] as? String { self.host.goo.sayThenTuck(line) } else { self.host.goo.takeHandBack(action == "cancel" ? "later" : action) }
+                }
+                else if action == "later", self.host.goo.heldOpen, let line = reply["say"] as? String {
+                    // 稍后 on a row of the list keeps that row held, so nothing would seem to happen: the list goes in and it
+                    // says when the thing comes back, as the card does.
+                    self.host.goo.showHeld(false)
+                    self.host.goo.sayThenTuck(line)
                 }
                 _ = self.host.attention.takeReturned("entrusted")  // The tap itself doesn't count as a return from being away.
                 self.poll()
@@ -493,7 +521,7 @@ final class Entrusted: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func tellHeldItems() {
-        guard host.loaded, let data = try? JSONSerialization.data(withJSONObject: [items, recentlyPutDown, frontChatItems]),
+        guard host.loaded, let data = try? JSONSerialization.data(withJSONObject: [items.filter { $0["quiet"] as? Bool != true }, recentlyPutDown, frontChatItems]),
               let json = String(data: data, encoding: .utf8) else { return }
         host.web.evaluateJavaScript("setHeldItems(...\(json))", completionHandler: nil)
     }

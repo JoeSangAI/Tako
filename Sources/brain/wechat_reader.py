@@ -144,6 +144,20 @@ def contact_signature():
     return tuple((p.stat().st_size, p.stat().st_mtime_ns) for p in (path, Path(str(path) + "-wal")) if p.is_file())
 
 
+def group_members():
+    """Every group's members by the names the owner sees them under: {group: [names]}, the owner left out."""
+    _, me = account()
+    names = json.loads((WXEXPORT / "work/namemap.json").read_text())["names"]
+    con, _ = open_shard(shard=CONTACT)
+    try:
+        members = {}
+        for room, member in con.execute("SELECT r.username, n.username FROM chatroom_member m JOIN chat_room r ON r.id = m.room_id JOIN name2id n ON n.rowid = m.member_id"):
+            members.setdefault(room, []).append(member)
+    finally:
+        con.close()
+    return {room: [str(names.get(u) or u) for u in people if u != me] for room, people in members.items()}
+
+
 def unnamed_groups():
     """Groups nobody named, which WeChat titles with their other members' names: (username, members counted, those other members' names).
     The name list holds only the group's own id for them, so this is the one way to know which group such a title is."""

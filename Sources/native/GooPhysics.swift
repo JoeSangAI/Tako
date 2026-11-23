@@ -34,7 +34,10 @@ extension Goo {
         }
         let window = candidateID.flatMap { id in host.platforms.first { $0.id == id }?.frame } ?? host.target?.frame
 
-        let holdingStill = handOffering && mode != .grabbed
+        // Holding something out it stays put. A free body still in the air comes down by its own weight first and holds
+        // it out once it stands; the words wait for that (`handGrounded`).
+        let holdingStill = handOffering && mode != .grabbed && handGrounded
+        if handPhase == "offer" && !handGrounded { handAt = clock }
         if mode == .grabbed { dockDestination = nil }
         if holdingStill {
             v = V()

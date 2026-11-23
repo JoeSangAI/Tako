@@ -30,6 +30,7 @@ import outputs
 import records
 from ontology import Memory
 from entrusted import Entrusted
+from hub import Hub
 import feedback as fb
 import greetings as greet
 import wechat_reader as reader
@@ -100,6 +101,9 @@ class Companion(Chats, Turns, Hands, Lectures, Agents):
         self.saved = records.load()  # conversations already visited, so returning to one keeps its thread; a week of them outlives a restart
         self.entrusted = Entrusted()
         self.memory = Memory()
+        # The owner's hub is the same loopback source their memory reads (`hub.py`); none configured, nothing changes.
+        self.entrusted.hub = Hub(getattr(self.memory.source, "url", None), RUNTIME)
+        self.hub_wake = None
         self.keeping = False   # a save of the conversations is on its way
         self.offered = set()   # files the owner dragged or picked, which the panel may preview before they send them
         self.last_header = ""   # the conversation the chat app's own header last settled on (`_confirm`)
@@ -110,6 +114,7 @@ class Companion(Chats, Turns, Hands, Lectures, Agents):
         self.header_titles, self.refollowed = None, None
         self.following = False
         self.index, self.index_stamp = None, None
+        self.members, self.members_stamp = None, None  # every group's members, read when a small group may concern something held (`near_in_group`)
         self.groups, self.groups_stamp = None, None  # groups nobody named, by their members: what WeChat titles them with (`_unnamed_groups`)
         self.sessions, self.sessions_stamp = None, None  # WeChat's own chat list and when each moved (`_sessions`)
         self.refreshing = set()  # which of those two is being read again in the background
@@ -146,6 +151,27 @@ class Companion(Chats, Turns, Hands, Lectures, Agents):
         self.agent_jobs = {}   # id -> a job one of the owner's other agents handed over, kept an hour after it ends so they can hear how
         self.tidied = time.time()  # Tako's own leftovers were cleared at the start; again once a day after a job (outputs.tidy_runtime)
         self.tasks = set()
+
+    def hub_soon(self):
+        if self.hub_wake:
+            self.hub_wake.set()
+
+    async def hub_forever(self):
+        """Hand in what waits and read what is worth bringing up: every five minutes, and at once after the owner answers (a clock time is kept here once read)."""
+        hub, self.hub_wake = self.entrusted.hub, asyncio.Event()
+        while True:
+            held = [i for i in self.entrusted.own_pending() if i.get("source") == "owner"]
+            try:
+                outlet = await asyncio.to_thread(hub.exchange, held)
+                if outlet is not None and self.entrusted.from_hub(outlet):
+                    self._later(self.native("entrustedSync", **self.entrusted.native_state(), timeout=30))
+            except Exception:
+                pass  # the hub is the owner's own service: whatever it answers, the hand keeps working
+            try:
+                await asyncio.wait_for(self.hub_wake.wait(), timeout=300)
+            except asyncio.TimeoutError:
+                pass
+            self.hub_wake.clear()
 
     def _later(self, work):
         task = asyncio.create_task(work)
@@ -382,6 +408,8 @@ async def main():
     companion._later(companion.feedback_forever())
     companion._later(companion.threads_forever())
     companion._later(companion.memory_forever())
+    if companion.entrusted.hub.enabled:
+        companion._later(companion.hub_forever())
     if HAS_WORKBENCH:
         companion._later(companion.desk_forever())
     token, agent_token = secrets.token_urlsafe(18), secrets.token_urlsafe(18)

@@ -52,3 +52,22 @@ func sameChatName(_ word: String, _ chat: String) -> Bool {
     let next = whole[whole.index(whole.startIndex, offsetBy: start.count)]
     return !(next.isLetter || next.isNumber)
 }
+
+/// The second of three: a group chat that concerns a thing without being the person's own chat. Small enough (the head
+/// count WeChat puts after the title), and titled with the person or with the thing's project. Their own chat is the
+/// first (a bubble); a big group is the third (nothing). No count to read: only a project's name in the title counts.
+let smallGroup = 20
+func groupConcerns(_ place: [String: String], chat: String) -> Bool {
+    guard !chat.isEmpty else { return false }
+    func lines(_ text: String?) -> [String] { (text ?? "").split(separator: "\n").map { String($0).lowercased() }.filter { $0.count >= 2 } }
+    let people = lines([place["chat"] ?? "", place["names"] ?? ""].joined(separator: "\n"))
+    if people.contains(where: { sameChatName($0, chat) }) { return false }
+    let plain = chat.precomposedStringWithCompatibilityMapping.lowercased()
+    let tail = plain.range(of: #"[(（]\s*\d+\s*[)）]\s*$"#, options: .regularExpression)
+    let count = tail.flatMap { Int(plain[$0].filter(\.isNumber)) }
+    let title = tail.map { String(plain[..<$0.lowerBound]) } ?? plain
+    if let count, count > smallGroup { return false }
+    if lines(place["project"]).contains(where: { title.contains($0) }) { return true }
+    return count != nil && people.contains { title.contains($0) }
+}
+
