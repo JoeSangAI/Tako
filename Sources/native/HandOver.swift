@@ -127,8 +127,13 @@ extension Goo {
         let twoLines = measured > targetWidth - 24 * scale
         let height = (22 + (twoLines ? 58 : 43) * expanded) * scale
         let desiredX = handSide < 0 ? tip.x - width + 2 * scale : tip.x - 2 * scale
-        let x = clamp(desiredX, 8, screenRect.width - width - 8)
-        let y = clamp(tip.y - height * 0.5, 8, screenRect.height - height - 8)
+        // Words stay where they can be read and tapped: the Dock and the menu bar are screen, not room. On the floor by
+        // the Dock the bubble used to slide under it.
+        let free = self.visible
+        let room = free.isEmpty ? CGRect(origin: .zero, size: screenRect.size)
+            : CGRect(x: free.minX - screenRect.minX, y: screenRect.maxY - free.maxY, width: free.width, height: free.height)
+        let x = clamp(desiredX, room.minX + 8, max(room.minX + 8, room.maxX - width - 8))
+        let y = clamp(tip.y - height * 0.5, room.minY + 8, max(room.minY + 8, room.maxY - height - 8))
         let rect = CGRect(x: x, y: y, width: width, height: height)
         // Two unequal loops, a dry-brush gap, and one wet speck: the same ink world as Enchant.
         let loop = CGMutablePath()

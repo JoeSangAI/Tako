@@ -22,6 +22,11 @@ final class Attention {
     private var inputDevice = AudioDeviceID(0), cameras: [CMIODeviceID] = []
     private var started = false
     static let awayAfter: Double = 120
+    /// Seconds since the owner last touched the keyboard or pointer. Any input: asking about one event type (the null
+    /// event) answers for an event that never comes, so the owner looked away a second after every return.
+    static func idleSeconds() -> Double {
+        CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
+    }
 
     init(_ host: Controller) { self.host = host }
 
@@ -124,7 +129,8 @@ final class Attention {
               let entries = unmanaged?.takeRetainedValue() as? [NSNumber: [[String: Any]]] else { return false }
         return entries.contains { process, assertions in
             assertions.contains { row in
-                guard (row[kIOPMAssertionLevelKey as String] as? NSNumber)?.intValue == 1 else { return false }
+                // On is 255 (kIOPMAssertionLevelOn), never 1: comparing with 1 meant this check answered no for every assertion.
+                guard (row[kIOPMAssertionLevelKey as String] as? NSNumber)?.intValue == Int(kIOPMAssertionLevelOn) else { return false }
                 let kind = row[kIOPMAssertionTypeKey as String] as? String ?? ""
                 let name = row[kIOPMAssertionNameKey as String] as? String ?? ""
                 return AttentionPolicy.sharesScreen(assertion: name) ||
@@ -283,13 +289,13 @@ final class Attention {
         let wanted = !host.entrusted.items.isEmpty || host.teaching.pendingToday
         guard wanted, !away else { awayCheck?.cancel(); awayCheck = nil; return }
         guard awayCheck == nil else { return }
-        let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .null)
+        let idle = Self.idleSeconds()
         let timer = DispatchSource.makeTimerSource(queue: .main)
         timer.schedule(deadline: .now() + max(1, Self.awayAfter - idle), leeway: .seconds(2))
         timer.setEventHandler { [weak self] in
             guard let self else { return }
             self.awayCheck?.cancel(); self.awayCheck = nil
-            if CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .null) >= Self.awayAfter { self.wentAway() }
+            if Self.idleSeconds() >= Self.awayAfter { self.wentAway() }
             self.watchAway()
         }
         timer.resume()

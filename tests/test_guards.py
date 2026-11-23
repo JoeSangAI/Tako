@@ -1197,6 +1197,25 @@ class AnOfficeAgentsOwnTools(unittest.TestCase):
 
 
 class EntrustedGuards(unittest.TestCase):
+    def test_quiet_while_sharing_reads_the_level_the_system_gives(self):
+        # An assertion that is on has level 255; compared with 1, nothing ever counted and Tako never went quiet by itself.
+        attention = native("Attention")
+        self.assertIn("intValue == Int(kIOPMAssertionLevelOn)", attention)
+        self.assertNotIn("intValue == 1 ", attention)
+
+    def test_the_held_out_words_stay_clear_of_the_dock_and_menu_bar(self):
+        hand = native("HandOver")
+        self.assertIn("screenRect.maxY - free.maxY", hand)
+        self.assertNotIn("clamp(tip.y - height * 0.5, 8, screenRect.height", hand)
+
+    def test_away_is_judged_by_any_input_never_by_one_event_type(self):
+        # Asking how long since the null event answers minutes while the owner is typing: away a second after every return,
+        # so a due promise was taken back and handed over again each time the pointer moved.
+        attention = native("Attention")
+        self.assertNotIn("eventType: .null", attention)
+        self.assertEqual(attention.count("Self.idleSeconds()"), 2)
+        self.assertIn("CGEventType(rawValue: ~0)!", attention)
+
     def setUp(self):
         import records
         import settings
